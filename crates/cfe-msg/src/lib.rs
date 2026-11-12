@@ -15,6 +15,27 @@ pub use aldis::spp::{
 /// Maximum 3-bit CCSDS Packet Version Number.
 pub const MAX_HEADER_VERSION: u16 = PacketVersion::MAX as u16;
 
+/// Byte index of the high octet of the Stream ID in the CCSDS Primary Header.
+const STREAM_ID_HI_IDX: usize = 0;
+
+/// Byte index of the high octet of Packet Data Length in the CCSDS Primary Header.
+const LENGTH_HI_IDX: usize = 4;
+
+/// Byte index of the low octet of Packet Data Length in the CCSDS Primary Header.
+const LENGTH_LO_IDX: usize = 5;
+
+/// Bit shift of the 3-bit CCSDS Packet Version Number within `hdr[STREAM_ID_HI_IDX]`.
+const VERSION_SHIFT: u8 = 5;
+
+/// Bitmask of the 3-bit CCSDS Packet Version Number within `hdr[STREAM_ID_HI_IDX]`.
+const VERSION_MASK: u8 = 0b111 << VERSION_SHIFT;
+
+/// Bitmask of the CCSDS Packet Type bit within `hdr[STREAM_ID_HI_IDX]`.
+const TYPE_MASK: u8 = 0x10;
+
+/// Bitmask of the CCSDS Secondary Header Flag bit within `hdr[STREAM_ID_HI_IDX]`.
+const SEC_HDR_MASK: u8 = 0x08;
+
 /// Error returned when an input argument is outside the valid CCSDS/cFE range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BadArgument;
@@ -53,15 +74,15 @@ pub fn set_size(hdr: &mut [u8; PRIMARY_HEADER_LEN], size: usize) -> Result<(), B
         return Err(BadArgument);
     };
     let [len_hi, len_lo] = pkt_len.to_be_bytes();
-    hdr[4] = len_hi;
-    hdr[5] = len_lo;
+    hdr[LENGTH_HI_IDX] = len_hi;
+    hdr[LENGTH_LO_IDX] = len_lo;
     Ok(())
 }
 
 /// Returns the CCSDS Packet Type: the behaviour of `CFE_MSG_GetType`.
 #[must_use]
 pub fn get_type(hdr: &[u8; PRIMARY_HEADER_LEN]) -> PacketType {
-    if (hdr[0] & 0x10) != 0 {
+    if (hdr[STREAM_ID_HI_IDX] & TYPE_MASK) != 0 {
         PacketType::Telecommand
     } else {
         PacketType::Telemetry
@@ -71,8 +92,8 @@ pub fn get_type(hdr: &[u8; PRIMARY_HEADER_LEN]) -> PacketType {
 /// Sets the CCSDS Packet Type: the behaviour of `CFE_MSG_SetType`.
 pub fn set_type(hdr: &mut [u8; PRIMARY_HEADER_LEN], packet_type: PacketType) {
     match packet_type {
-        PacketType::Telecommand => hdr[0] |= 0x10,
-        PacketType::Telemetry => hdr[0] &= !0x10,
+        PacketType::Telecommand => hdr[STREAM_ID_HI_IDX] |= TYPE_MASK,
+        PacketType::Telemetry => hdr[STREAM_ID_HI_IDX] &= !TYPE_MASK,
     }
 }
 
@@ -80,22 +101,22 @@ pub fn set_type(hdr: &mut [u8; PRIMARY_HEADER_LEN], packet_type: PacketType) {
 /// `CFE_MSG_GetHasSecondaryHeader`.
 #[must_use]
 pub fn get_has_secondary_header(hdr: &[u8; PRIMARY_HEADER_LEN]) -> bool {
-    (hdr[0] & 0x08) != 0
+    (hdr[STREAM_ID_HI_IDX] & SEC_HDR_MASK) != 0
 }
 
 /// Sets the Secondary Header Flag: the behaviour of `CFE_MSG_SetHasSecondaryHeader`.
 pub fn set_has_secondary_header(hdr: &mut [u8; PRIMARY_HEADER_LEN], has_secondary: bool) {
     if has_secondary {
-        hdr[0] |= 0x08;
+        hdr[STREAM_ID_HI_IDX] |= SEC_HDR_MASK;
     } else {
-        hdr[0] &= !0x08;
+        hdr[STREAM_ID_HI_IDX] &= !SEC_HDR_MASK;
     }
 }
 
 /// Returns the 3-bit CCSDS Packet Version Number: the behaviour of `CFE_MSG_GetHeaderVersion`.
 #[must_use]
 pub fn get_header_version(hdr: &[u8; PRIMARY_HEADER_LEN]) -> u16 {
-    u16::from(hdr[0] >> 5)
+    u16::from(hdr[STREAM_ID_HI_IDX] >> VERSION_SHIFT)
 }
 
 /// Sets the 3-bit CCSDS Packet Version Number: the behaviour of `CFE_MSG_SetHeaderVersion`.
@@ -109,7 +130,7 @@ pub fn set_header_version(
     let Some(ver) = u8::try_from(version).ok().and_then(PacketVersion::new) else {
         return Err(BadArgument);
     };
-    hdr[0] = (hdr[0] & 0x1F) | (ver.get() << 5);
+    hdr[STREAM_ID_HI_IDX] = (hdr[STREAM_ID_HI_IDX] & !VERSION_MASK) | (ver.get() << VERSION_SHIFT);
     Ok(())
 }
 
