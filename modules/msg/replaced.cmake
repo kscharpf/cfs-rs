@@ -5,4 +5,12 @@
 # Keep this list equal to the `#[unsafe(no_mangle)]` functions of `crates/cfe-msg-ffi`.
 set(CFE_MSG_RS_REPLACED
     CFE_MSG_GetNextSequenceCount
+    CFE_MSG_GetSize
+    CFE_MSG_SetSize
+    CFE_MSG_GetType
+    CFE_MSG_SetType
+    CFE_MSG_GetHasSecondaryHeader
+    CFE_MSG_SetHasSecondaryHeader
+    CFE_MSG_GetHeaderVersion
+    CFE_MSG_SetHeaderVersion
 )
