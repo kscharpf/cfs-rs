@@ -7,21 +7,13 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-use aldis::core::ids::SeqCount;
-pub use aldis::spp::PacketType;
-
-/// Length in octets of a CCSDS Space Packet Primary Header.
-pub const PRIMARY_HEADER_LEN: usize = 6;
-
-/// Offset between the CCSDS Packet Data Length field and the total cFE message size
-/// (`CFE_MSG_SIZE_OFFSET` in cFE).
-pub const SIZE_OFFSET: usize = 7;
-
-/// Maximum total cFE message size (`0xFFFF + CFE_MSG_SIZE_OFFSET`).
-pub const MAX_SIZE: usize = (u16::MAX as usize).saturating_add(SIZE_OFFSET);
+use aldis::core::ids::{PacketVersion, SeqCount};
+pub use aldis::spp::{
+    MAX_PACKET_LEN as MAX_SIZE, MIN_PACKET_LEN as SIZE_OFFSET, PRIMARY_HEADER_LEN, PacketType,
+};
 
 /// Maximum 3-bit CCSDS Packet Version Number.
-pub const MAX_HEADER_VERSION: u16 = 0x07;
+pub const MAX_HEADER_VERSION: u16 = PacketVersion::MAX as u16;
 
 /// Error returned when an input argument is outside the valid CCSDS/cFE range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,22 +106,17 @@ pub fn set_header_version(
     hdr: &mut [u8; PRIMARY_HEADER_LEN],
     version: u16,
 ) -> Result<(), BadArgument> {
-    if version > MAX_HEADER_VERSION {
+    let Some(ver) = u8::try_from(version).ok().and_then(PacketVersion::new) else {
         return Err(BadArgument);
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "version is checked <= 7 above, so it fits in u8"
-    )]
-    let ver_bits = (version as u8) << 5;
-    hdr[0] = (hdr[0] & 0x1F) | ver_bits;
+    };
+    hdr[0] = (hdr[0] & 0x1F) | (ver.get() << 5);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        BadArgument, MAX_HEADER_VERSION, MAX_SIZE, PRIMARY_HEADER_LEN, PacketType, SIZE_OFFSET,
+        BadArgument, MAX_HEADER_VERSION, MAX_SIZE, PacketType, SIZE_OFFSET,
         get_has_secondary_header, get_header_version, get_size, get_type, next_sequence_count,
         set_has_secondary_header, set_header_version, set_size, set_type,
     };
@@ -154,17 +141,20 @@ mod tests {
 
     #[test]
     fn size_round_trip_and_bounds() {
-        let mut hdr = [0u8; PRIMARY_HEADER_LEN];
+        let mut hdr = [0xAA, 0xBB, 0xCC, 0xDD, 0x00, 0x00];
         assert_eq!(get_size(&hdr), SIZE_OFFSET);
 
+        let before = hdr;
         assert_eq!(set_size(&mut hdr, SIZE_OFFSET - 1), Err(BadArgument));
         assert_eq!(set_size(&mut hdr, 0), Err(BadArgument));
         assert_eq!(set_size(&mut hdr, MAX_SIZE + 1), Err(BadArgument));
         assert_eq!(set_size(&mut hdr, usize::MAX), Err(BadArgument));
+        assert_eq!(hdr, before);
 
         for size in [SIZE_OFFSET, 8, 256, 0x1234, MAX_SIZE] {
             assert_eq!(set_size(&mut hdr, size), Ok(()));
             assert_eq!(get_size(&hdr), size);
+            assert_eq!(&hdr[..4], &[0xAA, 0xBB, 0xCC, 0xDD]);
         }
         assert_eq!(hdr[4], 0xFF);
         assert_eq!(hdr[5], 0xFF);
@@ -210,10 +200,12 @@ mod tests {
             assert_eq!(&hdr[1..], &[0xAB, 0xCD, 0xEF, 0x12, 0x34]);
         }
 
+        let before = hdr;
         assert_eq!(
             set_header_version(&mut hdr, MAX_HEADER_VERSION + 1),
             Err(BadArgument)
         );
         assert_eq!(set_header_version(&mut hdr, u16::MAX), Err(BadArgument));
+        assert_eq!(hdr, before);
     }
 }
