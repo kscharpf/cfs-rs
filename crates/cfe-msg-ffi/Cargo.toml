@@ -1,0 +1,22 @@
+[package]
+name = "cfe-msg-ffi"
+description = "C exports of cfe-msg under the cFE MSG function names"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+# No tests here: behaviour is tested in `cfe-msg` and, through the C names, by the cFE test
+# suites. The panic handler is compiled out under `cfg(test)`, which `clippy --all-targets` uses.
+test = false
+doctest = false
+
+[dependencies]
+cfe-msg = { workspace = true }
+
+[lints]
+workspace = true

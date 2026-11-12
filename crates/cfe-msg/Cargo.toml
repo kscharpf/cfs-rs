@@ -1,0 +1,15 @@
+[package]
+name = "cfe-msg"
+description = "Safe Rust core of a replacement for the cFE MSG module"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+aldis = { workspace = true, features = ["core"] }
+
+[lints]
+workspace = true

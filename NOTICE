@@ -1,0 +1,14 @@
+cfs-rs
+Copyright 2026 Kevin Scharpf
+
+This project reimplements parts of the NASA core Flight System (cFS) in Rust. The Rust code is
+written from the behaviour and the public headers of cFS, which is licensed under the Apache
+License, Version 2.0:
+
+    core Flight System (cFS), https://github.com/nasa/cFS
+    NASA Docket No. GSC-19,200-1, and identified as "cFS Draco"
+    Copyright (c) 2023 United States Government as represented by the Administrator of the
+    National Aeronautics and Space Administration. All Rights Reserved.
+
+cFS itself is not part of this repository: the `cfs` directory is a git submodule that points
+at an unmodified release of the cFS bundle.

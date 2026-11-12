@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/cfe-msg", "crates/cfe-msg-ffi"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "Apache-2.0"
+repository = "https://github.com/kscharpf/cfs-rs"
+publish = false
+
+[workspace.dependencies]
+# Aldis is consumed through its facade only, one feature per crate used.
+aldis = { git = "https://github.com/kscharpf/aldis.git", tag = "v0.6.0-m5", default-features = false }
+cfe-msg = { path = "crates/cfe-msg" }
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+
+# The C-export crate is a `no_std` static library: it cannot unwind into C.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+debug = true
