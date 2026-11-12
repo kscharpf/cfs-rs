@@ -35,6 +35,7 @@ Run before committing or reporting a round done:
 
 ## Process & roles
 
+- **Worktrees & PRs:** All implementation work happens in a dedicated git worktree and feature branch (e.g. `.claude/worktrees/<branch>`). Never implement directly on `main`. Push the branch and open a PR for review and maintainer approval/merge.
 - **Coordinator** (`gemini-4-hydrogen-high`): plans work, dispatches agents, runs checks/PRs, answers reviews.
 - **Implementer** (`gemini-4-hydrogen-low`): implements one task/PR or fix round in its own worktree/branch and reports back.
 - **Reviewer** (`gemini-4-argon-high`): independent read-only review of one PR; posts findings on GitHub.
