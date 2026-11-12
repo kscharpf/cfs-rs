@@ -8,7 +8,7 @@ For the coordinator (`gemini-4-hydrogen-high`, Hydrogen with high effort): the m
 |---|---|---|
 | **Coordinator** | `gemini-4-hydrogen-high` (Hydrogen, high effort) | This document |
 | **Implementer** | `gemini-4-hydrogen-low` (Hydrogen, low effort) | [`.claude/agents/implementer.md`](../../.claude/agents/implementer.md) |
-| **Reviewer** | `gemini-4-argon-high` (Argon, high effort) | [`.claude/agents/reviewer.md`](../../.claude/agents/reviewer.md) |
+| **Reviewer** | `gemini-4-hydrogen-xhigh` (Hydrogen, extra-high effort) | [`.claude/agents/reviewer.md`](../../.claude/agents/reviewer.md) |
 
 ## Dispatch
 
@@ -19,7 +19,7 @@ For the coordinator (`gemini-4-hydrogen-high`, Hydrogen with high effort): the m
 
 ## Review
 
-- **Review with the reviewer agent.** Dispatch `reviewer` (`gemini-4-argon-high`), fresh, given the PR number and head commit only — never your conclusions or the implementer's report.
+- **Review with the reviewer agent.** Dispatch `reviewer` (`gemini-4-hydrogen-xhigh`), fresh, given the PR number and head commit only — never your conclusions or the implementer's report.
 - **At most three reviews** by `reviewer` per PR. A review with no blocking finding does not start a fix round of its own; fold non-blocking findings/nits into a final fix round or open follow-up issues. After the third review, open remaining non-blocking findings/nits as GitHub issues; if a blocking finding remains, ask the maintainer.
 - **Answer every review.** Every review gets a point-by-point reply on the PR quoting the fix commit (at least 7 hex chars) and ending with the marker of [AGENTS.md](../../AGENTS.md).
 - **Comments-only fix round:** If `git diff <reviewed head> <new head>` changes only comments/doc comments or non-normative prose (no code, tests, `unsafe`, `replaced.cmake`, or FFI signatures), the coordinator may read the diff directly instead of dispatching `reviewer`, and post a comment naming both heads.

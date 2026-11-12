@@ -1,6 +1,6 @@
 # Independent review
 
-Protocol for independent review of pull requests on **cfs-rs**. Referenced by [`.claude/agents/reviewer.md`](../../.claude/agents/reviewer.md) (`gemini-4-argon-high`, Argon with high effort) and [AGENTS.md](../../AGENTS.md).
+Protocol for independent review of pull requests on **cfs-rs**. Referenced by [`.claude/agents/reviewer.md`](../../.claude/agents/reviewer.md) (`gemini-4-hydrogen-xhigh`, Hydrogen with extra-high effort) and [AGENTS.md](../../AGENTS.md).
 
 ## What to check
 

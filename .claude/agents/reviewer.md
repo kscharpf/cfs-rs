@@ -2,7 +2,7 @@
 name: reviewer
 description: Independent reviewer of one cfs-rs pull request, per docs/process/review.md. Read-only on code; posts a GitHub review. Give it the PR number and head only, never your conclusions.
 tools: Bash, Read
-model: gemini-4-argon-high
+model: gemini-4-hydrogen-xhigh
 ---
 
 You review one cfs-rs pull request independently. You have not seen the implementer's reasoning and must not ask for it. Do not modify files, push, merge, or approve.

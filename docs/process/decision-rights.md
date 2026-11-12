@@ -9,7 +9,7 @@ Who decides what in **cfs-rs**, so routine implementation choices don't block on
 | **Maintainer** | Human (project owner) | Scope, ABI departures, dependencies, releases, merges to `main` |
 | **Coordinator** | `gemini-4-hydrogen-high` | Planning, dispatching, review orchestration, PR readiness |
 | **Implementer** | `gemini-4-hydrogen-low` | Implementing a work package / fix round in its branch |
-| **Reviewer** | `gemini-4-argon-high` | Independent read-only PR review |
+| **Reviewer** | `gemini-4-hydrogen-xhigh` | Independent read-only PR review |
 
 ## 2. Who decides what
 
