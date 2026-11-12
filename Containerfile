@@ -13,7 +13,7 @@ ENV RUSTUP_HOME=/opt/rustup \
     CARGO_HOME=/cargo \
     PATH=/opt/rustup-bin:/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | CARGO_HOME=/opt/rustup-init sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.99.1 \
+      | CARGO_HOME=/opt/rustup-init sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.100.0 \
           --component clippy,rustfmt \
  && mkdir -p /opt/rustup-bin \
  && ln -s /opt/rustup-init/bin/* /opt/rustup-bin/

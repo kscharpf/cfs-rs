@@ -81,7 +81,7 @@ pub fn set_size(hdr: &mut [u8; PRIMARY_HEADER_LEN], size: usize) -> Result<(), B
 
 /// Returns the CCSDS Packet Type: the behaviour of `CFE_MSG_GetType`.
 #[must_use]
-pub fn get_type(hdr: &[u8; PRIMARY_HEADER_LEN]) -> PacketType {
+pub const fn get_type(hdr: &[u8; PRIMARY_HEADER_LEN]) -> PacketType {
     if (hdr[STREAM_ID_HI_IDX] & TYPE_MASK) != 0 {
         PacketType::Telecommand
     } else {
@@ -90,7 +90,7 @@ pub fn get_type(hdr: &[u8; PRIMARY_HEADER_LEN]) -> PacketType {
 }
 
 /// Sets the CCSDS Packet Type: the behaviour of `CFE_MSG_SetType`.
-pub fn set_type(hdr: &mut [u8; PRIMARY_HEADER_LEN], packet_type: PacketType) {
+pub const fn set_type(hdr: &mut [u8; PRIMARY_HEADER_LEN], packet_type: PacketType) {
     match packet_type {
         PacketType::Telecommand => hdr[STREAM_ID_HI_IDX] |= TYPE_MASK,
         PacketType::Telemetry => hdr[STREAM_ID_HI_IDX] &= !TYPE_MASK,
@@ -100,12 +100,12 @@ pub fn set_type(hdr: &mut [u8; PRIMARY_HEADER_LEN], packet_type: PacketType) {
 /// Returns whether the Secondary Header Flag is set: the behaviour of
 /// `CFE_MSG_GetHasSecondaryHeader`.
 #[must_use]
-pub fn get_has_secondary_header(hdr: &[u8; PRIMARY_HEADER_LEN]) -> bool {
+pub const fn get_has_secondary_header(hdr: &[u8; PRIMARY_HEADER_LEN]) -> bool {
     (hdr[STREAM_ID_HI_IDX] & SEC_HDR_MASK) != 0
 }
 
 /// Sets the Secondary Header Flag: the behaviour of `CFE_MSG_SetHasSecondaryHeader`.
-pub fn set_has_secondary_header(hdr: &mut [u8; PRIMARY_HEADER_LEN], has_secondary: bool) {
+pub const fn set_has_secondary_header(hdr: &mut [u8; PRIMARY_HEADER_LEN], has_secondary: bool) {
     if has_secondary {
         hdr[STREAM_ID_HI_IDX] |= SEC_HDR_MASK;
     } else {
