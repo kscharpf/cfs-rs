@@ -5,7 +5,7 @@ members = ["crates/cfe-msg", "crates/cfe-msg-ffi"]
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.99.1"
+rust-version = "1.100.0"
 license = "Apache-2.0"
 repository = "https://github.com/kscharpf/cfs-rs"
 publish = false
@@ -16,6 +16,7 @@ aldis = { git = "https://github.com/kscharpf/aldis.git", tag = "v0.6.0-m5", defa
 cfe-msg = { path = "crates/cfe-msg" }
 
 [workspace.lints.rust]
+unsafe_code = "warn"
 missing_docs = "warn"
 unsafe_op_in_unsafe_fn = "deny"
 unreachable_pub = "warn"

@@ -7,6 +7,7 @@
 //! All `unsafe` of the MSG replacement belongs in this crate.
 
 #![cfg_attr(not(test), no_std)]
+#![expect(unsafe_code, reason = "FFI crate implements C ABI exports")]
 
 use cfe_msg::{PRIMARY_HEADER_LEN, PacketType};
 

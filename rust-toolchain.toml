@@ -1,5 +1,5 @@
-# The same pinned stable toolchain as Aldis, whose `rust-version` this workspace must meet.
+# Pinned stable toolchain satisfying Aldis's `rust-version` (1.99.1).
 [toolchain]
-channel = "1.99.1"
+channel = "1.100.0"
 profile = "minimal"
 components = ["clippy", "rustfmt"]
