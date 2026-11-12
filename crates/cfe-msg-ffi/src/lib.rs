@@ -13,7 +13,7 @@ pub type CfeMsgSequenceCount = u16;
 
 /// `CFE_MSG_GetNextSequenceCount` of `cfe_msg.h`.
 #[unsafe(no_mangle)]
-pub extern "C" fn CFE_MSG_GetNextSequenceCount(
+pub const extern "C" fn CFE_MSG_GetNextSequenceCount(
     seq_cnt: CfeMsgSequenceCount,
 ) -> CfeMsgSequenceCount {
     cfe_msg::next_sequence_count(seq_cnt)

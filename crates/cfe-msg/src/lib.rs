@@ -15,7 +15,7 @@ use aldis::core::ids::SeqCount;
 /// A valid count advances modulo 16 384 (CCSDS 133.0, Packet Sequence Count). cFE takes any
 /// `uint16`, and for a value above 16 383 it returns 0; this function does the same.
 #[must_use]
-pub fn next_sequence_count(count: u16) -> u16 {
+pub const fn next_sequence_count(count: u16) -> u16 {
     match SeqCount::new(count) {
         Some(valid) => valid.next().get(),
         None => 0,
