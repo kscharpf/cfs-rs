@@ -21,4 +21,6 @@ set(CFE_MSG_RS_REPLACED
     CFE_MSG_SetSequenceCount
     CFE_MSG_GetFcnCode
     CFE_MSG_SetFcnCode
+    CFE_MSG_GenerateChecksum
+    CFE_MSG_ValidateChecksum
 )

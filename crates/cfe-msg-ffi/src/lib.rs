@@ -508,6 +508,75 @@ pub unsafe extern "C" fn CFE_MSG_SetFcnCode(
     }
 }
 
+/// `CFE_MSG_GenerateChecksum` of `cfe_msg.h`.
+///
+/// # Safety
+/// If non-null, `msg_ptr` must point to a valid mutable `CFE_MSG_Message_t` (and, when it is a
+/// CCSDS v1 command packet with a secondary header, a valid mutable `CFE_MSG_CommandHeader_t`
+/// whose backing buffer is at least
+/// `max(CFE_MSG_GetSize(msg_ptr), sizeof(CFE_MSG_CommandHeader_t))` bytes).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_MSG_GenerateChecksum(msg_ptr: *mut CfeMsgMessage) -> CfeStatus {
+    if msg_ptr.is_null() {
+        return CFE_MSG_BAD_ARGUMENT;
+    }
+    // SAFETY: `msg_ptr` is non-null, and the caller guarantees it points to a valid mutable
+    // `CFE_MSG_Message_t` for the duration of this call.
+    let pri = unsafe { &(*msg_ptr).pri };
+    if !cfe_msg::is_command_with_secondary_header(pri) {
+        return CFE_MSG_WRONG_MSG_TYPE;
+    }
+    let len = cfe_msg::get_size(pri).max(cfe_msg::COMMAND_HEADER_LEN);
+    // SAFETY: `msg_ptr` points to a valid mutable command message with a secondary header, so
+    // its backing buffer is at least `max(size, COMMAND_HEADER_LEN)` bytes (at most 65542 <=
+    // `isize::MAX`) and `u8` has alignment 1.
+    let pkt = unsafe { core::slice::from_raw_parts_mut(msg_ptr.cast::<u8>(), len) };
+    match cfe_msg::generate_checksum(pkt) {
+        Ok(()) => CFE_SUCCESS,
+        Err(MsgError::BadArgument) => CFE_MSG_BAD_ARGUMENT,
+        Err(MsgError::WrongMsgType) => CFE_MSG_WRONG_MSG_TYPE,
+    }
+}
+
+/// `CFE_MSG_ValidateChecksum` of `cfe_msg.h`.
+///
+/// # Safety
+/// If non-null, `msg_ptr` must point to a valid `CFE_MSG_Message_t` (and, when it is a
+/// CCSDS v1 command packet with a secondary header, a buffer of at least `CFE_MSG_GetSize(msg_ptr)`
+/// bytes), and `is_valid` must point to writable `bool` storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_MSG_ValidateChecksum(
+    msg_ptr: *const CfeMsgMessage,
+    is_valid: *mut bool,
+) -> CfeStatus {
+    if msg_ptr.is_null() || is_valid.is_null() {
+        return CFE_MSG_BAD_ARGUMENT;
+    }
+    // SAFETY: `msg_ptr` is non-null, and the caller guarantees it points to a valid
+    // `CFE_MSG_Message_t` for the duration of this call.
+    let pri = unsafe { &(*msg_ptr).pri };
+    if !cfe_msg::is_command_with_secondary_header(pri) {
+        return CFE_MSG_WRONG_MSG_TYPE;
+    }
+    let size = cfe_msg::get_size(pri);
+    // SAFETY: `msg_ptr` points to a valid command message with a secondary header, so its
+    // backing buffer is at least `size` bytes (at most 65542 <= `isize::MAX`) and `u8` has
+    // alignment 1.
+    let pkt = unsafe { core::slice::from_raw_parts(msg_ptr.cast::<u8>(), size) };
+    match cfe_msg::validate_checksum(pkt) {
+        Ok(valid) => {
+            // SAFETY: `is_valid` is non-null, and the caller guarantees it points to writable
+            // `bool` storage.
+            unsafe {
+                *is_valid = valid;
+            }
+            CFE_SUCCESS
+        }
+        Err(MsgError::BadArgument) => CFE_MSG_BAD_ARGUMENT,
+        Err(MsgError::WrongMsgType) => CFE_MSG_WRONG_MSG_TYPE,
+    }
+}
+
 #[cfg(not(test))]
 unsafe extern "C" {
     /// `abort` of the C library.

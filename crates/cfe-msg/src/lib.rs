@@ -76,6 +76,9 @@ const SEQ_COUNT_HI_MASK: u8 = 0x3F;
 /// Byte index of `FunctionCode` in `CFE_MSG_CommandHeader_t`.
 const FCN_CODE_IDX: usize = PRIMARY_HEADER_LEN;
 
+/// Byte index of `Checksum` in `CFE_MSG_CommandHeader_t`.
+const CHECKSUM_IDX: usize = PRIMARY_HEADER_LEN + 1;
+
 /// Bitmask of the 7-bit command function code (`CFE_MSG_FC_MASK`).
 const FCN_CODE_MASK: u8 = 0x7F;
 
@@ -289,14 +292,80 @@ pub fn set_fcn_code(hdr: &mut [u8; COMMAND_HEADER_LEN], fcn_code: u16) -> Result
     Ok(())
 }
 
+/// Extracts the primary header bytes from a packet slice if it is at least `PRIMARY_HEADER_LEN`
+/// octets long.
+fn primary_header_from_slice(pkt: &[u8]) -> Option<[u8; PRIMARY_HEADER_LEN]> {
+    pkt.get(..PRIMARY_HEADER_LEN)?.try_into().ok()
+}
+
+/// Computes the cFE command checksum over `pkt` (XOR of all octets starting from `0xFF`):
+/// the behaviour of `CFE_MSG_ComputeCheckSum`.
+#[must_use]
+pub fn compute_checksum(pkt: &[u8]) -> u8 {
+    pkt.iter().fold(0xFF, |acc, &b| acc ^ b)
+}
+
+/// Computes and stores the command secondary-header checksum: the behaviour of
+/// `CFE_MSG_GenerateChecksum`.
+///
+/// # Errors
+/// Returns `Err(MsgError::WrongMsgType)` if the packet is not CCSDS version 0, is not a
+/// telecommand packet, or does not have a secondary header.
+/// Returns `Err(MsgError::BadArgument)` if `pkt` is shorter than `COMMAND_HEADER_LEN` or shorter
+/// than the packet size encoded in the primary header.
+pub fn generate_checksum(pkt: &mut [u8]) -> Result<(), MsgError> {
+    let Some(pri) = primary_header_from_slice(pkt) else {
+        return Err(MsgError::BadArgument);
+    };
+    if !is_command_with_secondary_header(&pri) {
+        return Err(MsgError::WrongMsgType);
+    }
+    let size = get_size(&pri);
+    if pkt.len() < COMMAND_HEADER_LEN || pkt.len() < size {
+        return Err(MsgError::BadArgument);
+    }
+    if let Some(checksum_slot) = pkt.get_mut(CHECKSUM_IDX) {
+        *checksum_slot = 0;
+    }
+    let chksum = pkt.get(..size).map_or(0xFF, compute_checksum);
+    if let Some(checksum_slot) = pkt.get_mut(CHECKSUM_IDX) {
+        *checksum_slot = chksum;
+    }
+    Ok(())
+}
+
+/// Validates the command secondary-header checksum: the behaviour of
+/// `CFE_MSG_ValidateChecksum`.
+///
+/// # Errors
+/// Returns `Err(MsgError::WrongMsgType)` if the packet is not CCSDS version 0, is not a
+/// telecommand packet, or does not have a secondary header.
+/// Returns `Err(MsgError::BadArgument)` if `pkt` is shorter than the packet size encoded in the
+/// primary header.
+pub fn validate_checksum(pkt: &[u8]) -> Result<bool, MsgError> {
+    let Some(pri) = primary_header_from_slice(pkt) else {
+        return Err(MsgError::BadArgument);
+    };
+    if !is_command_with_secondary_header(&pri) {
+        return Err(MsgError::WrongMsgType);
+    }
+    let size = get_size(&pri);
+    let Some(slice) = pkt.get(..size) else {
+        return Err(MsgError::BadArgument);
+    };
+    Ok(compute_checksum(slice) == 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        BadArgument, MAX_APID, MAX_FCN_CODE, MAX_HEADER_VERSION, MAX_SEQUENCE_COUNT, MAX_SIZE,
-        MsgError, PacketType, SIZE_OFFSET, SequenceFlags, get_apid, get_fcn_code,
+        BadArgument, COMMAND_HEADER_LEN, MAX_APID, MAX_FCN_CODE, MAX_HEADER_VERSION,
+        MAX_SEQUENCE_COUNT, MAX_SIZE, MsgError, PRIMARY_HEADER_LEN, PacketType, SIZE_OFFSET,
+        SequenceFlags, compute_checksum, generate_checksum, get_apid, get_fcn_code,
         get_has_secondary_header, get_header_version, get_segmentation_flag, get_sequence_count,
         get_size, get_type, next_sequence_count, set_apid, set_fcn_code, set_has_secondary_header,
         set_header_version, set_segmentation_flag, set_sequence_count, set_size, set_type,
+        validate_checksum,
     };
 
     /// `CFE_MSG_GetNextSequenceCount` of cFE 7.0.1 (`cfe_msg_ccsdspri.c`), transcribed: increment
@@ -510,5 +579,101 @@ mod tests {
             set_fcn_code(&mut tlm, MAX_FCN_CODE + 1),
             Err(MsgError::BadArgument)
         );
+    }
+
+    #[test]
+    fn checksum_generate_and_validate_valid_packets() {
+        assert_eq!(compute_checksum(&[]), 0xFF);
+        assert_eq!(compute_checksum(&[0xFF]), 0x00);
+
+        // All 0xFFs except length=8 and version=0 (matching Test_MSG_Checksum)
+        let mut pkt = [0xFF; COMMAND_HEADER_LEN];
+        pkt[0] = 0x1F; // version=0, type=cmd, sec_hdr=1, apid=0x7FF
+        pkt[4] = 0x00;
+        pkt[5] = 0x01; // size = 1 + 7 = 8
+        assert_eq!(validate_checksum(&pkt), Ok(false));
+        assert_eq!(generate_checksum(&mut pkt), Ok(()));
+        assert_eq!(validate_checksum(&pkt), Ok(true));
+
+        // All 0x00s except cmd, sechdr, size=8 (matching Test_MSG_Checksum)
+        let mut pkt_zero = [0x00; COMMAND_HEADER_LEN];
+        pkt_zero[0] = 0x18; // version=0, type=cmd, sec_hdr=1
+        pkt_zero[5] = 0x01; // size = 8
+        assert_eq!(validate_checksum(&pkt_zero), Ok(false));
+        assert_eq!(generate_checksum(&mut pkt_zero), Ok(()));
+        assert_eq!(validate_checksum(&pkt_zero), Ok(true));
+
+        // Packet with payload (12 bytes: size = 5 + 7 = 12)
+        let mut pkt_payload = [
+            0x18, 0x01, 0xC0, 0x02, 0x00, 0x05, 0x03, 0x00, 0xAA, 0x55, 0x12, 0x34,
+        ];
+        assert_eq!(generate_checksum(&mut pkt_payload), Ok(()));
+        assert_eq!(validate_checksum(&pkt_payload), Ok(true));
+
+        // Corrupted payload byte fails validation; regenerating restores validity.
+        pkt_payload[10] ^= 0x01;
+        assert_eq!(validate_checksum(&pkt_payload), Ok(false));
+        assert_eq!(generate_checksum(&mut pkt_payload), Ok(()));
+        assert_eq!(validate_checksum(&pkt_payload), Ok(true));
+    }
+
+    #[test]
+    fn checksum_wrong_msg_type_and_short_sizes() {
+        let valid_cmd = [0x18, 0x00, 0xC0, 0x00, 0x00, 0x01, 0x00, 0x00];
+
+        // Wrong CCSDS version (version = 1)
+        let mut wrong_ver = valid_cmd;
+        wrong_ver[0] |= 0x20;
+        let before = wrong_ver;
+        assert_eq!(
+            generate_checksum(&mut wrong_ver),
+            Err(MsgError::WrongMsgType)
+        );
+        assert_eq!(wrong_ver, before);
+        assert_eq!(validate_checksum(&wrong_ver), Err(MsgError::WrongMsgType));
+
+        // Telemetry packet
+        let mut tlm = valid_cmd;
+        tlm[0] &= !0x10;
+        assert_eq!(generate_checksum(&mut tlm), Err(MsgError::WrongMsgType));
+        assert_eq!(validate_checksum(&tlm), Err(MsgError::WrongMsgType));
+
+        // Missing secondary header
+        let mut no_sec = valid_cmd;
+        no_sec[0] &= !0x08;
+        assert_eq!(generate_checksum(&mut no_sec), Err(MsgError::WrongMsgType));
+        assert_eq!(validate_checksum(&no_sec), Err(MsgError::WrongMsgType));
+
+        // Shorter than PRIMARY_HEADER_LEN
+        let mut too_short = [0x18; PRIMARY_HEADER_LEN - 1];
+        assert_eq!(
+            generate_checksum(&mut too_short),
+            Err(MsgError::BadArgument)
+        );
+        assert_eq!(validate_checksum(&too_short), Err(MsgError::BadArgument));
+
+        // 7-byte buffer (between PRIMARY_HEADER_LEN and COMMAND_HEADER_LEN)
+        let mut seven_bytes = [0x18, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(
+            generate_checksum(&mut seven_bytes),
+            Err(MsgError::BadArgument)
+        );
+        // size == 7 fits in 7-byte buffer for validate_checksum
+        assert!(validate_checksum(&seven_bytes).is_ok());
+
+        // 8-byte buffer with size == 7 (PacketDataLength == 0): generate_checksum hashes 7 bytes
+        // and writes byte 7, matching C.
+        let mut eight_bytes_size7 = [0x18, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x05, 0xAA];
+        assert_eq!(generate_checksum(&mut eight_bytes_size7), Ok(()));
+        let expected = compute_checksum(&eight_bytes_size7[..SIZE_OFFSET]);
+        assert_eq!(eight_bytes_size7[7], expected);
+
+        // Buffer shorter than encoded packet size (size = 10, buf = 8)
+        let mut truncated = [0x18, 0x00, 0xC0, 0x00, 0x00, 0x03, 0x00, 0x00];
+        assert_eq!(
+            generate_checksum(&mut truncated),
+            Err(MsgError::BadArgument)
+        );
+        assert_eq!(validate_checksum(&truncated), Err(MsgError::BadArgument));
     }
 }
