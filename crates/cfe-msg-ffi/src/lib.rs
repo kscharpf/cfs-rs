@@ -10,8 +10,8 @@
 #![expect(unsafe_code, reason = "FFI crate implements C ABI exports")]
 
 use cfe_msg::{
-    BadArgument, COMMAND_HEADER_LEN, MsgError, PRIMARY_HEADER_LEN, PacketType, SequenceFlags,
-    SysTime, TELEMETRY_HEADER_LEN,
+    BadArgument, COMMAND_HEADER_LEN, MsgError, MsgId, PRIMARY_HEADER_LEN, PacketType,
+    SequenceFlags, SysTime, TELEMETRY_HEADER_LEN,
 };
 
 /// `CFE_Status_t` of `cfe_error.h`.
@@ -117,6 +117,17 @@ pub struct CfeTimeSysTime {
     subseconds: u32,
 }
 
+/// `CFE_SB_MsgId_Atom_t` of `default_cfe_sb_extern_typedefs.h`.
+pub type CfeSbMsgIdAtom = u32;
+
+/// `CFE_SB_MsgId_t` of `default_cfe_sb_extern_typedefs.h`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CfeSbMsgId {
+    /// Underlying message ID value.
+    value: CfeSbMsgIdAtom,
+}
+
 /// `CFE_MSG_TelemetrySecondaryHeader_t` of `default_cfe_msg_sechdr.h`.
 #[repr(C)]
 pub struct CfeMsgTelemetrySecondaryHeader {
@@ -147,6 +158,7 @@ const _: () = {
             && align_of::<CfeMsgCommandHeader>() == 1
     );
     assert!(size_of::<CfeTimeSysTime>() == 8 && align_of::<CfeTimeSysTime>() == 4);
+    assert!(size_of::<CfeSbMsgId>() == 4 && align_of::<CfeSbMsgId>() == 4);
     assert!(
         size_of::<CfeMsgTelemetrySecondaryHeader>() == 6
             && align_of::<CfeMsgTelemetrySecondaryHeader>() == 1
@@ -733,6 +745,88 @@ pub unsafe extern "C" fn CFE_MSG_SetMsgTime(
             Err(MsgError::WrongMsgType) => CFE_MSG_WRONG_MSG_TYPE,
         }
     }
+}
+
+unsafe extern "C" {
+    /// `CFE_SB_IsValidMsgId` of `cfe_sb.h`.
+    safe fn CFE_SB_IsValidMsgId(msg_id: CfeSbMsgId) -> bool;
+}
+
+/// `CFE_MSG_GetMsgId` of `cfe_msg.h`.
+///
+/// # Safety
+/// If non-null, `msg_ptr` must point to a valid `CFE_MSG_Message_t` and `msg_id` must point to
+/// writable `CFE_SB_MsgId_t` storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_MSG_GetMsgId(
+    msg_ptr: *const CfeMsgMessage,
+    msg_id: *mut CfeSbMsgId,
+) -> CfeStatus {
+    if msg_ptr.is_null() || msg_id.is_null() {
+        return CFE_MSG_BAD_ARGUMENT;
+    }
+    // SAFETY: `msg_ptr` and `msg_id` are non-null, and the caller guarantees they point to valid
+    // `CFE_MSG_Message_t` and `CFE_SB_MsgId_t` objects for the duration of this call.
+    unsafe {
+        *msg_id = CfeSbMsgId {
+            value: u32::from(cfe_msg::get_msg_id(&(*msg_ptr).pri).get()),
+        };
+    }
+    CFE_SUCCESS
+}
+
+/// `CFE_MSG_SetMsgId` of `cfe_msg.h`.
+///
+/// # Safety
+/// If non-null, `msg_ptr` must point to a valid mutable `CFE_MSG_Message_t`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_MSG_SetMsgId(
+    msg_ptr: *mut CfeMsgMessage,
+    msg_id: CfeSbMsgId,
+) -> CfeStatus {
+    if msg_ptr.is_null() || !CFE_SB_IsValidMsgId(msg_id) {
+        return CFE_MSG_BAD_ARGUMENT;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "CFE_MSG_SetMsgId v1 uses the low 16 bits of CFE_SB_MsgId_Atom_t"
+    )]
+    let id = MsgId::new(msg_id.value as u16);
+    // SAFETY: `msg_ptr` is non-null, and the caller guarantees it points to a valid mutable
+    // `CFE_MSG_Message_t` for the duration of this call.
+    unsafe {
+        cfe_msg::set_msg_id(&mut (*msg_ptr).pri, id);
+    }
+    CFE_SUCCESS
+}
+
+/// `CFE_MSG_GetTypeFromMsgId` of `cfe_msg.h`.
+///
+/// # Safety
+/// If non-null, `msg_type` must point to writable `CFE_MSG_Type_t` storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_MSG_GetTypeFromMsgId(
+    msg_id: CfeSbMsgId,
+    msg_type: *mut CfeMsgType,
+) -> CfeStatus {
+    if msg_type.is_null() || !CFE_SB_IsValidMsgId(msg_id) {
+        return CFE_MSG_BAD_ARGUMENT;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "CFE_MSG_GetTypeFromMsgId v1 uses the low 16 bits of CFE_SB_MsgId_Atom_t"
+    )]
+    let id = MsgId::new(msg_id.value as u16);
+    let ty = match cfe_msg::get_type_from_msg_id(id) {
+        PacketType::Telecommand => CFE_MSG_TYPE_CMD,
+        PacketType::Telemetry => CFE_MSG_TYPE_TLM,
+    };
+    // SAFETY: `msg_type` is non-null, and the caller guarantees it points to writable
+    // `CFE_MSG_Type_t` storage.
+    unsafe {
+        *msg_type = ty;
+    }
+    CFE_SUCCESS
 }
 
 #[cfg(not(test))]

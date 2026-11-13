@@ -109,6 +109,25 @@ pub struct SysTime {
     pub subseconds: u32,
 }
 
+/// Software Bus message identifier: the Rust counterpart of `CFE_SB_MsgId_t` (16-bit `StreamId`
+/// for CCSDS v1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MsgId(u16);
+
+impl MsgId {
+    /// Wraps a raw 16-bit CCSDS v1 message ID value.
+    #[must_use]
+    pub const fn new(value: u16) -> Self {
+        Self(value)
+    }
+
+    /// Returns the underlying 16-bit message ID value.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
 /// The Packet Sequence Count that follows `count`: the behaviour of
 /// `CFE_MSG_GetNextSequenceCount`.
 ///
@@ -419,17 +438,43 @@ pub fn set_msg_time(hdr: &mut [u8; TELEMETRY_HEADER_LEN], time: SysTime) -> Resu
     Ok(())
 }
 
+/// Returns the 16-bit CCSDS v1 message ID (`StreamId[0..2]` big-endian): the behaviour of
+/// `CFE_MSG_GetMsgId`.
+#[must_use]
+pub const fn get_msg_id(hdr: &[u8; PRIMARY_HEADER_LEN]) -> MsgId {
+    MsgId::new(u16::from_be_bytes([
+        hdr[STREAM_ID_HI_IDX],
+        hdr[STREAM_ID_LO_IDX],
+    ]))
+}
+
+/// Sets the 16-bit CCSDS v1 message ID (`StreamId[0..2]` big-endian): the behaviour of
+/// `CFE_MSG_SetMsgId`.
+pub const fn set_msg_id(hdr: &mut [u8; PRIMARY_HEADER_LEN], msg_id: MsgId) {
+    let [hi, lo] = msg_id.get().to_be_bytes();
+    hdr[STREAM_ID_HI_IDX] = hi;
+    hdr[STREAM_ID_LO_IDX] = lo;
+}
+
+/// Returns the CCSDS Packet Type encoded in `msg_id`: the behaviour of `CFE_MSG_GetTypeFromMsgId`.
+#[must_use]
+pub const fn get_type_from_msg_id(msg_id: MsgId) -> PacketType {
+    let mut hdr = [0u8; PRIMARY_HEADER_LEN];
+    set_msg_id(&mut hdr, msg_id);
+    get_type(&hdr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         BadArgument, COMMAND_HEADER_LEN, MAX_APID, MAX_FCN_CODE, MAX_HEADER_VERSION,
-        MAX_SEQUENCE_COUNT, MAX_SIZE, MsgError, PRIMARY_HEADER_LEN, PacketType, SIZE_OFFSET,
+        MAX_SEQUENCE_COUNT, MAX_SIZE, MsgError, MsgId, PRIMARY_HEADER_LEN, PacketType, SIZE_OFFSET,
         SequenceFlags, SysTime, TELEMETRY_HEADER_LEN, compute_checksum, generate_checksum,
-        get_apid, get_fcn_code, get_has_secondary_header, get_header_version, get_msg_time,
-        get_segmentation_flag, get_sequence_count, get_size, get_type,
-        is_telemetry_with_secondary_header, next_sequence_count, set_apid, set_fcn_code,
-        set_has_secondary_header, set_header_version, set_msg_time, set_segmentation_flag,
-        set_sequence_count, set_size, set_type, validate_checksum,
+        get_apid, get_fcn_code, get_has_secondary_header, get_header_version, get_msg_id,
+        get_msg_time, get_segmentation_flag, get_sequence_count, get_size, get_type,
+        get_type_from_msg_id, is_telemetry_with_secondary_header, next_sequence_count, set_apid,
+        set_fcn_code, set_has_secondary_header, set_header_version, set_msg_id, set_msg_time,
+        set_segmentation_flag, set_sequence_count, set_size, set_type, validate_checksum,
     };
 
     /// `CFE_MSG_GetNextSequenceCount` of cFE 7.0.1 (`cfe_msg_ccsdspri.c`), transcribed: increment
@@ -867,5 +912,73 @@ mod tests {
             Err(MsgError::WrongMsgType)
         );
         assert_eq!(no_sec, before);
+    }
+
+    #[test]
+    fn msg_id_round_trip_and_layout() {
+        let mut hdr = [0xFFu8; PRIMARY_HEADER_LEN];
+        assert_eq!(get_msg_id(&hdr), MsgId::new(0xFFFF));
+
+        set_msg_id(&mut hdr, MsgId::new(0x0001));
+        assert_eq!(hdr[0], 0x00);
+        assert_eq!(hdr[1], 0x01);
+        assert_eq!(get_msg_id(&hdr), MsgId::new(0x0001));
+        // Only StreamId[0..2] should be modified; bytes 2..6 remain 0xFF.
+        assert_eq!(&hdr[2..], &[0xFF, 0xFF, 0xFF, 0xFF]);
+
+        let mut zero_hdr = [0u8; PRIMARY_HEADER_LEN];
+        assert_eq!(get_msg_id(&zero_hdr), MsgId::new(0));
+
+        set_msg_id(&mut zero_hdr, MsgId::new(0x1234));
+        assert_eq!(zero_hdr[0], 0x12);
+        assert_eq!(zero_hdr[1], 0x34);
+        assert_eq!(get_msg_id(&zero_hdr), MsgId::new(0x1234));
+        assert_eq!(get_apid(&zero_hdr), 0x0234);
+        assert_eq!(get_type(&zero_hdr), PacketType::Telecommand);
+        assert!(!get_has_secondary_header(&zero_hdr));
+
+        // APID-only bits
+        set_msg_id(&mut zero_hdr, MsgId::new(MAX_APID));
+        assert_eq!(get_apid(&zero_hdr), MAX_APID);
+        assert_eq!(get_type(&zero_hdr), PacketType::Telemetry);
+        assert!(!get_has_secondary_header(&zero_hdr));
+
+        // Secondary header bit only (0x0800)
+        set_msg_id(&mut zero_hdr, MsgId::new(0x0800));
+        assert!(get_has_secondary_header(&zero_hdr));
+        assert_eq!(get_type(&zero_hdr), PacketType::Telemetry);
+
+        // Type bit only (0x1000)
+        set_msg_id(&mut zero_hdr, MsgId::new(0x1000));
+        assert_eq!(get_type(&zero_hdr), PacketType::Telecommand);
+        assert!(!get_has_secondary_header(&zero_hdr));
+    }
+
+    #[test]
+    fn type_from_msg_id() {
+        assert_eq!(
+            get_type_from_msg_id(MsgId::new(0x0000)),
+            PacketType::Telemetry
+        );
+        assert_eq!(
+            get_type_from_msg_id(MsgId::new(0x0FFF)),
+            PacketType::Telemetry
+        );
+        assert_eq!(
+            get_type_from_msg_id(MsgId::new(0x1000)),
+            PacketType::Telecommand
+        );
+        assert_eq!(
+            get_type_from_msg_id(MsgId::new(0x1FFF)),
+            PacketType::Telecommand
+        );
+        assert_eq!(
+            get_type_from_msg_id(MsgId::new(0xFFFF)),
+            PacketType::Telecommand
+        );
+        assert_eq!(
+            get_type_from_msg_id(MsgId::new(0xEFFF)),
+            PacketType::Telemetry
+        );
     }
 }
