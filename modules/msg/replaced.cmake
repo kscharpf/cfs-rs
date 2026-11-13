@@ -13,4 +13,10 @@ set(CFE_MSG_RS_REPLACED
     CFE_MSG_SetHasSecondaryHeader
     CFE_MSG_GetHeaderVersion
     CFE_MSG_SetHeaderVersion
+    CFE_MSG_GetApId
+    CFE_MSG_SetApId
+    CFE_MSG_GetSegmentationFlag
+    CFE_MSG_SetSegmentationFlag
+    CFE_MSG_GetSequenceCount
+    CFE_MSG_SetSequenceCount
 )
