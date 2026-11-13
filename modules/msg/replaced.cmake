@@ -25,4 +25,7 @@ set(CFE_MSG_RS_REPLACED
     CFE_MSG_ValidateChecksum
     CFE_MSG_GetMsgTime
     CFE_MSG_SetMsgTime
+    CFE_MSG_GetMsgId
+    CFE_MSG_SetMsgId
+    CFE_MSG_GetTypeFromMsgId
 )
