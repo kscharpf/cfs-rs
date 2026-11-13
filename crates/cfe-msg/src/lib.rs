@@ -25,6 +25,10 @@ pub const MAX_SEQUENCE_COUNT: u16 = SeqCount::MAX;
 /// Length in octets of `CFE_MSG_CommandHeader_t` (primary header + 2-byte secondary header).
 pub const COMMAND_HEADER_LEN: usize = PRIMARY_HEADER_LEN + 2;
 
+/// Length in octets of `CFE_MSG_TelemetryHeader_t` (primary header + 6-byte secondary header +
+/// 4-byte spare padding).
+pub const TELEMETRY_HEADER_LEN: usize = PRIMARY_HEADER_LEN + 6 + 4;
+
 /// Maximum 7-bit command function code (`CFE_MSG_FC_MASK`).
 pub const MAX_FCN_CODE: u16 = FCN_CODE_MASK as u16;
 
@@ -94,6 +98,15 @@ pub enum MsgError {
     /// Message header is not the expected CCSDS version, packet type, or lacks a secondary header
     /// (`CFE_MSG_WRONG_MSG_TYPE`).
     WrongMsgType,
+}
+
+/// System time value (seconds and subseconds): the Rust counterpart of `CFE_TIME_SysTime_t`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SysTime {
+    /// Number of seconds since epoch.
+    pub seconds: u32,
+    /// Number of subseconds since epoch (LSB = 2^(-32) seconds).
+    pub subseconds: u32,
 }
 
 /// The Packet Sequence Count that follows `count`: the behaviour of
@@ -356,16 +369,67 @@ pub fn validate_checksum(pkt: &[u8]) -> Result<bool, MsgError> {
     Ok(compute_checksum(slice) == 0)
 }
 
+/// Returns `true` if `pri` is a CCSDS version 0 telemetry packet with a secondary header.
+#[must_use]
+pub fn is_telemetry_with_secondary_header(pri: &[u8; PRIMARY_HEADER_LEN]) -> bool {
+    get_header_version(pri) == CCSDS_VERSION
+        && get_type(pri) == PacketType::Telemetry
+        && get_has_secondary_header(pri)
+}
+
+/// Decodes the telemetry secondary-header timestamp (big-endian 32-bit seconds, 16-bit
+/// subseconds in the upper 16 bits of `subseconds`): the behaviour of `CFE_MSG_GetMsgTime`.
+///
+/// # Errors
+/// Returns `Err(MsgError::WrongMsgType)` if the packet is not CCSDS version 0, is not a
+/// telemetry packet, or does not have a secondary header.
+pub fn get_msg_time(hdr: &[u8; TELEMETRY_HEADER_LEN]) -> Result<SysTime, MsgError> {
+    let [b0, b1, b2, b3, b4, b5, s0, s1, s2, s3, sub0, sub1, ..] = *hdr;
+    let pri = [b0, b1, b2, b3, b4, b5];
+    if !is_telemetry_with_secondary_header(&pri) {
+        return Err(MsgError::WrongMsgType);
+    }
+    Ok(SysTime {
+        seconds: u32::from_be_bytes([s0, s1, s2, s3]),
+        subseconds: u32::from_be_bytes([sub0, sub1, 0, 0]),
+    })
+}
+
+/// Encodes the telemetry secondary-header timestamp (big-endian 32-bit seconds, upper 16 bits
+/// of `subseconds`): the behaviour of `CFE_MSG_SetMsgTime`.
+///
+/// # Errors
+/// Returns `Err(MsgError::WrongMsgType)` if the packet is not CCSDS version 0, is not a
+/// telemetry packet, or does not have a secondary header.
+pub fn set_msg_time(hdr: &mut [u8; TELEMETRY_HEADER_LEN], time: SysTime) -> Result<(), MsgError> {
+    let [b0, b1, b2, b3, b4, b5, ..] = *hdr;
+    let pri = [b0, b1, b2, b3, b4, b5];
+    if !is_telemetry_with_secondary_header(&pri) {
+        return Err(MsgError::WrongMsgType);
+    }
+    let [s0, s1, s2, s3] = time.seconds.to_be_bytes();
+    let [sub0, sub1, _, _] = time.subseconds.to_be_bytes();
+    let [_, _, _, _, _, _, t0, t1, t2, t3, t4, t5, ..] = hdr;
+    *t0 = s0;
+    *t1 = s1;
+    *t2 = s2;
+    *t3 = s3;
+    *t4 = sub0;
+    *t5 = sub1;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         BadArgument, COMMAND_HEADER_LEN, MAX_APID, MAX_FCN_CODE, MAX_HEADER_VERSION,
         MAX_SEQUENCE_COUNT, MAX_SIZE, MsgError, PRIMARY_HEADER_LEN, PacketType, SIZE_OFFSET,
-        SequenceFlags, compute_checksum, generate_checksum, get_apid, get_fcn_code,
-        get_has_secondary_header, get_header_version, get_segmentation_flag, get_sequence_count,
-        get_size, get_type, next_sequence_count, set_apid, set_fcn_code, set_has_secondary_header,
-        set_header_version, set_segmentation_flag, set_sequence_count, set_size, set_type,
-        validate_checksum,
+        SequenceFlags, SysTime, TELEMETRY_HEADER_LEN, compute_checksum, generate_checksum,
+        get_apid, get_fcn_code, get_has_secondary_header, get_header_version, get_msg_time,
+        get_segmentation_flag, get_sequence_count, get_size, get_type,
+        is_telemetry_with_secondary_header, next_sequence_count, set_apid, set_fcn_code,
+        set_has_secondary_header, set_header_version, set_msg_time, set_segmentation_flag,
+        set_sequence_count, set_size, set_type, validate_checksum,
     };
 
     /// `CFE_MSG_GetNextSequenceCount` of cFE 7.0.1 (`cfe_msg_ccsdspri.c`), transcribed: increment
@@ -675,5 +739,133 @@ mod tests {
             Err(MsgError::BadArgument)
         );
         assert_eq!(validate_checksum(&truncated), Err(MsgError::BadArgument));
+    }
+
+    #[test]
+    fn msg_time_round_trip_truncation_and_preserves_adjacent_bytes() {
+        // Version 0 (000), Telemetry (0), Secondary Header (1), APID 0x123
+        let pri = [0x09, 0x23, 0xC0, 0x01, 0x00, 0x09];
+        assert!(is_telemetry_with_secondary_header(&pri));
+
+        let spare = [0xDE, 0xAD, 0xBE, 0xEF];
+        let mut hdr = [
+            pri[0], pri[1], pri[2], pri[3], pri[4], pri[5], 0, 0, 0, 0, 0, 0, spare[0], spare[1],
+            spare[2], spare[3],
+        ];
+        assert_eq!(get_msg_time(&hdr), Ok(SysTime::default()));
+
+        let cases = [
+            (
+                SysTime {
+                    seconds: 0,
+                    subseconds: 0,
+                },
+                SysTime {
+                    seconds: 0,
+                    subseconds: 0,
+                },
+                [0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            ),
+            (
+                SysTime {
+                    seconds: 0x1234_5678,
+                    subseconds: 0xABCD_EF12,
+                },
+                SysTime {
+                    seconds: 0x1234_5678,
+                    subseconds: 0xABCD_0000,
+                },
+                [0x12, 0x34, 0x56, 0x78, 0xAB, 0xCD],
+            ),
+            (
+                SysTime {
+                    seconds: u32::MAX,
+                    subseconds: u32::MAX,
+                },
+                SysTime {
+                    seconds: u32::MAX,
+                    subseconds: 0xFFFF_0000,
+                },
+                [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+            ),
+        ];
+
+        for (input, expected, expected_bytes) in cases {
+            assert_eq!(set_msg_time(&mut hdr, input), Ok(()));
+            assert_eq!(&hdr[..6], &pri);
+            assert_eq!(&hdr[6..12], &expected_bytes);
+            assert_eq!(&hdr[12..16], &spare);
+            assert_eq!(get_msg_time(&hdr), Ok(expected));
+        }
+
+        // All-0xFF header (except version=0, type=Tlm) decodes to max seconds and 0xFFFF0000 subseconds.
+        let mut all_ff = [0xFF; TELEMETRY_HEADER_LEN];
+        all_ff[0] = 0x0F; // version=0, type=Tlm, sec_hdr=1, apid=0x7FF
+        assert_eq!(
+            get_msg_time(&all_ff),
+            Ok(SysTime {
+                seconds: u32::MAX,
+                subseconds: 0xFFFF_0000,
+            })
+        );
+    }
+
+    #[test]
+    fn msg_time_wrong_msg_type() {
+        let valid_tlm = [
+            0x08, 0x00, 0xC0, 0x00, 0x00, 0x09, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0xAA, 0xBB,
+            0xCC, 0xDD,
+        ];
+        let new_time = SysTime {
+            seconds: 1,
+            subseconds: 0x1234_0000,
+        };
+
+        // Command packet (type bit = 1)
+        let mut cmd = valid_tlm;
+        cmd[0] |= 0x10;
+        assert!(!is_telemetry_with_secondary_header(&[
+            cmd[0], cmd[1], cmd[2], cmd[3], cmd[4], cmd[5],
+        ]));
+        let before = cmd;
+        assert_eq!(get_msg_time(&cmd), Err(MsgError::WrongMsgType));
+        assert_eq!(
+            set_msg_time(&mut cmd, new_time),
+            Err(MsgError::WrongMsgType)
+        );
+        assert_eq!(cmd, before);
+
+        // Wrong CCSDS version (version = 1)
+        let mut wrong_ver = valid_tlm;
+        wrong_ver[0] |= 0x20;
+        assert!(!is_telemetry_with_secondary_header(&[
+            wrong_ver[0],
+            wrong_ver[1],
+            wrong_ver[2],
+            wrong_ver[3],
+            wrong_ver[4],
+            wrong_ver[5],
+        ]));
+        let before = wrong_ver;
+        assert_eq!(get_msg_time(&wrong_ver), Err(MsgError::WrongMsgType));
+        assert_eq!(
+            set_msg_time(&mut wrong_ver, new_time),
+            Err(MsgError::WrongMsgType)
+        );
+        assert_eq!(wrong_ver, before);
+
+        // Missing secondary header flag (sec hdr bit = 0)
+        let mut no_sec = valid_tlm;
+        no_sec[0] &= !0x08;
+        assert!(!is_telemetry_with_secondary_header(&[
+            no_sec[0], no_sec[1], no_sec[2], no_sec[3], no_sec[4], no_sec[5],
+        ]));
+        let before = no_sec;
+        assert_eq!(get_msg_time(&no_sec), Err(MsgError::WrongMsgType));
+        assert_eq!(
+            set_msg_time(&mut no_sec, new_time),
+            Err(MsgError::WrongMsgType)
+        );
+        assert_eq!(no_sec, before);
     }
 }

@@ -9,7 +9,10 @@
 #![cfg_attr(not(test), no_std)]
 #![expect(unsafe_code, reason = "FFI crate implements C ABI exports")]
 
-use cfe_msg::{BadArgument, MsgError, PRIMARY_HEADER_LEN, PacketType, SequenceFlags};
+use cfe_msg::{
+    BadArgument, COMMAND_HEADER_LEN, MsgError, PRIMARY_HEADER_LEN, PacketType, SequenceFlags,
+    SysTime, TELEMETRY_HEADER_LEN,
+};
 
 /// `CFE_Status_t` of `cfe_error.h`.
 pub type CfeStatus = i32;
@@ -103,6 +106,56 @@ pub struct CfeMsgCommandHeader {
     /// Command secondary header (`CFE_MSG_CommandSecondaryHeader_t`).
     sec: CfeMsgCommandSecondaryHeader,
 }
+
+/// `CFE_TIME_SysTime_t` of `cfe_time_extern_typedefs.h` / `default_cfe_time_extern_typedefs.h`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CfeTimeSysTime {
+    /// Number of seconds since epoch.
+    seconds: u32,
+    /// Number of subseconds since epoch (LSB = 2^(-32) seconds).
+    subseconds: u32,
+}
+
+/// `CFE_MSG_TelemetrySecondaryHeader_t` of `default_cfe_msg_sechdr.h`.
+#[repr(C)]
+pub struct CfeMsgTelemetrySecondaryHeader {
+    /// Time, big endian: 4 byte seconds, 2 byte subseconds.
+    time: [u8; 6],
+}
+
+/// `CFE_MSG_TelemetryHeader_t` of `cfe_msg_api_typedefs.h` / `default_cfe_msg_hdr_pri.h`.
+#[repr(C)]
+pub struct CfeMsgTelemetryHeader {
+    /// Base message (`CFE_MSG_Message_t`).
+    msg: CfeMsgMessage,
+    /// Telemetry secondary header (`CFE_MSG_TelemetrySecondaryHeader_t`).
+    sec: CfeMsgTelemetrySecondaryHeader,
+    /// Pad to avoid compiler padding if payload requires 64-bit alignment.
+    spare: [u8; 4],
+}
+
+const _: () = {
+    use core::mem::{align_of, size_of};
+    assert!(size_of::<CfeMsgMessage>() == PRIMARY_HEADER_LEN && align_of::<CfeMsgMessage>() == 1);
+    assert!(
+        size_of::<CfeMsgCommandSecondaryHeader>() == 2
+            && align_of::<CfeMsgCommandSecondaryHeader>() == 1
+    );
+    assert!(
+        size_of::<CfeMsgCommandHeader>() == COMMAND_HEADER_LEN
+            && align_of::<CfeMsgCommandHeader>() == 1
+    );
+    assert!(size_of::<CfeTimeSysTime>() == 8 && align_of::<CfeTimeSysTime>() == 4);
+    assert!(
+        size_of::<CfeMsgTelemetrySecondaryHeader>() == 6
+            && align_of::<CfeMsgTelemetrySecondaryHeader>() == 1
+    );
+    assert!(
+        size_of::<CfeMsgTelemetryHeader>() == TELEMETRY_HEADER_LEN
+            && align_of::<CfeMsgTelemetryHeader>() == 1
+    );
+};
 
 /// `CFE_MSG_GetNextSequenceCount` of `cfe_msg.h`.
 #[unsafe(no_mangle)]
@@ -574,6 +627,111 @@ pub unsafe extern "C" fn CFE_MSG_ValidateChecksum(
         }
         Err(MsgError::BadArgument) => CFE_MSG_BAD_ARGUMENT,
         Err(MsgError::WrongMsgType) => CFE_MSG_WRONG_MSG_TYPE,
+    }
+}
+
+/// `CFE_MSG_GetMsgTime` of `cfe_msg.h`.
+///
+/// # Safety
+/// If non-null, `msg_ptr` must point to a valid `CFE_MSG_Message_t` (and, when it is a
+/// CCSDS v1 telemetry packet with a secondary header, a valid `CFE_MSG_TelemetryHeader_t`), and
+/// `time` must point to writable `CFE_TIME_SysTime_t` storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_MSG_GetMsgTime(
+    msg_ptr: *const CfeMsgMessage,
+    time: *mut CfeTimeSysTime,
+) -> CfeStatus {
+    if msg_ptr.is_null() || time.is_null() {
+        return CFE_MSG_BAD_ARGUMENT;
+    }
+    // SAFETY: `msg_ptr` is non-null, and the caller guarantees it points to a valid
+    // `CFE_MSG_Message_t` for the duration of this call.
+    let pri = unsafe { &(*msg_ptr).pri };
+    if !cfe_msg::is_telemetry_with_secondary_header(pri) {
+        // SAFETY: `time` is non-null, and the caller guarantees it points to writable
+        // `CFE_TIME_SysTime_t` storage.
+        unsafe {
+            *time = CfeTimeSysTime {
+                seconds: 0,
+                subseconds: 0,
+            };
+        }
+        return CFE_MSG_WRONG_MSG_TYPE;
+    }
+    // SAFETY: `msg_ptr` points to a valid telemetry message with a secondary header, so it is a
+    // `CFE_MSG_TelemetryHeader_t` (`CfeMsgTelemetryHeader`, align 1, size 16). `time` is non-null
+    // and writable.
+    unsafe {
+        let tlm = &*msg_ptr.cast::<CfeMsgTelemetryHeader>();
+        let [b0, b1, b2, b3, b4, b5] = tlm.msg.pri;
+        let [t0, t1, t2, t3, t4, t5] = tlm.sec.time;
+        let [sp0, sp1, sp2, sp3] = tlm.spare;
+        let hdr = [
+            b0, b1, b2, b3, b4, b5, t0, t1, t2, t3, t4, t5, sp0, sp1, sp2, sp3,
+        ];
+        match cfe_msg::get_msg_time(&hdr) {
+            Ok(t) => {
+                *time = CfeTimeSysTime {
+                    seconds: t.seconds,
+                    subseconds: t.subseconds,
+                };
+                CFE_SUCCESS
+            }
+            Err(MsgError::WrongMsgType) => {
+                *time = CfeTimeSysTime {
+                    seconds: 0,
+                    subseconds: 0,
+                };
+                CFE_MSG_WRONG_MSG_TYPE
+            }
+            Err(MsgError::BadArgument) => CFE_MSG_BAD_ARGUMENT,
+        }
+    }
+}
+
+/// `CFE_MSG_SetMsgTime` of `cfe_msg.h`.
+///
+/// # Safety
+/// If non-null, `msg_ptr` must point to a valid mutable `CFE_MSG_Message_t` (and, when it is a
+/// CCSDS v1 telemetry packet with a secondary header, a valid mutable
+/// `CFE_MSG_TelemetryHeader_t`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_MSG_SetMsgTime(
+    msg_ptr: *mut CfeMsgMessage,
+    new_time: CfeTimeSysTime,
+) -> CfeStatus {
+    if msg_ptr.is_null() {
+        return CFE_MSG_BAD_ARGUMENT;
+    }
+    // SAFETY: `msg_ptr` is non-null, and the caller guarantees it points to a valid mutable
+    // `CFE_MSG_Message_t` for the duration of this call.
+    let pri = unsafe { &(*msg_ptr).pri };
+    if !cfe_msg::is_telemetry_with_secondary_header(pri) {
+        return CFE_MSG_WRONG_MSG_TYPE;
+    }
+    // SAFETY: `msg_ptr` points to a valid mutable telemetry message with a secondary header, so
+    // it is a `CFE_MSG_TelemetryHeader_t` (`CfeMsgTelemetryHeader`, align 1, size 16).
+    unsafe {
+        let tlm = &mut *msg_ptr.cast::<CfeMsgTelemetryHeader>();
+        let [b0, b1, b2, b3, b4, b5] = tlm.msg.pri;
+        let [t0, t1, t2, t3, t4, t5] = tlm.sec.time;
+        let [sp0, sp1, sp2, sp3] = tlm.spare;
+        let mut hdr = [
+            b0, b1, b2, b3, b4, b5, t0, t1, t2, t3, t4, t5, sp0, sp1, sp2, sp3,
+        ];
+        let sys_time = SysTime {
+            seconds: new_time.seconds,
+            subseconds: new_time.subseconds,
+        };
+        match cfe_msg::set_msg_time(&mut hdr, sys_time) {
+            Ok(()) => {
+                let [_, _, _, _, _, _, r0, r1, r2, r3, r4, r5, ..] = hdr;
+                tlm.sec.time = [r0, r1, r2, r3, r4, r5];
+                CFE_SUCCESS
+            }
+            Err(MsgError::BadArgument) => CFE_MSG_BAD_ARGUMENT,
+            Err(MsgError::WrongMsgType) => CFE_MSG_WRONG_MSG_TYPE,
+        }
     }
 }
 
