@@ -22,6 +22,15 @@ pub const MAX_APID: u16 = Apid::MAX;
 /// Maximum 14-bit CCSDS Packet Sequence Count.
 pub const MAX_SEQUENCE_COUNT: u16 = SeqCount::MAX;
 
+/// Length in octets of `CFE_MSG_CommandHeader_t` (primary header + 2-byte secondary header).
+pub const COMMAND_HEADER_LEN: usize = PRIMARY_HEADER_LEN + 2;
+
+/// Maximum 7-bit command function code (`CFE_MSG_FC_MASK`).
+pub const MAX_FCN_CODE: u16 = FCN_CODE_MASK as u16;
+
+/// Expected CCSDS Packet Version Number for cFE messages (`CFE_MISSION_CCSDSVER`).
+const CCSDS_VERSION: u16 = 0;
+
 /// Byte index of the high octet of the Stream ID in the CCSDS Primary Header.
 const STREAM_ID_HI_IDX: usize = 0;
 
@@ -64,9 +73,25 @@ const SEG_FLAG_MASK: u8 = 0b11 << SEG_FLAG_SHIFT;
 /// Bitmask of the upper 6 bits of the 14-bit Sequence Count within `hdr[SEQUENCE_HI_IDX]`.
 const SEQ_COUNT_HI_MASK: u8 = 0x3F;
 
+/// Byte index of `FunctionCode` in `CFE_MSG_CommandHeader_t`.
+const FCN_CODE_IDX: usize = PRIMARY_HEADER_LEN;
+
+/// Bitmask of the 7-bit command function code (`CFE_MSG_FC_MASK`).
+const FCN_CODE_MASK: u8 = 0x7F;
+
 /// Error returned when an input argument is outside the valid CCSDS/cFE range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BadArgument;
+
+/// Error returned when accessing or mutating a secondary-header field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MsgError {
+    /// Input argument is outside the valid CCSDS/cFE range (`CFE_MSG_BAD_ARGUMENT`).
+    BadArgument,
+    /// Message header is not the expected CCSDS version, packet type, or lacks a secondary header
+    /// (`CFE_MSG_WRONG_MSG_TYPE`).
+    WrongMsgType,
+}
 
 /// The Packet Sequence Count that follows `count`: the behaviour of
 /// `CFE_MSG_GetNextSequenceCount`.
@@ -220,14 +245,58 @@ pub const fn set_sequence_count(
     Ok(())
 }
 
+/// Returns `true` if `pri` is a CCSDS version 0 telecommand packet with a secondary header.
+#[must_use]
+pub fn is_command_with_secondary_header(pri: &[u8; PRIMARY_HEADER_LEN]) -> bool {
+    get_header_version(pri) == CCSDS_VERSION
+        && get_type(pri) == PacketType::Telecommand
+        && get_has_secondary_header(pri)
+}
+
+/// Returns the 7-bit command function code: the behaviour of `CFE_MSG_GetFcnCode`.
+///
+/// # Errors
+/// Returns `Err(MsgError::WrongMsgType)` if the packet is not CCSDS version 0, is not a
+/// telecommand packet, or does not have a secondary header.
+pub fn get_fcn_code(hdr: &[u8; COMMAND_HEADER_LEN]) -> Result<u16, MsgError> {
+    let [b0, b1, b2, b3, b4, b5, fcn, _checksum] = *hdr;
+    let pri = [b0, b1, b2, b3, b4, b5];
+    if !is_command_with_secondary_header(&pri) {
+        return Err(MsgError::WrongMsgType);
+    }
+    Ok(u16::from(fcn & FCN_CODE_MASK))
+}
+
+/// Sets the 7-bit command function code: the behaviour of `CFE_MSG_SetFcnCode`.
+///
+/// # Errors
+/// Returns `Err(MsgError::BadArgument)` if `fcn_code > 0x7F`, or `Err(MsgError::WrongMsgType)` if
+/// the packet is not CCSDS version 0, is not a telecommand packet, or does not have a secondary
+/// header.
+pub fn set_fcn_code(hdr: &mut [u8; COMMAND_HEADER_LEN], fcn_code: u16) -> Result<(), MsgError> {
+    let Ok(fcn) = u8::try_from(fcn_code) else {
+        return Err(MsgError::BadArgument);
+    };
+    if fcn > FCN_CODE_MASK {
+        return Err(MsgError::BadArgument);
+    }
+    let [b0, b1, b2, b3, b4, b5, _, _] = *hdr;
+    let pri = [b0, b1, b2, b3, b4, b5];
+    if !is_command_with_secondary_header(&pri) {
+        return Err(MsgError::WrongMsgType);
+    }
+    hdr[FCN_CODE_IDX] = fcn;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        BadArgument, MAX_APID, MAX_HEADER_VERSION, MAX_SEQUENCE_COUNT, MAX_SIZE, PacketType,
-        SIZE_OFFSET, SequenceFlags, get_apid, get_has_secondary_header, get_header_version,
-        get_segmentation_flag, get_sequence_count, get_size, get_type, next_sequence_count,
-        set_apid, set_has_secondary_header, set_header_version, set_segmentation_flag,
-        set_sequence_count, set_size, set_type,
+        BadArgument, MAX_APID, MAX_FCN_CODE, MAX_HEADER_VERSION, MAX_SEQUENCE_COUNT, MAX_SIZE,
+        MsgError, PacketType, SIZE_OFFSET, SequenceFlags, get_apid, get_fcn_code,
+        get_has_secondary_header, get_header_version, get_segmentation_flag, get_sequence_count,
+        get_size, get_type, next_sequence_count, set_apid, set_fcn_code, set_has_secondary_header,
+        set_header_version, set_segmentation_flag, set_sequence_count, set_size, set_type,
     };
 
     /// `CFE_MSG_GetNextSequenceCount` of cFE 7.0.1 (`cfe_msg_ccsdspri.c`), transcribed: increment
@@ -377,5 +446,69 @@ mod tests {
         );
         assert_eq!(set_sequence_count(&mut hdr, u16::MAX), Err(BadArgument));
         assert_eq!(hdr, before);
+    }
+
+    #[test]
+    fn fcn_code_round_trip_and_preserves_adjacent_bytes() {
+        // Version 0 (000), Telecommand (1), Secondary Header (1), APID 0x123
+        let mut hdr = [0x19, 0x23, 0xC0, 0x01, 0x00, 0x01, 0x00, 0xAB];
+        assert_eq!(get_fcn_code(&hdr), Ok(0));
+
+        for fc in 0..=MAX_FCN_CODE {
+            assert_eq!(set_fcn_code(&mut hdr, fc), Ok(()));
+            assert_eq!(get_fcn_code(&hdr), Ok(fc));
+            assert_eq!(&hdr[..6], &[0x19, 0x23, 0xC0, 0x01, 0x00, 0x01]);
+            assert_eq!(hdr[7], 0xAB);
+        }
+
+        // get_fcn_code masks off bit 7 (reserved bit).
+        hdr[6] = 0xFF;
+        assert_eq!(get_fcn_code(&hdr), Ok(0x7F));
+        // set_fcn_code clears bit 7.
+        assert_eq!(set_fcn_code(&mut hdr, 0x2A), Ok(()));
+        assert_eq!(hdr[6], 0x2A);
+    }
+
+    #[test]
+    fn fcn_code_bounds_and_wrong_msg_type() {
+        let valid_cmd = [0x18, 0x00, 0xC0, 0x00, 0x00, 0x01, 0x55, 0xCC];
+        let mut hdr = valid_cmd;
+
+        assert_eq!(
+            set_fcn_code(&mut hdr, MAX_FCN_CODE + 1),
+            Err(MsgError::BadArgument)
+        );
+        assert_eq!(set_fcn_code(&mut hdr, u16::MAX), Err(MsgError::BadArgument));
+        assert_eq!(hdr, valid_cmd);
+
+        // Wrong CCSDS version (version = 1)
+        let mut wrong_ver = valid_cmd;
+        wrong_ver[0] |= 0x20;
+        assert_eq!(get_fcn_code(&wrong_ver), Err(MsgError::WrongMsgType));
+        let before = wrong_ver;
+        assert_eq!(set_fcn_code(&mut wrong_ver, 1), Err(MsgError::WrongMsgType));
+        assert_eq!(wrong_ver, before);
+
+        // Telemetry packet (type bit = 0)
+        let mut tlm = valid_cmd;
+        tlm[0] &= !0x10;
+        assert_eq!(get_fcn_code(&tlm), Err(MsgError::WrongMsgType));
+        let before = tlm;
+        assert_eq!(set_fcn_code(&mut tlm, 1), Err(MsgError::WrongMsgType));
+        assert_eq!(tlm, before);
+
+        // Missing secondary header flag (sec hdr bit = 0)
+        let mut no_sec = valid_cmd;
+        no_sec[0] &= !0x08;
+        assert_eq!(get_fcn_code(&no_sec), Err(MsgError::WrongMsgType));
+        let before = no_sec;
+        assert_eq!(set_fcn_code(&mut no_sec, 1), Err(MsgError::WrongMsgType));
+        assert_eq!(no_sec, before);
+
+        // BadArgument takes precedence over WrongMsgType in set_fcn_code (matching C).
+        assert_eq!(
+            set_fcn_code(&mut tlm, MAX_FCN_CODE + 1),
+            Err(MsgError::BadArgument)
+        );
     }
 }
