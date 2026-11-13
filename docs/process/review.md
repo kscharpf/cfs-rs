@@ -7,7 +7,7 @@ Protocol for independent review of pull requests on **cfs-rs**. Referenced by [`
 Do not spend review effort re-linting what `cargo fmt`, `cargo clippy`, and `make check` already enforce. Focus on what automated checks do not catch, **prioritizing type safety and compile-time guarantees of correctness**:
 
 1. **Type safety & compile-time guarantees (top priority):**
-   - Prefer strong, domain-specific Rust types (e.g., `aldis` types, bounded newtypes, enums, fixed-size arrays `[u8; N]`) over raw primitives (`u8`/`u16`/`usize`/slices) wherever invalid states can be made unrepresentable at compile time.
+   - Prefer strong, domain-specific Rust types (e.g., bounded newtypes, enums, fixed-size arrays `[u8; N]`) over raw primitives (`u8`/`u16`/`usize`/slices) wherever invalid states can be made unrepresentable at compile time.
    - Prefer `const fn`, exhaustive `match`, and compile-time layout/size assertions (`const { assert!(...) }`) for `#[repr(C)]` FFI structs over runtime checks or implicit assumptions.
    - Flag missed opportunities where a runtime check, sentinel value, or loosely typed parameter/return in `crates/cfe-msg` could be enforced by the Rust type system at compile time.
 2. **C ABI equivalence (`crates/cfe-msg-ffi` vs `cfs/`):**
@@ -16,8 +16,8 @@ Do not spend review effort re-linting what `cargo fmt`, `cargo clippy`, and `mak
 3. **`unsafe` soundness:**
    - Every `unsafe` block is in `crates/cfe-msg-ffi`, is minimal, and has an accurate `// SAFETY:` comment.
    - No `unsafe` in `crates/cfe-msg` (`#![forbid(unsafe_code)]`).
-4. **Aldis & Rust core (`crates/cfe-msg`):**
-   - Space Packet / time-code behaviour reuses `aldis` where applicable rather than reimplementing CCSDS bit layouts.
+4. **Rust core (`crates/cfe-msg`):**
+   - Space Packet / time-code behaviour matches CCSDS 133.0 / 301.0 and cFS conventions cleanly without duplicating logic.
    - No reachable panic paths (`no_std`, `panic = "abort"`).
    - Unit tests cover edge cases and compare against the C behaviour.
 5. **Symbol replacement (`modules/msg/replaced.cmake`):**

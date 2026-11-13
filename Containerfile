@@ -7,8 +7,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # The toolchain and components of rust-toolchain.toml, installed here so that no build downloads
-# them: keep the two in step. CARGO_HOME is a volume so the registry and the Aldis checkout are
-# kept between runs.
+# them: keep the two in step. CARGO_HOME is a volume so Cargo's cache is kept between runs.
 ENV RUSTUP_HOME=/opt/rustup \
     CARGO_HOME=/cargo \
     PATH=/opt/rustup-bin:/cargo/bin:$PATH

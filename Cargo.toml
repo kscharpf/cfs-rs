@@ -11,8 +11,6 @@ repository = "https://github.com/kscharpf/cfs-rs"
 publish = false
 
 [workspace.dependencies]
-# Aldis is consumed through its facade only, one feature per crate used.
-aldis = { git = "https://github.com/kscharpf/aldis.git", tag = "v0.6.0-m5", default-features = false }
 cfe-msg = { path = "crates/cfe-msg" }
 
 [workspace.lints.rust]

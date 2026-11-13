@@ -5,8 +5,7 @@ Rules for coding agents working on **cfs-rs**. Mechanics and process details are
 ## Sources of truth
 
 1. **cFS (`cfs/`)** is the reference for C signatures, types, status codes, and behaviour (`cfs/cfe/modules/core_api/fsw/inc/cfe_msg.h`, `cfs/cfe/modules/msg/fsw/src/`). **Do not edit anything inside `cfs/`**.
-2. **Aldis** (`aldis` dependency in `Cargo.toml`) provides CCSDS Space Packet and time-code primitives. Reuse Aldis types rather than reimplementing CCSDS packet logic; implement here only what cFS adds on top.
-3. **cFE MSG unit tests** (`coverage-msg-ALL`, run via `make rs`) are the behavioural oracle for the C ABI.
+2. **cFE MSG unit tests** (`coverage-msg-ALL`, run via `make rs`) are the behavioural oracle for the C ABI.
 
 ## Crate and module boundaries
 
