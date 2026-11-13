@@ -1,0 +1,6 @@
+{
+  global:
+    LINK_LAB_AppMain;
+  local:
+    *;
+};

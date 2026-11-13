@@ -1,0 +1,6 @@
+{
+  global:
+    STEP_LAB_AppMain;
+  local:
+    *;
+};
