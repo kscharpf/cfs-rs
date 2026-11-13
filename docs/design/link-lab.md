@@ -55,7 +55,7 @@ This design reuses two accepted ACFS decisions unchanged, because they are about
 
 ### 3.2 In Aldis
 
-Read from the local Aldis checkout at `4e4468f9` (812 commits after tag `v0.6.0-m5`, 21 behind `origin/main`), not from the tag cfs-rs pins today.
+Read from the local Aldis checkout at `4e4468f9` (812 commits after `v0.6.0-m5`, the newest tag; 21 behind `origin/main`). cfs-rs has had no Aldis dependency since #10, so this plan chooses the pin afresh (L9).
 
 | In place | Missing |
 |---|---|
@@ -69,7 +69,7 @@ Read from the local Aldis checkout at `4e4468f9` (812 commits after tag `v0.6.0-
 | # | Need | Why | Size |
 |---|---|---|---|
 | A-1 | The node protocol of reference-application §8.2 in the harness, over TCP, with a launcher that can start an external `core-cpu1` (ACFS WP-2) | Without it no cFS node can be checked against a trace | M |
-| A-2 | A tag or agreed revision that contains `refapp/` at A3 and the golden traces | cfs-rs pins Aldis by tag; the pinned tag predates the traces | S |
+| A-2 | A tag or agreed revision that contains `refapp/` at A3 and the golden traces | The newest tag predates the traces, so there is nothing stable to pin (L9) | S |
 | A-3 | The packet-level phases of `FlightNode` made public, or an equivalent entry point per phase | `scn_lab` must run the scenario's steps one at a time (§4.5). Without it, `scn_lab` re-implements about 230 lines of `handler.rs` sequencing | S |
 | A-4 | `SpacePacketHeader` decode made public | Lets `link_lab` route on APID from six octets. Not blocking: `SpacePacket::decode` works because packets arrive whole | S |
 
@@ -131,7 +131,7 @@ harness (Aldis refapp-harness, std)        cFS process core-cpu1 (pc-linux PSP, 
 | `apps/*/CMakeLists.txt` | CMake | — | `add_cfe_app` with the Cargo-built static library, following `modules/msg/CMakeLists.txt` |
 | `node_defs/` | cFS mission defs | — | `targets.cmake` (app list), platform and mission configuration, startup script, message ID allocation |
 
-The Aldis dependency is confined to `link-lab-core` and `scn_lab`. `cfe-sys`, `cfe`, `step_lab`, and the MSG crates do not depend on it.
+cfs-rs has no Aldis dependency today (removed from the MSG crates in #10). This plan adds it back for `link-lab-core` and `scn_lab` only. `cfe-sys`, `cfe`, `step_lab`, and the MSG crates stay free of it.
 
 ### 4.3 link-lab-core
 
@@ -257,7 +257,7 @@ The differential level is the one to build first. It checks the link logic again
 | L8 | Transport | Node protocol over loopback TCP through OSAL, as ACFS D9 | stdin/stdout (the OSAL console owns stdout, F15) |
 | L9 | Aldis pin | One revision for the library, `refapp-flight`, `refapp-scenario`, the harness, and the traces, moved to a tag once A-2 exists | Separate pins (the traces and the library that produced them could disagree) |
 | L10 | ACFS | Stays on hold; A-1 is done once and serves both | Do ACFS's packet phase first to solve the cFS time and lockstep questions in C (less risk per step, more total work) |
-| L11 | New dependencies and tools | `bindgen` and `libclang` in the container; `aldis` features `tm`, `tc`, `link`, `cop1`, `time`, `spp-time`; git dependencies on `refapp-flight` and `refapp-scenario` | — |
+| L11 | New dependencies and tools | `bindgen` and `libclang` in the container; `aldis` as a workspace dependency again, with features `core`, `spp`, `tm`, `tc`, `link`, `cop1`, `time`, `spp-time`; git dependencies on `refapp-flight` and `refapp-scenario` | — |
 | L12 | Names | `link_lab`, `step_lab`, `scn_lab`; crate `cfe` for the safe wrappers | `tmtc_lab`; `cfe-rs` |
 
 ## 7. Work packages
@@ -272,7 +272,7 @@ WP-0 decisions ─┬─▶ WP-1 bindings and skeleton ─┬─▶ WP-3 step_la
 
 ### WP-0 Decisions (S)
 
-L1–L12 accepted or changed. A-1 to A-3 raised in Aldis. `AGENTS.md` extended with the `apps/` and `crates/cfe*` boundaries. Independent of this plan, the Aldis dependency is removed from `cfe-msg`.
+L1–L12 accepted or changed. A-1 to A-3 raised in Aldis. `AGENTS.md` extended with the `apps/` and `crates/cfe*` boundaries. `AGENTS.md` also gains the rule that Aldis is used under `apps/` only.
 
 **Done when:** this document's status is "accepted" and the Aldis issues exist.
 
