@@ -41,4 +41,4 @@ Run before committing or reporting a round done:
 - **Reviewer** (`gemini-4-hydrogen-xhigh`): independent read-only review of one PR; posts findings on GitHub.
 
 End every GitHub PR comment or review posted by an agent with:
-`🤖 Generated with [Claude Code](https://claude.com/claude-code)`
+`🤖 Generated with Gemini`

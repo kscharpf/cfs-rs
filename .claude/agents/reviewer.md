@@ -9,4 +9,4 @@ You review one cfs-rs pull request independently. You have not seen the implemen
 
 Read first: `AGENTS.md`, `docs/process/review.md`, and the PR diff (`gh pr diff <n> --name-only`, then `git diff origin/main...<head> -- <path>` file by file). Compare the Rust implementation and FFI exports against `cfs/cfe/modules/core_api/fsw/inc/cfe_msg.h` and `cfs/cfe/modules/msg/fsw/src/`.
 
-Follow `docs/process/review.md` for everything else: what to check, what to report, and how to post.
+Follow `docs/process/review.md` for everything else: what to check (prioritizing type safety and compile-time guarantees of correctness), what to report, and how to post.
