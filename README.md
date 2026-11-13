@@ -16,7 +16,7 @@ cFS is not forked or patched. The `cfs` directory is a git submodule at an unmod
 
 | Path | Content |
 |---|---|
-| `crates/cfe-msg` | Safe Rust core, `no_std`, no `unsafe`: the behaviour of each `CFE_MSG_*` function. Uses [Aldis](https://github.com/kscharpf/aldis) for Space Packet behaviour. |
+| `crates/cfe-msg` | Safe Rust core, `no_std`, no `unsafe`: the behaviour of each `CFE_MSG_*` function and CCSDS Space Packet primary-header primitives. |
 | `crates/cfe-msg-ffi` | The static library: `extern "C"` exports under the cFE names. All `unsafe` goes here. The header is cFE's own `cfe_msg.h`. |
 | `modules/msg` | CMake glue that the cFS build uses in place of `cfe/modules/msg`. |
 | `cfs` | The cFS bundle, a submodule. Do not edit it. |

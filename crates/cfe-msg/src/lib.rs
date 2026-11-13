@@ -1,26 +1,74 @@
 //! Safe Rust core of a replacement for the cFE MSG module.
 //!
 //! Each function here is the behaviour of one `CFE_MSG_*` function of cFE, without pointers or
-//! C types. The `cfe-msg-ffi` crate exports them under the C names. Space Packet behaviour comes
-//! from Aldis; what cFS adds to the Blue Book is implemented here.
+//! C types. The `cfe-msg-ffi` crate exports them under the C names. CCSDS Space Packet
+//! primary-header primitives and what cFS adds to the Blue Book are implemented here.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
-use aldis::core::ids::{Apid, PacketVersion, SeqCount};
-pub use aldis::spp::{
-    MAX_PACKET_LEN as MAX_SIZE, MIN_PACKET_LEN as SIZE_OFFSET, PRIMARY_HEADER_LEN, PacketType,
-    SequenceFlags,
-};
+/// Length in octets of a CCSDS Space Packet Primary Header.
+pub const PRIMARY_HEADER_LEN: usize = 6;
+
+/// Minimum CCSDS Space Packet length in octets (`PRIMARY_HEADER_LEN + 1` data octet).
+///
+/// CCSDS `PacketDataLength` encodes `total_size - SIZE_OFFSET`.
+pub const SIZE_OFFSET: usize = PRIMARY_HEADER_LEN + 1;
+
+/// Maximum CCSDS Space Packet length in octets (`65535 + SIZE_OFFSET`).
+pub const MAX_SIZE: usize = 65_535_usize.saturating_add(SIZE_OFFSET);
 
 /// Maximum 3-bit CCSDS Packet Version Number.
-pub const MAX_HEADER_VERSION: u16 = PacketVersion::MAX as u16;
+pub const MAX_HEADER_VERSION: u16 = 0b111;
 
 /// Maximum 11-bit CCSDS Application Process Identifier.
-pub const MAX_APID: u16 = Apid::MAX;
+pub const MAX_APID: u16 = 0x07FF;
 
 /// Maximum 14-bit CCSDS Packet Sequence Count.
-pub const MAX_SEQUENCE_COUNT: u16 = SeqCount::MAX;
+pub const MAX_SEQUENCE_COUNT: u16 = 0x3FFF;
+
+/// CCSDS Space Packet Type (CCSDS 133.0-B-2 §4.1.3.2.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PacketType {
+    /// Telemetry (reporting) packet (`0`).
+    Telemetry = 0,
+    /// Telecommand (requesting) packet (`1`).
+    Telecommand = 1,
+}
+
+/// CCSDS Space Packet Sequence Flags (CCSDS 133.0-B-2 §4.1.3.3.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SequenceFlags {
+    /// Continuation segment of a user data sequence (`0b00`).
+    Continuation = 0b00,
+    /// First segment of a user data sequence (`0b01`).
+    First = 0b01,
+    /// Last segment of a user data sequence (`0b10`).
+    Last = 0b10,
+    /// Unsegmented user data (`0b11`).
+    Unsegmented = 0b11,
+}
+
+impl SequenceFlags {
+    /// Decodes the 2-bit CCSDS Sequence Flags from the low two bits of `bits`.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        match bits & 0b11 {
+            0b00 => Self::Continuation,
+            0b01 => Self::First,
+            0b10 => Self::Last,
+            _ => Self::Unsegmented,
+        }
+    }
+
+    /// Returns the 2-bit CCSDS encoding (`0..=3`) of this flag.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self as u8
+    }
+}
 
 /// Length in octets of `CFE_MSG_CommandHeader_t` (primary header + 2-byte secondary header).
 pub const COMMAND_HEADER_LEN: usize = PRIMARY_HEADER_LEN + 2;
@@ -116,9 +164,10 @@ pub struct SysTime {
 /// `uint16`, and for a value above 16 383 it returns 0; this function does the same.
 #[must_use]
 pub const fn next_sequence_count(count: u16) -> u16 {
-    match SeqCount::new(count) {
-        Some(valid) => valid.next().get(),
-        None => 0,
+    if count <= MAX_SEQUENCE_COUNT {
+        count.wrapping_add(1) & MAX_SEQUENCE_COUNT
+    } else {
+        0
     }
 }
 
@@ -192,14 +241,19 @@ pub fn get_header_version(hdr: &[u8; PRIMARY_HEADER_LEN]) -> u16 {
 ///
 /// # Errors
 /// Returns `Err(BadArgument)` if `version > 7`.
-pub fn set_header_version(
+pub const fn set_header_version(
     hdr: &mut [u8; PRIMARY_HEADER_LEN],
     version: u16,
 ) -> Result<(), BadArgument> {
-    let Some(ver) = u8::try_from(version).ok().and_then(PacketVersion::new) else {
+    if version > MAX_HEADER_VERSION {
         return Err(BadArgument);
-    };
-    hdr[STREAM_ID_HI_IDX] = (hdr[STREAM_ID_HI_IDX] & !VERSION_MASK) | (ver.get() << VERSION_SHIFT);
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "version is verified <= MAX_HEADER_VERSION (7), which fits in u8"
+    )]
+    let ver = version as u8;
+    hdr[STREAM_ID_HI_IDX] = (hdr[STREAM_ID_HI_IDX] & !VERSION_MASK) | (ver << VERSION_SHIFT);
     Ok(())
 }
 
@@ -214,10 +268,10 @@ pub const fn get_apid(hdr: &[u8; PRIMARY_HEADER_LEN]) -> u16 {
 /// # Errors
 /// Returns `Err(BadArgument)` if `apid > 0x07FF`.
 pub const fn set_apid(hdr: &mut [u8; PRIMARY_HEADER_LEN], apid: u16) -> Result<(), BadArgument> {
-    let Some(valid) = Apid::new(apid) else {
+    if apid > MAX_APID {
         return Err(BadArgument);
-    };
-    let [hi, lo] = valid.get().to_be_bytes();
+    }
+    let [hi, lo] = apid.to_be_bytes();
     hdr[STREAM_ID_HI_IDX] = (hdr[STREAM_ID_HI_IDX] & !APID_HI_MASK) | hi;
     hdr[STREAM_ID_LO_IDX] = lo;
     Ok(())
@@ -252,10 +306,10 @@ pub const fn set_sequence_count(
     hdr: &mut [u8; PRIMARY_HEADER_LEN],
     count: u16,
 ) -> Result<(), BadArgument> {
-    let Some(valid) = SeqCount::new(count) else {
+    if count > MAX_SEQUENCE_COUNT {
         return Err(BadArgument);
-    };
-    let [hi, lo] = valid.get().to_be_bytes();
+    }
+    let [hi, lo] = count.to_be_bytes();
     hdr[SEQUENCE_HI_IDX] = (hdr[SEQUENCE_HI_IDX] & !SEQ_COUNT_HI_MASK) | hi;
     hdr[SEQUENCE_LO_IDX] = lo;
     Ok(())
@@ -557,6 +611,26 @@ mod tests {
             assert_eq!(&hdr[..2], &[0x12, 0x34]);
             assert_eq!(&hdr[3..], &[0xAB, 0xCD, 0xEF]);
         }
+    }
+
+    #[test]
+    fn sequence_flags_bits_and_masking() {
+        for (bits, flag) in [
+            (0b00, SequenceFlags::Continuation),
+            (0b01, SequenceFlags::First),
+            (0b10, SequenceFlags::Last),
+            (0b11, SequenceFlags::Unsegmented),
+        ] {
+            assert_eq!(flag.bits(), bits);
+            assert_eq!(SequenceFlags::from_bits(bits), flag);
+            assert_eq!(SequenceFlags::from_bits(0b1111_1100 | bits), flag);
+        }
+        assert_eq!(PRIMARY_HEADER_LEN, 6);
+        assert_eq!(SIZE_OFFSET, 7);
+        assert_eq!(MAX_SIZE, 65_542);
+        assert_eq!(MAX_HEADER_VERSION, 7);
+        assert_eq!(MAX_APID, 0x07FF);
+        assert_eq!(MAX_SEQUENCE_COUNT, 0x3FFF);
     }
 
     #[test]
