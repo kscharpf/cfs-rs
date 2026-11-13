@@ -47,5 +47,5 @@ Every statement about the implementation must cite `path:line` and quote the rel
 - Read the diff file by file: `gh pr diff <n> --name-only`, then `git diff origin/main...<head> -- <path>` for each file.
 - Before posting, check `gh pr view <n> --json reviews` to avoid duplicate reviews of the same head.
 - Post with `gh pr review <n> --comment` (marking each finding **blocking** or **non-blocking** in the body). End the body with:
-  `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
+  `🤖 Generated with Gemini`
 - Return a short summary to the coordinator: findings ranked by severity with `path:line`, and the nit batch.

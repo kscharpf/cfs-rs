@@ -23,7 +23,7 @@ Every brief must state:
 
 In a fix round, after pushing the fix commit:
 - Post a point-by-point reply on the PR (`gh pr comment <n>`) quoting the pushed head commit (at least 7 hex chars, e.g., `Fix round, head abc1234`) and ending with:
-  `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
+  `🤖 Generated with Gemini`
 
 ## The report
 
