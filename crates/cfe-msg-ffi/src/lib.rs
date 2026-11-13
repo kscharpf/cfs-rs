@@ -9,7 +9,7 @@
 #![cfg_attr(not(test), no_std)]
 #![expect(unsafe_code, reason = "FFI crate implements C ABI exports")]
 
-use cfe_msg::{BadArgument, PRIMARY_HEADER_LEN, PacketType, SequenceFlags};
+use cfe_msg::{BadArgument, MsgError, PRIMARY_HEADER_LEN, PacketType, SequenceFlags};
 
 /// `CFE_Status_t` of `cfe_error.h`.
 pub type CfeStatus = i32;
@@ -24,8 +24,18 @@ const CFE_SUCCESS: CfeStatus = 0;
 )]
 const CFE_MSG_BAD_ARGUMENT: CfeStatus = 0xca00_0003_u32 as i32;
 
+/// `CFE_MSG_WRONG_MSG_TYPE` (`CFE_SB_WRONG_MSG_TYPE`) of `cfe_error.h`.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "CFE_MSG_WRONG_MSG_TYPE is 0xCA00000D as a signed 32-bit CFE_Status_t"
+)]
+const CFE_MSG_WRONG_MSG_TYPE: CfeStatus = 0xca00_000d_u32 as i32;
+
 /// `CFE_MSG_ApId_t` of `cfe_msg_api_typedefs.h`.
 pub type CfeMsgApId = u16;
+
+/// `CFE_MSG_FcnCode_t` of `cfe_msg_api_typedefs.h`.
+pub type CfeMsgFcnCode = u16;
 
 /// `CFE_MSG_SequenceCount_t` of `cfe_msg_api_typedefs.h`.
 pub type CfeMsgSequenceCount = u16;
@@ -74,6 +84,24 @@ const fn status_from_result(res: Result<(), BadArgument>) -> CfeStatus {
 pub struct CfeMsgMessage {
     /// CCSDS Primary Header bytes (`CCSDS_PrimaryHeader_t`).
     pri: [u8; PRIMARY_HEADER_LEN],
+}
+
+/// `CFE_MSG_CommandSecondaryHeader_t` of `default_cfe_msg_sechdr.h`.
+#[repr(C)]
+pub struct CfeMsgCommandSecondaryHeader {
+    /// Command function code (bits 0..=6) and reserved bit 7.
+    function_code: u8,
+    /// Command checksum.
+    checksum: u8,
+}
+
+/// `CFE_MSG_CommandHeader_t` of `cfe_msg_api_typedefs.h` / `default_cfe_msg_hdr_pri.h`.
+#[repr(C)]
+pub struct CfeMsgCommandHeader {
+    /// Base message (`CFE_MSG_Message_t`).
+    msg: CfeMsgMessage,
+    /// Command secondary header (`CFE_MSG_CommandSecondaryHeader_t`).
+    sec: CfeMsgCommandSecondaryHeader,
 }
 
 /// `CFE_MSG_GetNextSequenceCount` of `cfe_msg.h`.
@@ -377,6 +405,107 @@ pub unsafe extern "C" fn CFE_MSG_SetSequenceCount(
     // SAFETY: `msg_ptr` is non-null, and the caller guarantees it points to a valid mutable
     // `CFE_MSG_Message_t` for the duration of this call.
     status_from_result(unsafe { cfe_msg::set_sequence_count(&mut (*msg_ptr).pri, seq_cnt) })
+}
+
+/// `CFE_MSG_GetFcnCode` of `cfe_msg.h`.
+///
+/// # Safety
+/// If non-null, `msg_ptr` must point to a valid `CFE_MSG_Message_t` (and, when it is a
+/// CCSDS v1 command packet with a secondary header, a valid `CFE_MSG_CommandHeader_t`), and
+/// `fcn_code` must point to writable `CFE_MSG_FcnCode_t` storage.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_MSG_GetFcnCode(
+    msg_ptr: *const CfeMsgMessage,
+    fcn_code: *mut CfeMsgFcnCode,
+) -> CfeStatus {
+    if msg_ptr.is_null() || fcn_code.is_null() {
+        return CFE_MSG_BAD_ARGUMENT;
+    }
+    // SAFETY: `msg_ptr` is non-null, and the caller guarantees it points to a valid
+    // `CFE_MSG_Message_t` for the duration of this call.
+    let pri = unsafe { &(*msg_ptr).pri };
+    if !cfe_msg::is_command_with_secondary_header(pri) {
+        // SAFETY: `fcn_code` is non-null, and the caller guarantees it points to writable
+        // `CFE_MSG_FcnCode_t` storage.
+        unsafe {
+            *fcn_code = 0;
+        }
+        return CFE_MSG_WRONG_MSG_TYPE;
+    }
+    // SAFETY: `msg_ptr` points to a valid command message with a secondary header, so it is a
+    // `CFE_MSG_CommandHeader_t` (`CfeMsgCommandHeader`, align 1, size 8). `fcn_code` is non-null
+    // and writable.
+    unsafe {
+        let cmd = &*msg_ptr.cast::<CfeMsgCommandHeader>();
+        let [b0, b1, b2, b3, b4, b5] = cmd.msg.pri;
+        let hdr = [
+            b0,
+            b1,
+            b2,
+            b3,
+            b4,
+            b5,
+            cmd.sec.function_code,
+            cmd.sec.checksum,
+        ];
+        match cfe_msg::get_fcn_code(&hdr) {
+            Ok(code) => {
+                *fcn_code = code;
+                CFE_SUCCESS
+            }
+            Err(MsgError::WrongMsgType) => {
+                *fcn_code = 0;
+                CFE_MSG_WRONG_MSG_TYPE
+            }
+            Err(MsgError::BadArgument) => CFE_MSG_BAD_ARGUMENT,
+        }
+    }
+}
+
+/// `CFE_MSG_SetFcnCode` of `cfe_msg.h`.
+///
+/// # Safety
+/// If non-null, `msg_ptr` must point to a valid mutable `CFE_MSG_Message_t` (and, when it is a
+/// CCSDS v1 command packet with a secondary header, a valid mutable `CFE_MSG_CommandHeader_t`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_MSG_SetFcnCode(
+    msg_ptr: *mut CfeMsgMessage,
+    fcn_code: CfeMsgFcnCode,
+) -> CfeStatus {
+    if msg_ptr.is_null() || fcn_code > cfe_msg::MAX_FCN_CODE {
+        return CFE_MSG_BAD_ARGUMENT;
+    }
+    // SAFETY: `msg_ptr` is non-null, and the caller guarantees it points to a valid mutable
+    // `CFE_MSG_Message_t` for the duration of this call.
+    let pri = unsafe { &(*msg_ptr).pri };
+    if !cfe_msg::is_command_with_secondary_header(pri) {
+        return CFE_MSG_WRONG_MSG_TYPE;
+    }
+    // SAFETY: `msg_ptr` points to a valid mutable command message with a secondary header, so it
+    // is a `CFE_MSG_CommandHeader_t` (`CfeMsgCommandHeader`, align 1, size 8).
+    unsafe {
+        let cmd = &mut *msg_ptr.cast::<CfeMsgCommandHeader>();
+        let [b0, b1, b2, b3, b4, b5] = cmd.msg.pri;
+        let mut hdr = [
+            b0,
+            b1,
+            b2,
+            b3,
+            b4,
+            b5,
+            cmd.sec.function_code,
+            cmd.sec.checksum,
+        ];
+        match cfe_msg::set_fcn_code(&mut hdr, fcn_code) {
+            Ok(()) => {
+                let [.., fc, _] = hdr;
+                cmd.sec.function_code = fc;
+                CFE_SUCCESS
+            }
+            Err(MsgError::BadArgument) => CFE_MSG_BAD_ARGUMENT,
+            Err(MsgError::WrongMsgType) => CFE_MSG_WRONG_MSG_TYPE,
+        }
+    }
 }
 
 #[cfg(not(test))]
