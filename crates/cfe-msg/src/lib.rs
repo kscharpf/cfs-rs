@@ -233,8 +233,8 @@ pub const fn set_has_secondary_header(hdr: &mut [u8; PRIMARY_HEADER_LEN], has_se
 
 /// Returns the 3-bit CCSDS Packet Version Number: the behaviour of `CFE_MSG_GetHeaderVersion`.
 #[must_use]
-pub fn get_header_version(hdr: &[u8; PRIMARY_HEADER_LEN]) -> u16 {
-    u16::from(hdr[STREAM_ID_HI_IDX] >> VERSION_SHIFT)
+pub const fn get_header_version(hdr: &[u8; PRIMARY_HEADER_LEN]) -> u16 {
+    u16::from_be_bytes([0, hdr[STREAM_ID_HI_IDX] >> VERSION_SHIFT])
 }
 
 /// Sets the 3-bit CCSDS Packet Version Number: the behaviour of `CFE_MSG_SetHeaderVersion`.
@@ -248,11 +248,7 @@ pub const fn set_header_version(
     if version > MAX_HEADER_VERSION {
         return Err(BadArgument);
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "version is verified <= MAX_HEADER_VERSION (7), which fits in u8"
-    )]
-    let ver = version as u8;
+    let [_, ver] = version.to_be_bytes();
     hdr[STREAM_ID_HI_IDX] = (hdr[STREAM_ID_HI_IDX] & !VERSION_MASK) | (ver << VERSION_SHIFT);
     Ok(())
 }

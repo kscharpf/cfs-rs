@@ -1,4 +1,4 @@
-# Pinned stable toolchain satisfying Aldis's `rust-version` (1.99.1).
+# Pinned stable toolchain matching `workspace.package.rust-version` in Cargo.toml.
 [toolchain]
 channel = "1.100.0"
 profile = "minimal"
