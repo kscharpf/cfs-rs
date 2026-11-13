@@ -1,6 +1,6 @@
 # link_lab — design and work plan
 
-**Status:** proposed, for maintainer review. Every decision in §6 is a recommendation, not yet accepted.
+**Status:** accepted (L1–L12 accepted as recommended by the maintainer).
 **Scope:** `link_lab`, a cFS application written in Rust that carries Space Packets over CCSDS TM and TC frames with COP-1, using [Aldis](https://github.com/kscharpf/aldis); and the smallest cFS flight node around it that can be checked against the Aldis reference-application golden traces.
 
 ## Summary
@@ -68,10 +68,10 @@ Read from the local Aldis checkout at `4e4468f9` (812 commits after `v0.6.0-m5`,
 
 | # | Need | Why | Size |
 |---|---|---|---|
-| A-1 | The node protocol of reference-application §8.2 in the harness, over TCP, with a launcher that can start an external `core-cpu1` (ACFS WP-2) | Without it no cFS node can be checked against a trace | M |
-| A-2 | A tag or agreed revision that contains `refapp/` at A3 and the golden traces | The newest tag predates the traces, so there is nothing stable to pin (L9) | S |
-| A-3 | The packet-level phases of `FlightNode` made public, or an equivalent entry point per phase | `scn_lab` must run the scenario's steps one at a time (§4.5). Without it, `scn_lab` re-implements about 230 lines of `handler.rs` sequencing | S |
-| A-4 | `SpacePacketHeader` decode made public | Lets `link_lab` route on APID from six octets. Not blocking: `SpacePacket::decode` works because packets arrive whole | S |
+| [A-1](https://github.com/kscharpf/aldis/issues/588) | The node protocol of reference-application §8.2 in the harness, over TCP, with a launcher that can start an external `core-cpu1` (ACFS WP-2) | Without it no cFS node can be checked against a trace | M |
+| [A-2](https://github.com/kscharpf/aldis/issues/589) | A tag or agreed revision that contains `refapp/` at A3 and the golden traces | The newest tag predates the traces, so there is nothing stable to pin (L9) | S |
+| [A-3](https://github.com/kscharpf/aldis/issues/590) | The packet-level phases of `FlightNode` made public, or an equivalent entry point per phase | `scn_lab` must run the scenario's steps one at a time (§4.5). Without it, `scn_lab` re-implements about 230 lines of `handler.rs` sequencing | S |
+| [A-4](https://github.com/kscharpf/aldis/issues/591) | `SpacePacketHeader` decode made public | Lets `link_lab` route on APID from six octets. Not blocking: `SpacePacket::decode` works because packets arrive whole | S |
 
 A-1 is the critical path. It is the same work whether ACFS or this plan uses it first.
 
