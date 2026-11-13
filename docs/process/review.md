@@ -4,22 +4,26 @@ Protocol for independent review of pull requests on **cfs-rs**. Referenced by [`
 
 ## What to check
 
-Do not spend review effort re-linting what `cargo fmt`, `cargo clippy`, and `make check` already enforce. Focus on what automated checks do not catch:
+Do not spend review effort re-linting what `cargo fmt`, `cargo clippy`, and `make check` already enforce. Focus on what automated checks do not catch, **prioritizing type safety and compile-time guarantees of correctness**:
 
-1. **C ABI equivalence (`crates/cfe-msg-ffi` vs `cfs/`):**
+1. **Type safety & compile-time guarantees (top priority):**
+   - Prefer strong, domain-specific Rust types (e.g., `aldis` types, bounded newtypes, enums, fixed-size arrays `[u8; N]`) over raw primitives (`u8`/`u16`/`usize`/slices) wherever invalid states can be made unrepresentable at compile time.
+   - Prefer `const fn`, exhaustive `match`, and compile-time layout/size assertions (`const { assert!(...) }`) for `#[repr(C)]` FFI structs over runtime checks or implicit assumptions.
+   - Flag missed opportunities where a runtime check, sentinel value, or loosely typed parameter/return in `crates/cfe-msg` could be enforced by the Rust type system at compile time.
+2. **C ABI equivalence (`crates/cfe-msg-ffi` vs `cfs/`):**
    - Signatures, parameter types, and return types match `cfs/cfe/modules/core_api/fsw/inc/cfe_msg.h` and `cfe_msg_api_typedefs.h` exactly.
    - Null-pointer checks, out-param initialisation, and `CFE_Status_t` return values match the C implementation in `cfs/cfe/modules/msg/fsw/src/` for every error and boundary case.
-2. **`unsafe` soundness:**
+3. **`unsafe` soundness:**
    - Every `unsafe` block is in `crates/cfe-msg-ffi`, is minimal, and has an accurate `// SAFETY:` comment.
    - No `unsafe` in `crates/cfe-msg` (`#![forbid(unsafe_code)]`).
-3. **Aldis & Rust core (`crates/cfe-msg`):**
+4. **Aldis & Rust core (`crates/cfe-msg`):**
    - Space Packet / time-code behaviour reuses `aldis` where applicable rather than reimplementing CCSDS bit layouts.
    - No reachable panic paths (`no_std`, `panic = "abort"`).
    - Unit tests cover edge cases and compare against the C behaviour.
-4. **Symbol replacement (`modules/msg/replaced.cmake`):**
+5. **Symbol replacement (`modules/msg/replaced.cmake`):**
    - Every `#[unsafe(no_mangle)]` function in `crates/cfe-msg-ffi` is listed in `modules/msg/replaced.cmake` (and vice versa).
    - `cfs/` is completely unmodified.
-5. **Verification evidence:**
+6. **Verification evidence:**
    - The PR includes passing `make check` and `make rs` (`coverage-msg-ALL` + `scripts/check-symbols.sh`) output for the current head.
 
 ## Grounding rule
