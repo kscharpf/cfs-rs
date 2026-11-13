@@ -7,16 +7,32 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-use aldis::core::ids::{PacketVersion, SeqCount};
+use aldis::core::ids::{Apid, PacketVersion, SeqCount};
 pub use aldis::spp::{
     MAX_PACKET_LEN as MAX_SIZE, MIN_PACKET_LEN as SIZE_OFFSET, PRIMARY_HEADER_LEN, PacketType,
+    SequenceFlags,
 };
 
 /// Maximum 3-bit CCSDS Packet Version Number.
 pub const MAX_HEADER_VERSION: u16 = PacketVersion::MAX as u16;
 
+/// Maximum 11-bit CCSDS Application Process Identifier.
+pub const MAX_APID: u16 = Apid::MAX;
+
+/// Maximum 14-bit CCSDS Packet Sequence Count.
+pub const MAX_SEQUENCE_COUNT: u16 = SeqCount::MAX;
+
 /// Byte index of the high octet of the Stream ID in the CCSDS Primary Header.
 const STREAM_ID_HI_IDX: usize = 0;
+
+/// Byte index of the low octet of the Stream ID in the CCSDS Primary Header.
+const STREAM_ID_LO_IDX: usize = 1;
+
+/// Byte index of the high octet of Packet Sequence Control in the CCSDS Primary Header.
+const SEQUENCE_HI_IDX: usize = 2;
+
+/// Byte index of the low octet of Packet Sequence Control in the CCSDS Primary Header.
+const SEQUENCE_LO_IDX: usize = 3;
 
 /// Byte index of the high octet of Packet Data Length in the CCSDS Primary Header.
 const LENGTH_HI_IDX: usize = 4;
@@ -35,6 +51,18 @@ const TYPE_MASK: u8 = 0x10;
 
 /// Bitmask of the CCSDS Secondary Header Flag bit within `hdr[STREAM_ID_HI_IDX]`.
 const SEC_HDR_MASK: u8 = 0x08;
+
+/// Bitmask of the upper 3 bits of the 11-bit APID within `hdr[STREAM_ID_HI_IDX]`.
+const APID_HI_MASK: u8 = 0x07;
+
+/// Bit shift of the 2-bit CCSDS Sequence Flags within `hdr[SEQUENCE_HI_IDX]`.
+const SEG_FLAG_SHIFT: u8 = 6;
+
+/// Bitmask of the 2-bit CCSDS Sequence Flags within `hdr[SEQUENCE_HI_IDX]`.
+const SEG_FLAG_MASK: u8 = 0b11 << SEG_FLAG_SHIFT;
+
+/// Bitmask of the upper 6 bits of the 14-bit Sequence Count within `hdr[SEQUENCE_HI_IDX]`.
+const SEQ_COUNT_HI_MASK: u8 = 0x3F;
 
 /// Error returned when an input argument is outside the valid CCSDS/cFE range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,12 +162,72 @@ pub fn set_header_version(
     Ok(())
 }
 
+/// Returns the 11-bit CCSDS Application Process Identifier: the behaviour of `CFE_MSG_GetApId`.
+#[must_use]
+pub const fn get_apid(hdr: &[u8; PRIMARY_HEADER_LEN]) -> u16 {
+    u16::from_be_bytes([hdr[STREAM_ID_HI_IDX] & APID_HI_MASK, hdr[STREAM_ID_LO_IDX]])
+}
+
+/// Sets the 11-bit CCSDS Application Process Identifier: the behaviour of `CFE_MSG_SetApId`.
+///
+/// # Errors
+/// Returns `Err(BadArgument)` if `apid > 0x07FF`.
+pub const fn set_apid(hdr: &mut [u8; PRIMARY_HEADER_LEN], apid: u16) -> Result<(), BadArgument> {
+    let Some(valid) = Apid::new(apid) else {
+        return Err(BadArgument);
+    };
+    let [hi, lo] = valid.get().to_be_bytes();
+    hdr[STREAM_ID_HI_IDX] = (hdr[STREAM_ID_HI_IDX] & !APID_HI_MASK) | hi;
+    hdr[STREAM_ID_LO_IDX] = lo;
+    Ok(())
+}
+
+/// Returns the 2-bit CCSDS Sequence Flags: the behaviour of `CFE_MSG_GetSegmentationFlag`.
+#[must_use]
+pub const fn get_segmentation_flag(hdr: &[u8; PRIMARY_HEADER_LEN]) -> SequenceFlags {
+    SequenceFlags::from_bits(hdr[SEQUENCE_HI_IDX] >> SEG_FLAG_SHIFT)
+}
+
+/// Sets the 2-bit CCSDS Sequence Flags: the behaviour of `CFE_MSG_SetSegmentationFlag`.
+pub const fn set_segmentation_flag(hdr: &mut [u8; PRIMARY_HEADER_LEN], flag: SequenceFlags) {
+    hdr[SEQUENCE_HI_IDX] =
+        (hdr[SEQUENCE_HI_IDX] & !SEG_FLAG_MASK) | (flag.bits() << SEG_FLAG_SHIFT);
+}
+
+/// Returns the 14-bit CCSDS Packet Sequence Count: the behaviour of `CFE_MSG_GetSequenceCount`.
+#[must_use]
+pub const fn get_sequence_count(hdr: &[u8; PRIMARY_HEADER_LEN]) -> u16 {
+    u16::from_be_bytes([
+        hdr[SEQUENCE_HI_IDX] & SEQ_COUNT_HI_MASK,
+        hdr[SEQUENCE_LO_IDX],
+    ])
+}
+
+/// Sets the 14-bit CCSDS Packet Sequence Count: the behaviour of `CFE_MSG_SetSequenceCount`.
+///
+/// # Errors
+/// Returns `Err(BadArgument)` if `count > 0x3FFF`.
+pub const fn set_sequence_count(
+    hdr: &mut [u8; PRIMARY_HEADER_LEN],
+    count: u16,
+) -> Result<(), BadArgument> {
+    let Some(valid) = SeqCount::new(count) else {
+        return Err(BadArgument);
+    };
+    let [hi, lo] = valid.get().to_be_bytes();
+    hdr[SEQUENCE_HI_IDX] = (hdr[SEQUENCE_HI_IDX] & !SEQ_COUNT_HI_MASK) | hi;
+    hdr[SEQUENCE_LO_IDX] = lo;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        BadArgument, MAX_HEADER_VERSION, MAX_SIZE, PacketType, SIZE_OFFSET,
-        get_has_secondary_header, get_header_version, get_size, get_type, next_sequence_count,
-        set_has_secondary_header, set_header_version, set_size, set_type,
+        BadArgument, MAX_APID, MAX_HEADER_VERSION, MAX_SEQUENCE_COUNT, MAX_SIZE, PacketType,
+        SIZE_OFFSET, SequenceFlags, get_apid, get_has_secondary_header, get_header_version,
+        get_segmentation_flag, get_sequence_count, get_size, get_type, next_sequence_count,
+        set_apid, set_has_secondary_header, set_header_version, set_segmentation_flag,
+        set_sequence_count, set_size, set_type,
     };
 
     /// `CFE_MSG_GetNextSequenceCount` of cFE 7.0.1 (`cfe_msg_ccsdspri.c`), transcribed: increment
@@ -227,6 +315,67 @@ mod tests {
             Err(BadArgument)
         );
         assert_eq!(set_header_version(&mut hdr, u16::MAX), Err(BadArgument));
+        assert_eq!(hdr, before);
+    }
+
+    #[test]
+    fn apid_round_trip_and_bounds() {
+        let mut hdr = [0xF8, 0x00, 0xAB, 0xCD, 0x12, 0x34];
+        assert_eq!(get_apid(&hdr), 0);
+
+        for apid in [0, 1, 0x00FF, 0x0100, 0x05A5, MAX_APID] {
+            assert_eq!(set_apid(&mut hdr, apid), Ok(()));
+            assert_eq!(get_apid(&hdr), apid);
+            assert_eq!(hdr[0] & 0xF8, 0xF8);
+            assert_eq!(&hdr[2..], &[0xAB, 0xCD, 0x12, 0x34]);
+        }
+
+        let before = hdr;
+        assert_eq!(set_apid(&mut hdr, MAX_APID + 1), Err(BadArgument));
+        assert_eq!(set_apid(&mut hdr, u16::MAX), Err(BadArgument));
+        assert_eq!(hdr, before);
+    }
+
+    #[test]
+    fn segmentation_flag_round_trip_preserves_other_bits() {
+        let mut hdr = [0x12, 0x34, 0x3F, 0xAB, 0xCD, 0xEF];
+        assert_eq!(get_segmentation_flag(&hdr), SequenceFlags::Continuation);
+
+        let cases = [
+            (SequenceFlags::Continuation, 0b00),
+            (SequenceFlags::First, 0b01),
+            (SequenceFlags::Last, 0b10),
+            (SequenceFlags::Unsegmented, 0b11),
+        ];
+        for (flag, expected_bits) in cases {
+            set_segmentation_flag(&mut hdr, flag);
+            assert_eq!(get_segmentation_flag(&hdr), flag);
+            assert_eq!(hdr[2] >> 6, expected_bits);
+            assert_eq!(hdr[2] & 0x3F, 0x3F);
+            assert_eq!(&hdr[..2], &[0x12, 0x34]);
+            assert_eq!(&hdr[3..], &[0xAB, 0xCD, 0xEF]);
+        }
+    }
+
+    #[test]
+    fn sequence_count_round_trip_and_bounds() {
+        let mut hdr = [0x12, 0x34, 0xC0, 0x00, 0x56, 0x78];
+        assert_eq!(get_sequence_count(&hdr), 0);
+
+        for count in [0, 1, 0x00FF, 0x0100, 0x2A5A, MAX_SEQUENCE_COUNT] {
+            assert_eq!(set_sequence_count(&mut hdr, count), Ok(()));
+            assert_eq!(get_sequence_count(&hdr), count);
+            assert_eq!(hdr[2] & 0xC0, 0xC0);
+            assert_eq!(&hdr[..2], &[0x12, 0x34]);
+            assert_eq!(&hdr[4..], &[0x56, 0x78]);
+        }
+
+        let before = hdr;
+        assert_eq!(
+            set_sequence_count(&mut hdr, MAX_SEQUENCE_COUNT + 1),
+            Err(BadArgument)
+        );
+        assert_eq!(set_sequence_count(&mut hdr, u16::MAX), Err(BadArgument));
         assert_eq!(hdr, before);
     }
 }
