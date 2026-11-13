@@ -23,4 +23,6 @@ set(CFE_MSG_RS_REPLACED
     CFE_MSG_SetFcnCode
     CFE_MSG_GenerateChecksum
     CFE_MSG_ValidateChecksum
+    CFE_MSG_GetMsgTime
+    CFE_MSG_SetMsgTime
 )
