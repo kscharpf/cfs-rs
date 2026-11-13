@@ -33,7 +33,7 @@ impl MsgId {
 }
 
 /// A Software Bus pipe identifier.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PipeId(cfe_sys::CFE_SB_PipeId_t);
 
 impl PipeId {
@@ -51,7 +51,7 @@ impl PipeId {
 }
 
 /// Quality of Service for Software Bus subscriptions.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Qos {
     /// Message priority (0 = low, 1 = high).
     pub priority: u8,
@@ -105,6 +105,98 @@ impl Timeout {
     }
 }
 
+/// A borrowed view of a buffer received from a Software Bus pipe.
+///
+/// The buffer is valid until the mutable borrow of the [`Pipe`] ends.
+#[derive(Debug)]
+pub struct ReceivedBuffer<'a> {
+    ptr: *const cfe_sys::CFE_SB_Buffer_t,
+    _pipe: core::marker::PhantomData<&'a Pipe>,
+}
+
+impl ReceivedBuffer<'_> {
+    /// Returns a shared reference to the message header.
+    #[must_use]
+    pub const fn msg(&self) -> &cfe_sys::CFE_MSG_Message_t {
+        // SAFETY: ptr is non-null and points to a valid CFE_SB_Buffer_t whose first field is CFE_MSG_Message_t.
+        unsafe { &(*self.ptr).Msg }
+    }
+
+    /// Returns the raw pointer to the underlying buffer.
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const cfe_sys::CFE_SB_Buffer_t {
+        self.ptr
+    }
+}
+
+/// A zero-copy Software Bus message buffer allocated via [`allocate_message_buffer`].
+///
+/// If dropped before being passed to [`transmit_buffer`], the underlying buffer
+/// is automatically released via `CFE_SB_ReleaseMessageBuffer`.
+#[derive(Debug)]
+pub struct MessageBuffer {
+    ptr: *mut cfe_sys::CFE_SB_Buffer_t,
+    size: usize,
+}
+
+impl MessageBuffer {
+    /// Returns the allocated buffer size in bytes.
+    #[must_use]
+    pub const fn size(&self) -> usize {
+        self.size
+    }
+
+    /// Returns a shared reference to the message header.
+    #[must_use]
+    pub const fn msg(&self) -> &cfe_sys::CFE_MSG_Message_t {
+        // SAFETY: self.ptr is non-null, properly aligned, and points to an allocated SB buffer.
+        unsafe { &(*self.ptr).Msg }
+    }
+
+    /// Returns an exclusive reference to the message header.
+    pub const fn msg_mut(&mut self) -> &mut cfe_sys::CFE_MSG_Message_t {
+        // SAFETY: self.ptr is non-null, properly aligned, and points to an allocated SB buffer.
+        unsafe { &mut (*self.ptr).Msg }
+    }
+
+    /// Returns a shared slice of the buffer's raw bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8] {
+        // SAFETY: self.ptr is non-null and valid for reads of self.size bytes.
+        unsafe { core::slice::from_raw_parts(self.ptr.cast::<u8>(), self.size) }
+    }
+
+    /// Returns an exclusive slice of the buffer's raw bytes.
+    pub const fn as_bytes_mut(&mut self) -> &mut [u8] {
+        // SAFETY: self.ptr is non-null and valid for reads/writes of self.size bytes.
+        unsafe { core::slice::from_raw_parts_mut(self.ptr.cast::<u8>(), self.size) }
+    }
+
+    /// Explicitly releases the buffer back to the Software Bus.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` if releasing the buffer fails.
+    pub fn release(mut self) -> Result<(), Status> {
+        let ptr = self.ptr;
+        self.ptr = core::ptr::null_mut();
+        // SAFETY: ptr is non-null and was allocated via CFE_SB_AllocateMessageBuffer.
+        let status = unsafe { cfe_sys::CFE_SB_ReleaseMessageBuffer(ptr) };
+        Status::from_raw(status).result()
+    }
+}
+
+impl Drop for MessageBuffer {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            // SAFETY: self.ptr is non-null and was not transmitted.
+            unsafe {
+                let _ = cfe_sys::CFE_SB_ReleaseMessageBuffer(self.ptr);
+            }
+        }
+    }
+}
+
 /// A Software Bus pipe.
 #[derive(Debug)]
 pub struct Pipe {
@@ -116,23 +208,21 @@ impl Pipe {
     ///
     /// # Errors
     ///
-    /// Returns `Err(Status)` if pipe creation fails.
+    /// Returns `Err(Status)` with `CFE_SB_BAD_ARGUMENT` if `name` is longer than
+    /// `OS_MAX_API_NAME - 1` bytes, or if cFE pipe creation fails.
     pub fn create(depth: u16, name: &str) -> Result<Self, Status> {
-        let mut name_buf = [0u8; 32];
-        let len = name.len().min(31);
-        let mut i = 0usize;
-        for b in name.as_bytes().iter().take(len) {
-            if let Some(slot) = name_buf.get_mut(i) {
-                *slot = *b;
-            }
-            i = i.saturating_add(1);
+        let max_len = cfe_sys::OS_MAX_API_NAME as usize;
+        if name.len() >= max_len {
+            return Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT));
         }
-        if let Some(slot) = name_buf.get_mut(i) {
-            *slot = 0;
+
+        let mut name_buf = [0u8; cfe_sys::OS_MAX_API_NAME as usize];
+        if let Some(dest) = name_buf.get_mut(..name.len()) {
+            dest.copy_from_slice(name.as_bytes());
         }
 
         let mut raw_id = 0u32;
-        // SAFETY: PipeIdPtr is a valid out-pointer; name_buf is null-terminated.
+        // SAFETY: PipeIdPtr is a valid out-pointer; name_buf is null-terminated and bounded by OS_MAX_API_NAME.
         let status =
             unsafe { cfe_sys::CFE_SB_CreatePipe(&raw mut raw_id, depth, name_buf.as_ptr().cast()) };
         let status = Status::from_raw(status);
@@ -177,25 +267,27 @@ impl Pipe {
 
     /// Receives a buffer from the pipe.
     ///
-    /// Returns a raw buffer pointer valid until the next receive on this pipe.
+    /// Returns a [`ReceivedBuffer`] view valid until the borrow of this pipe ends.
     ///
     /// # Errors
     ///
-    /// Returns `Err(Status)` if pipe read fails or times out.
-    pub fn receive_buffer(
-        &self,
-        timeout: Timeout,
-    ) -> Result<*const cfe_sys::CFE_SB_Buffer_t, Status> {
+    /// Returns `Err(Status)` if pipe read fails, times out, or if the buffer pointer is null.
+    pub fn receive_buffer(&mut self, timeout: Timeout) -> Result<ReceivedBuffer<'_>, Status> {
         let mut buf_ptr: *mut cfe_sys::CFE_SB_Buffer_t = core::ptr::null_mut();
         // SAFETY: buf_ptr is a valid pointer-to-pointer; pipe id is valid.
         let status = unsafe {
             cfe_sys::CFE_SB_ReceiveBuffer(&raw mut buf_ptr, self.id.to_raw(), timeout.to_raw())
         };
         let status = Status::from_raw(status);
-        if status.is_success() && !buf_ptr.is_null() {
-            Ok(buf_ptr)
-        } else {
+        if !status.is_success() {
             Err(status)
+        } else if buf_ptr.is_null() {
+            Err(Status::from_raw(cfe_sys::CFE_SB_PIPE_RD_ERR))
+        } else {
+            Ok(ReceivedBuffer {
+                ptr: buf_ptr,
+                _pipe: core::marker::PhantomData,
+            })
         }
     }
 
@@ -215,20 +307,10 @@ impl Pipe {
 ///
 /// # Errors
 ///
-/// Returns `Err(Status)` if `msg` is null or if `CFE_SB_TransmitMsg` fails.
-#[expect(
-    clippy::not_unsafe_ptr_arg_deref,
-    reason = "C API and null checks handle pointer validation"
-)]
-pub fn transmit_msg(
-    msg: *const cfe_sys::CFE_MSG_Message_t,
-    is_origination: bool,
-) -> Result<(), Status> {
-    if msg.is_null() {
-        return Err(Status::from_raw(-1));
-    }
-    // SAFETY: msg pointer is checked non-null.
-    let status = unsafe { cfe_sys::CFE_SB_TransmitMsg(msg, is_origination) };
+/// Returns `Err(Status)` if `CFE_SB_TransmitMsg` fails.
+pub fn transmit_msg(msg: &cfe_sys::CFE_MSG_Message_t, is_origination: bool) -> Result<(), Status> {
+    // SAFETY: msg is a valid reference and guaranteed non-null.
+    let status = unsafe { cfe_sys::CFE_SB_TransmitMsg(core::ptr::from_ref(msg), is_origination) };
     Status::from_raw(status).result()
 }
 
@@ -236,14 +318,14 @@ pub fn transmit_msg(
 ///
 /// # Errors
 ///
-/// Returns `Err(Status)` if allocation fails.
-pub fn allocate_message_buffer(size: usize) -> Result<*mut cfe_sys::CFE_SB_Buffer_t, Status> {
+/// Returns `Err(Status)` with `CFE_SB_BUF_ALOC_ERR` if allocation fails.
+pub fn allocate_message_buffer(size: usize) -> Result<MessageBuffer, Status> {
     // SAFETY: CFE_SB_AllocateMessageBuffer takes a size.
     let ptr = unsafe { cfe_sys::CFE_SB_AllocateMessageBuffer(size) };
     if ptr.is_null() {
-        Err(Status::from_raw(-1))
+        Err(Status::from_raw(cfe_sys::CFE_SB_BUF_ALOC_ERR))
     } else {
-        Ok(ptr)
+        Ok(MessageBuffer { ptr, size })
     }
 }
 
@@ -251,37 +333,30 @@ pub fn allocate_message_buffer(size: usize) -> Result<*mut cfe_sys::CFE_SB_Buffe
 ///
 /// # Errors
 ///
-/// Returns `Err(Status)` if `buf` is null or if `CFE_SB_ReleaseMessageBuffer` fails.
-#[expect(
-    clippy::not_unsafe_ptr_arg_deref,
-    reason = "C API and null checks handle pointer validation"
-)]
-pub fn release_message_buffer(buf: *mut cfe_sys::CFE_SB_Buffer_t) -> Result<(), Status> {
-    if buf.is_null() {
-        return Err(Status::from_raw(-1));
-    }
-    // SAFETY: buf pointer is checked non-null.
-    let status = unsafe { cfe_sys::CFE_SB_ReleaseMessageBuffer(buf) };
-    Status::from_raw(status).result()
+/// Returns `Err(Status)` if `CFE_SB_ReleaseMessageBuffer` fails.
+pub fn release_message_buffer(buf: MessageBuffer) -> Result<(), Status> {
+    buf.release()
 }
 
 /// Transmits a zero-copy message buffer.
 ///
+/// Consumes the [`MessageBuffer`]. On success, cFE takes ownership of the buffer.
+/// On failure, the buffer is dropped and automatically released via `CFE_SB_ReleaseMessageBuffer`.
+///
 /// # Errors
 ///
-/// Returns `Err(Status)` if `buf` is null or if `CFE_SB_TransmitBuffer` fails.
-#[expect(
-    clippy::not_unsafe_ptr_arg_deref,
-    reason = "C API and null checks handle pointer validation"
-)]
-pub fn transmit_buffer(
-    buf: *mut cfe_sys::CFE_SB_Buffer_t,
-    is_origination: bool,
-) -> Result<(), Status> {
-    if buf.is_null() {
-        return Err(Status::from_raw(-1));
+/// Returns `Err(Status)` if `CFE_SB_TransmitBuffer` fails.
+pub fn transmit_buffer(mut buf: MessageBuffer, is_origination: bool) -> Result<(), Status> {
+    let ptr = buf.ptr;
+    // SAFETY: ptr is non-null and allocated by cFE SB.
+    let status = unsafe { cfe_sys::CFE_SB_TransmitBuffer(ptr, is_origination) };
+    let status = Status::from_raw(status);
+    if status.is_success() {
+        // cFE now owns the buffer; prevent Drop from releasing it.
+        buf.ptr = core::ptr::null_mut();
+        Ok(())
+    } else {
+        // buf will drop here and release the buffer.
+        Err(status)
     }
-    // SAFETY: buf pointer is checked non-null.
-    let status = unsafe { cfe_sys::CFE_SB_TransmitBuffer(buf, is_origination) };
-    Status::from_raw(status).result()
 }

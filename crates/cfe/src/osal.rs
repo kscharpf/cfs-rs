@@ -30,7 +30,9 @@ impl TcpStream {
 
         let mut addr = cfe_sys::OS_SockAddr_t {
             ActualLength: 0,
-            AddrData: cfe_sys::OS_SockAddrData_t { Buffer: [0; 28] },
+            AddrData: cfe_sys::OS_SockAddrData_t {
+                Buffer: [0; cfe_sys::OS_SOCKADDR_MAX_LEN as usize],
+            },
         };
 
         // SAFETY: addr is a valid out-pointer.

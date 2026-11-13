@@ -21,7 +21,7 @@ pub extern "C" fn LINK_LAB_AppMain() {
     }
 
     // 2. Create Software Bus input pipe.
-    let Ok(pipe) = Pipe::create(8, "LINK_LAB_PIPE") else {
+    let Ok(mut pipe) = Pipe::create(8, "LINK_LAB_PIPE") else {
         let _ = evs::send_event(2, EventType::Critical, "LINK_LAB: Failed to create SB pipe");
         es::exit_app(RunStatus::AppError);
         return;

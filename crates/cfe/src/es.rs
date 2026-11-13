@@ -1,9 +1,11 @@
 //! Executive Services (ES) safe wrappers.
 
 /// Application run status for the ES run loop.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum RunStatus {
+    /// Undefined run status.
+    Undefined = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_UNDEFINED,
     /// Normal application execution.
     AppRun = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_RUN,
     /// Normal exit request.
@@ -16,8 +18,12 @@ pub enum RunStatus {
     SysRestart = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_SYS_RESTART,
     /// Reload application.
     SysReload = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_SYS_RELOAD,
+    /// Delete application.
+    SysDelete = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_SYS_DELETE,
     /// Core application initialization error.
     CoreAppInitError = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_INIT_ERROR,
+    /// Core application runtime error.
+    CoreAppRuntimeError = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_RUNTIME_ERROR,
 }
 
 impl RunStatus {
@@ -25,14 +31,19 @@ impl RunStatus {
     #[must_use]
     pub const fn from_raw(raw: u32) -> Option<Self> {
         match raw {
+            cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_UNDEFINED => Some(Self::Undefined),
             cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_RUN => Some(Self::AppRun),
             cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_EXIT => Some(Self::AppExit),
             cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_ERROR => Some(Self::AppError),
             cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_SYS_EXCEPTION => Some(Self::SysException),
             cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_SYS_RESTART => Some(Self::SysRestart),
             cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_SYS_RELOAD => Some(Self::SysReload),
+            cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_SYS_DELETE => Some(Self::SysDelete),
             cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_INIT_ERROR => {
                 Some(Self::CoreAppInitError)
+            }
+            cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_RUNTIME_ERROR => {
+                Some(Self::CoreAppRuntimeError)
             }
             _ => None,
         }

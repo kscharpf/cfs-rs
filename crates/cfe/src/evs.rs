@@ -51,25 +51,22 @@ pub fn register() -> Result<(), Status> {
     Status::from_raw(status).result()
 }
 
+/// Maximum length of an event message payload excluding the null terminator.
+pub const MAX_EVENT_MESSAGE_LEN: usize = 127;
+
 /// Sends an event message with the specified ID and severity.
-///
-/// Truncates the message to 127 bytes if longer to guarantee null-termination without heap.
 ///
 /// # Errors
 ///
-/// Returns `Err(Status)` if cFE EVS fails to deliver the event message.
+/// Returns `Err(Status)` with `CFE_EVS_INVALID_PARAMETER` if `message` exceeds
+/// [`MAX_EVENT_MESSAGE_LEN`] bytes, or if cFE EVS fails to deliver the event message.
 pub fn send_event(event_id: u16, event_type: EventType, message: &str) -> Result<(), Status> {
-    let mut buf = [0u8; 128];
-    let len = message.len().min(127);
-    let mut i = 0usize;
-    for b in message.as_bytes().iter().take(len) {
-        if let Some(slot) = buf.get_mut(i) {
-            *slot = *b;
-        }
-        i = i.saturating_add(1);
+    if message.len() > MAX_EVENT_MESSAGE_LEN {
+        return Err(Status::from_raw(cfe_sys::CFE_EVS_INVALID_PARAMETER));
     }
-    if let Some(slot) = buf.get_mut(i) {
-        *slot = 0;
+    let mut buf = [0u8; 128];
+    if let Some(dest) = buf.get_mut(..message.len()) {
+        dest.copy_from_slice(message.as_bytes());
     }
 
     // SAFETY: %s specifier with a valid null-terminated string buffer.

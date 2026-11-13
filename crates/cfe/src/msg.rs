@@ -3,25 +3,21 @@
 use crate::sb::MsgId;
 use crate::status::Status;
 
+/// A cFE message header type alias.
+pub type Message = cfe_sys::CFE_MSG_Message_t;
+
 /// Initializes a message header and clears payload to zero based on `size`.
 ///
 /// # Errors
 ///
-/// Returns `Err(Status)` if `msg` is null or if `CFE_MSG_Init` fails.
-#[expect(
-    clippy::not_unsafe_ptr_arg_deref,
-    reason = "C API and null checks handle pointer validation"
-)]
+/// Returns `Err(Status)` if `CFE_MSG_Init` fails.
 pub fn init(
-    msg: *mut cfe_sys::CFE_MSG_Message_t,
+    msg: &mut cfe_sys::CFE_MSG_Message_t,
     msg_id: MsgId,
     size: usize,
 ) -> Result<(), Status> {
-    if msg.is_null() {
-        return Err(Status::from_raw(-1));
-    }
-    // SAFETY: msg is validated non-null.
-    let status = unsafe { cfe_sys::CFE_MSG_Init(msg, msg_id.to_raw(), size) };
+    // SAFETY: msg is a valid reference and guaranteed non-null.
+    let status = unsafe { cfe_sys::CFE_MSG_Init(core::ptr::from_mut(msg), msg_id.to_raw(), size) };
     Status::from_raw(status).result()
 }
 
@@ -29,18 +25,11 @@ pub fn init(
 ///
 /// # Errors
 ///
-/// Returns `Err(Status)` if `msg` is null or if `CFE_MSG_GetSize` fails.
-#[expect(
-    clippy::not_unsafe_ptr_arg_deref,
-    reason = "C API and null checks handle pointer validation"
-)]
-pub fn get_size(msg: *const cfe_sys::CFE_MSG_Message_t) -> Result<usize, Status> {
-    if msg.is_null() {
-        return Err(Status::from_raw(-1));
-    }
+/// Returns `Err(Status)` if `CFE_MSG_GetSize` fails.
+pub fn get_size(msg: &cfe_sys::CFE_MSG_Message_t) -> Result<usize, Status> {
     let mut size: cfe_sys::CFE_MSG_Size_t = 0;
-    // SAFETY: msg is non-null and size points to a valid local variable.
-    let status = unsafe { cfe_sys::CFE_MSG_GetSize(msg, &raw mut size) };
+    // SAFETY: msg is a valid reference and size points to a valid local variable.
+    let status = unsafe { cfe_sys::CFE_MSG_GetSize(core::ptr::from_ref(msg), &raw mut size) };
     let status = Status::from_raw(status);
     if status.is_success() {
         Ok(size)
@@ -53,17 +42,10 @@ pub fn get_size(msg: *const cfe_sys::CFE_MSG_Message_t) -> Result<usize, Status>
 ///
 /// # Errors
 ///
-/// Returns `Err(Status)` if `msg` is null or if `CFE_MSG_SetSize` fails.
-#[expect(
-    clippy::not_unsafe_ptr_arg_deref,
-    reason = "C API and null checks handle pointer validation"
-)]
-pub fn set_size(msg: *mut cfe_sys::CFE_MSG_Message_t, size: usize) -> Result<(), Status> {
-    if msg.is_null() {
-        return Err(Status::from_raw(-1));
-    }
-    // SAFETY: msg is validated non-null.
-    let status = unsafe { cfe_sys::CFE_MSG_SetSize(msg, size) };
+/// Returns `Err(Status)` if `CFE_MSG_SetSize` fails.
+pub fn set_size(msg: &mut cfe_sys::CFE_MSG_Message_t, size: usize) -> Result<(), Status> {
+    // SAFETY: msg is a valid reference and guaranteed non-null.
+    let status = unsafe { cfe_sys::CFE_MSG_SetSize(core::ptr::from_mut(msg), size) };
     Status::from_raw(status).result()
 }
 
@@ -71,18 +53,11 @@ pub fn set_size(msg: *mut cfe_sys::CFE_MSG_Message_t, size: usize) -> Result<(),
 ///
 /// # Errors
 ///
-/// Returns `Err(Status)` if `msg` is null or if `CFE_MSG_GetMsgId` fails.
-#[expect(
-    clippy::not_unsafe_ptr_arg_deref,
-    reason = "C API and null checks handle pointer validation"
-)]
-pub fn get_msg_id(msg: *const cfe_sys::CFE_MSG_Message_t) -> Result<MsgId, Status> {
-    if msg.is_null() {
-        return Err(Status::from_raw(-1));
-    }
+/// Returns `Err(Status)` if `CFE_MSG_GetMsgId` fails.
+pub fn get_msg_id(msg: &cfe_sys::CFE_MSG_Message_t) -> Result<MsgId, Status> {
     let mut raw_id = cfe_sys::CFE_SB_MsgId_t { Value: 0 };
-    // SAFETY: msg is non-null and raw_id points to a valid local variable.
-    let status = unsafe { cfe_sys::CFE_MSG_GetMsgId(msg, &raw mut raw_id) };
+    // SAFETY: msg is a valid reference and raw_id points to a valid local variable.
+    let status = unsafe { cfe_sys::CFE_MSG_GetMsgId(core::ptr::from_ref(msg), &raw mut raw_id) };
     let status = Status::from_raw(status);
     if status.is_success() {
         Ok(MsgId::from_raw(raw_id))
@@ -95,16 +70,9 @@ pub fn get_msg_id(msg: *const cfe_sys::CFE_MSG_Message_t) -> Result<MsgId, Statu
 ///
 /// # Errors
 ///
-/// Returns `Err(Status)` if `msg` is null or if `CFE_MSG_SetMsgId` fails.
-#[expect(
-    clippy::not_unsafe_ptr_arg_deref,
-    reason = "C API and null checks handle pointer validation"
-)]
-pub fn set_msg_id(msg: *mut cfe_sys::CFE_MSG_Message_t, msg_id: MsgId) -> Result<(), Status> {
-    if msg.is_null() {
-        return Err(Status::from_raw(-1));
-    }
-    // SAFETY: msg is validated non-null.
-    let status = unsafe { cfe_sys::CFE_MSG_SetMsgId(msg, msg_id.to_raw()) };
+/// Returns `Err(Status)` if `CFE_MSG_SetMsgId` fails.
+pub fn set_msg_id(msg: &mut cfe_sys::CFE_MSG_Message_t, msg_id: MsgId) -> Result<(), Status> {
+    // SAFETY: msg is a valid reference and guaranteed non-null.
+    let status = unsafe { cfe_sys::CFE_MSG_SetMsgId(core::ptr::from_mut(msg), msg_id.to_raw()) };
     Status::from_raw(status).result()
 }

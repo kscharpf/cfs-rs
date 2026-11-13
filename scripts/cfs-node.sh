@@ -40,6 +40,7 @@ bindgen \
   "$root/crates/cfe-sys/wrapper.h" \
   --use-core \
   --no-layout-tests \
+  --clang-macro-fallback \
   --allowlist-function "CFE_ES_.*|CFE_EVS_.*|CFE_SB_.*|CFE_MSG_.*|OS_Socket.*|OS_close" \
   --allowlist-type "CFE_ES_RunStatus.*|CFE_EVS_.*|CFE_SB_.*|CFE_MSG_.*|OS_.*|osal_id_t|CFE_Status_t" \
   --allowlist-var "OS_.*|CFE_.*|NODE_.*" \

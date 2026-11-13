@@ -20,8 +20,9 @@ use crate::es::{self, RunStatus};
 use crate::evs::{self, EventType};
 use crate::msg;
 use crate::osal::TcpStream;
-use crate::sb::{self, MsgId, Pipe, Qos, Timeout};
+use crate::sb::{self, MsgId, Pipe, PipeId, Qos, Timeout};
 use crate::status::Status;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 
 static RUN_LOOP_CALLS: AtomicU32 = AtomicU32::new(0);
@@ -39,6 +40,12 @@ static OS_SOCKET_SEND_CALLS: AtomicU32 = AtomicU32::new(0);
 static OS_SOCKET_RECV_CALLS: AtomicU32 = AtomicU32::new(0);
 static OS_CLOSE_CALLS: AtomicU32 = AtomicU32::new(0);
 static SIMULATE_SOCKET_FAIL: AtomicBool = AtomicBool::new(false);
+static SIMULATE_RECEIVE_NULL_BUFFER: AtomicBool = AtomicBool::new(false);
+static SIMULATE_RECEIVE_ERROR: AtomicBool = AtomicBool::new(false);
+static SIMULATE_ALLOC_FAIL: AtomicBool = AtomicBool::new(false);
+static RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
+static TRANSMIT_BUFFER_CALLS: AtomicU32 = AtomicU32::new(0);
+static TRANSMIT_MSG_CALLS: AtomicU32 = AtomicU32::new(0);
 
 static mut STATIC_BUFFER: cfe_sys::CFE_SB_Buffer_t = cfe_sys::CFE_SB_Buffer_t {
     Msg: cfe_sys::CFE_MSG_Message {
@@ -59,8 +66,11 @@ pub unsafe extern "C" fn CFE_ES_RunLoop(RunStatus: *mut u32) -> bool {
         if calls == 0 {
             unsafe { *RunStatus = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_RUN };
             true
-        } else {
+        } else if calls == 1 {
             unsafe { *RunStatus = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_EXIT };
+            false
+        } else {
+            unsafe { *RunStatus = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_SYS_DELETE };
             false
         }
     } else {
@@ -104,14 +114,14 @@ pub unsafe extern "C" fn CFE_EVS_SendEvent(
 pub unsafe extern "C" fn CFE_SB_CreatePipe(
     PipeIdPtr: *mut cfe_sys::CFE_SB_PipeId_t,
     _Depth: u16,
-    _PipeName: *const core::ffi::c_char,
+    PipeName: *const core::ffi::c_char,
 ) -> cfe_sys::CFE_Status_t {
     PIPE_CREATE_CALLS.fetch_add(1, Ordering::SeqCst);
-    if !PipeIdPtr.is_null() {
+    if PipeIdPtr.is_null() || PipeName.is_null() {
+        cfe_sys::CFE_SB_BAD_ARGUMENT
+    } else {
         unsafe { *PipeIdPtr = 42 };
         0
-    } else {
-        -1
     }
 }
 
@@ -149,14 +159,20 @@ pub unsafe extern "C" fn CFE_SB_ReceiveBuffer(
     _PipeId: cfe_sys::CFE_SB_PipeId_t,
     _TimeOut: i32,
 ) -> cfe_sys::CFE_Status_t {
-    if !BufPtr.is_null() {
-        unsafe {
-            *BufPtr = core::ptr::addr_of_mut!(STATIC_BUFFER);
-        }
-        0
-    } else {
-        -1
+    if BufPtr.is_null() {
+        return cfe_sys::CFE_SB_BAD_ARGUMENT;
     }
+    if SIMULATE_RECEIVE_ERROR.load(Ordering::SeqCst) {
+        return cfe_sys::CFE_SB_TIME_OUT;
+    }
+    if SIMULATE_RECEIVE_NULL_BUFFER.load(Ordering::SeqCst) {
+        unsafe { *BufPtr = core::ptr::null_mut() };
+        return 0;
+    }
+    unsafe {
+        *BufPtr = core::ptr::addr_of_mut!(STATIC_BUFFER);
+    }
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -164,21 +180,35 @@ pub unsafe extern "C" fn CFE_SB_TransmitMsg(
     MsgPtr: *const cfe_sys::CFE_MSG_Message_t,
     _IsOrigination: bool,
 ) -> cfe_sys::CFE_Status_t {
-    if MsgPtr.is_null() { -1 } else { 0 }
+    TRANSMIT_MSG_CALLS.fetch_add(1, Ordering::SeqCst);
+    if MsgPtr.is_null() {
+        cfe_sys::CFE_SB_BAD_ARGUMENT
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn CFE_SB_AllocateMessageBuffer(
     _MsgSize: usize,
 ) -> *mut cfe_sys::CFE_SB_Buffer_t {
-    core::ptr::addr_of_mut!(STATIC_BUFFER)
+    if SIMULATE_ALLOC_FAIL.load(Ordering::SeqCst) {
+        core::ptr::null_mut()
+    } else {
+        core::ptr::addr_of_mut!(STATIC_BUFFER)
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn CFE_SB_ReleaseMessageBuffer(
     BufPtr: *mut cfe_sys::CFE_SB_Buffer_t,
 ) -> cfe_sys::CFE_Status_t {
-    if BufPtr.is_null() { -1 } else { 0 }
+    RELEASE_CALLS.fetch_add(1, Ordering::SeqCst);
+    if BufPtr.is_null() {
+        cfe_sys::CFE_SB_BUFFER_INVALID
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -186,7 +216,12 @@ pub unsafe extern "C" fn CFE_SB_TransmitBuffer(
     BufPtr: *mut cfe_sys::CFE_SB_Buffer_t,
     _IsOrigination: bool,
 ) -> cfe_sys::CFE_Status_t {
-    if BufPtr.is_null() { -1 } else { 0 }
+    TRANSMIT_BUFFER_CALLS.fetch_add(1, Ordering::SeqCst);
+    if BufPtr.is_null() {
+        cfe_sys::CFE_SB_BAD_ARGUMENT
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -196,7 +231,7 @@ pub unsafe extern "C" fn CFE_MSG_Init(
     _Size: cfe_sys::CFE_MSG_Size_t,
 ) -> cfe_sys::CFE_Status_t {
     if MsgPtr.is_null() {
-        -1
+        cfe_sys::CFE_MSG_BAD_ARGUMENT
     } else {
         SUBSCRIBED_MID.store(MsgId.Value, Ordering::SeqCst);
         0
@@ -209,7 +244,7 @@ pub unsafe extern "C" fn CFE_MSG_GetSize(
     Size: *mut cfe_sys::CFE_MSG_Size_t,
 ) -> cfe_sys::CFE_Status_t {
     if MsgPtr.is_null() || Size.is_null() {
-        -1
+        cfe_sys::CFE_MSG_BAD_ARGUMENT
     } else {
         unsafe { *Size = 64 };
         0
@@ -221,7 +256,11 @@ pub unsafe extern "C" fn CFE_MSG_SetSize(
     MsgPtr: *mut cfe_sys::CFE_MSG_Message_t,
     _Size: cfe_sys::CFE_MSG_Size_t,
 ) -> cfe_sys::CFE_Status_t {
-    if MsgPtr.is_null() { -1 } else { 0 }
+    if MsgPtr.is_null() {
+        cfe_sys::CFE_MSG_BAD_ARGUMENT
+    } else {
+        0
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -230,7 +269,7 @@ pub unsafe extern "C" fn CFE_MSG_GetMsgId(
     MsgId: *mut cfe_sys::CFE_SB_MsgId_t,
 ) -> cfe_sys::CFE_Status_t {
     if MsgPtr.is_null() || MsgId.is_null() {
-        -1
+        cfe_sys::CFE_MSG_BAD_ARGUMENT
     } else {
         unsafe { (*MsgId).Value = 0x1901 };
         0
@@ -243,7 +282,7 @@ pub unsafe extern "C" fn CFE_MSG_SetMsgId(
     MsgId: cfe_sys::CFE_SB_MsgId_t,
 ) -> cfe_sys::CFE_Status_t {
     if MsgPtr.is_null() {
-        -1
+        cfe_sys::CFE_MSG_BAD_ARGUMENT
     } else {
         SUBSCRIBED_MID.store(MsgId.Value, Ordering::SeqCst);
         0
@@ -355,6 +394,13 @@ fn test_status_methods() {
     assert!(err.is_error());
     assert_eq!(err.as_raw(), -42);
     assert_eq!(err.result(), Err(err));
+
+    // Test PartialOrd, Ord, Hash
+    let mut set = HashSet::new();
+    set.insert(s);
+    set.insert(err);
+    assert_eq!(set.len(), 2);
+    assert!(s > err);
 }
 
 #[test]
@@ -367,14 +413,45 @@ fn test_es_wrappers() {
     assert!(!es::run_loop(&mut status));
     assert_eq!(status, RunStatus::AppExit);
 
+    // Third call returns false with SYS_DELETE
+    assert!(!es::run_loop(&mut status));
+    assert_eq!(status, RunStatus::SysDelete);
+
     es::wait_for_startup_sync(500);
     assert_eq!(WAIT_SYNC_MS.load(Ordering::SeqCst), 500);
 
-    es::exit_app(RunStatus::AppError);
+    es::exit_app(RunStatus::SysDelete);
     assert_eq!(
         EXIT_APP_STATUS.load(Ordering::SeqCst),
-        RunStatus::AppError.to_raw()
+        RunStatus::SysDelete.to_raw()
     );
+
+    es::exit_app(RunStatus::CoreAppRuntimeError);
+    assert_eq!(
+        EXIT_APP_STATUS.load(Ordering::SeqCst),
+        RunStatus::CoreAppRuntimeError.to_raw()
+    );
+
+    // Test all RunStatus enum variants and from_raw / to_raw round-trip
+    let all_statuses = [
+        RunStatus::Undefined,
+        RunStatus::AppRun,
+        RunStatus::AppExit,
+        RunStatus::AppError,
+        RunStatus::SysException,
+        RunStatus::SysRestart,
+        RunStatus::SysReload,
+        RunStatus::SysDelete,
+        RunStatus::CoreAppInitError,
+        RunStatus::CoreAppRuntimeError,
+    ];
+    let mut status_set = HashSet::new();
+    for st in all_statuses {
+        assert_eq!(RunStatus::from_raw(st.to_raw()), Some(st));
+        status_set.insert(st);
+    }
+    assert_eq!(status_set.len(), 10);
+    assert_eq!(RunStatus::from_raw(99), None);
 }
 
 #[test]
@@ -388,12 +465,41 @@ fn test_evs_wrappers() {
         LAST_EVENT_TYPE.load(Ordering::SeqCst),
         EventType::Information.to_raw() as u16
     );
+
+    // Message exceeding 127 bytes returns CFE_EVS_INVALID_PARAMETER error
+    let long_msg = "A".repeat(128);
+    let err = evs::send_event(102, EventType::Error, &long_msg);
+    assert_eq!(
+        err,
+        Err(Status::from_raw(cfe_sys::CFE_EVS_INVALID_PARAMETER))
+    );
+
+    // Exactly 127 bytes succeeds
+    let max_msg = "B".repeat(127);
+    assert!(evs::send_event(103, EventType::Information, &max_msg).is_ok());
 }
 
 #[test]
 fn test_sb_wrappers() {
-    let pipe = Pipe::create(8, "TEST_PIPE").unwrap();
+    // Pipe creation name limit check
+    let too_long_name = "THIS_PIPE_NAME_IS_TOO_LONG_FOR_CFS";
+    let bad_pipe = Pipe::create(8, too_long_name);
+    assert_eq!(
+        bad_pipe.unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT)
+    );
+
+    let mut pipe = Pipe::create(8, "TEST_PIPE").unwrap();
     assert_eq!(pipe.id().to_raw(), 42);
+
+    // PipeId ordering and Hash
+    let p1 = PipeId::from_raw(1);
+    let p2 = PipeId::from_raw(2);
+    assert!(p1 < p2);
+    let mut pipe_set = HashSet::new();
+    pipe_set.insert(p1);
+    pipe_set.insert(p2);
+    assert_eq!(pipe_set.len(), 2);
 
     let mid = MsgId::from_u32(0x1901);
     assert_eq!(mid.as_u32(), 0x1901);
@@ -404,12 +510,39 @@ fn test_sb_wrappers() {
         priority: 1,
         reliability: 1,
     };
+    let mut qos_set = HashSet::new();
+    qos_set.insert(qos);
+    assert_eq!(qos_set.len(), 1);
+
     assert!(pipe.subscribe_ex(mid, qos, 16).is_ok());
     assert_eq!(SUBSCRIBED_LIMIT.load(Ordering::SeqCst), 16);
 
-    let buf_ptr = pipe.receive_buffer(Timeout::PendForever).unwrap();
-    assert!(!buf_ptr.is_null());
+    // Successful receive_buffer
+    {
+        let recvd = pipe.receive_buffer(Timeout::PendForever).unwrap();
+        assert!(!recvd.as_ptr().is_null());
+        let _ = recvd.msg();
+    }
 
+    // receive_buffer returning null pointer maps to CFE_SB_PIPE_RD_ERR
+    SIMULATE_RECEIVE_NULL_BUFFER.store(true, Ordering::SeqCst);
+    let err_null = pipe.receive_buffer(Timeout::PendForever);
+    assert_eq!(
+        err_null.unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_SB_PIPE_RD_ERR)
+    );
+    SIMULATE_RECEIVE_NULL_BUFFER.store(false, Ordering::SeqCst);
+
+    // receive_buffer returning timeout status
+    SIMULATE_RECEIVE_ERROR.store(true, Ordering::SeqCst);
+    let err_timeout = pipe.receive_buffer(Timeout::PendForever);
+    assert_eq!(
+        err_timeout.unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_SB_TIME_OUT)
+    );
+    SIMULATE_RECEIVE_ERROR.store(false, Ordering::SeqCst);
+
+    // transmit_msg takes &CFE_MSG_Message_t
     let msg_dummy = cfe_sys::CFE_MSG_Message_t {
         CCSDS: cfe_sys::CCSDS_SpacePacket_t {
             Pri: cfe_sys::CCSDS_PrimaryHeader {
@@ -421,12 +554,38 @@ fn test_sb_wrappers() {
     };
     assert!(sb::transmit_msg(&msg_dummy, true).is_ok());
 
-    let alloc_buf = sb::allocate_message_buffer(128).unwrap();
-    assert!(!alloc_buf.is_null());
+    // MessageBuffer allocation, inspection, and transmit_buffer
+    let mut alloc_buf = sb::allocate_message_buffer(128).unwrap();
+    assert_eq!(alloc_buf.size(), 128);
+    let _ = alloc_buf.msg();
+    let _ = alloc_buf.msg_mut();
+    assert_eq!(alloc_buf.as_bytes().len(), 128);
+    assert_eq!(alloc_buf.as_bytes_mut().len(), 128);
     assert!(sb::transmit_buffer(alloc_buf, false).is_ok());
 
+    // MessageBuffer explicit release
     let alloc_buf2 = sb::allocate_message_buffer(64).unwrap();
-    assert!(sb::release_message_buffer(alloc_buf2).is_ok());
+    assert!(alloc_buf2.release().is_ok());
+
+    // MessageBuffer release_message_buffer wrapper
+    let alloc_buf3 = sb::allocate_message_buffer(64).unwrap();
+    assert!(sb::release_message_buffer(alloc_buf3).is_ok());
+
+    // MessageBuffer Drop releases automatically if not transmitted
+    let before_drops = RELEASE_CALLS.load(Ordering::SeqCst);
+    {
+        let _untransmitted = sb::allocate_message_buffer(64).unwrap();
+    }
+    assert_eq!(RELEASE_CALLS.load(Ordering::SeqCst), before_drops + 1);
+
+    // Allocation failure returns CFE_SB_BUF_ALOC_ERR
+    SIMULATE_ALLOC_FAIL.store(true, Ordering::SeqCst);
+    let alloc_err = sb::allocate_message_buffer(64);
+    assert_eq!(
+        alloc_err.unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_SB_BUF_ALOC_ERR)
+    );
+    SIMULATE_ALLOC_FAIL.store(false, Ordering::SeqCst);
 
     assert!(pipe.delete().is_ok());
 }

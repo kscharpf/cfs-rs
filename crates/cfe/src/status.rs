@@ -3,7 +3,7 @@
 use core::fmt;
 
 /// A status code returned by cFE or OSAL APIs.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Status(i32);
 
 impl Status {
