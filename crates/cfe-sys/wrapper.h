@@ -2,4 +2,5 @@
 #include "osapi-sockets.h"
 #include "osapi-queue.h"
 #include "osapi-file.h"
+#include "osapi-task.h"
 #include "node_msgids.h"

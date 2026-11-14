@@ -1071,6 +1071,10 @@ pub struct OS_task_prop_t {
     pub stack_size: usize,
     pub priority: osal_priority_t,
 }
+unsafe extern "C" {
+    #[doc = " @brief Delay a task for specified amount of milliseconds\n\n Causes the current thread to be suspended from execution for the period of millisecond.\n This is a scheduled wait (clock_nanosleep/rtems_task_wake_after/taskDelay), not a \"busy\" wait.\n\n @param[in]   millisecond    Amount of time to delay\n\n @return Execution status, see @ref OSReturnCodes\n @retval #OS_SUCCESS @copybrief OS_SUCCESS\n @retval #OS_ERROR if an unspecified/other error occurs @covtest"]
+    pub fn OS_TaskDelay(millisecond: uint32) -> int32;
+}
 pub type OS_TimerSync_t =
     ::core::option::Option<unsafe extern "C" fn(timer_id: osal_id_t) -> uint32>;
 #[doc = " @brief Time base properties"]

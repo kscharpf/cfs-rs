@@ -243,34 +243,12 @@ pub unsafe extern "C" fn CFE_SB_GetPipeName(
     }
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn OS_QueueGetIdByName(
-    queue_id: *mut cfe_sys::osal_id_t,
-    queue_name: *const core::ffi::c_char,
-) -> i32 {
-    if queue_id.is_null() || queue_name.is_null() {
-        cfe_sys::OS_INVALID_POINTER
-    } else {
-        unsafe { *queue_id = 77 };
-        0
-    }
-}
+static OS_TASK_DELAY_MS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn OS_QueueGetInfo(
-    queue_id: cfe_sys::osal_id_t,
-    queue_prop: *mut cfe_sys::OS_queue_prop_t,
-) -> i32 {
-    if queue_prop.is_null() {
-        cfe_sys::OS_INVALID_POINTER
-    } else if queue_id == 77 {
-        unsafe {
-            (*queue_prop).creator = 55;
-        }
-        0
-    } else {
-        cfe_sys::OS_ERR_INVALID_ID
-    }
+pub unsafe extern "C" fn OS_TaskDelay(millisecond: u32) -> i32 {
+    OS_TASK_DELAY_MS.store(millisecond, Ordering::SeqCst);
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -656,12 +634,8 @@ fn test_sb_wrappers() {
         let _ = recvd.msg();
         assert_eq!(recvd.user_data(), &DUMMY_USER_DATA);
         assert_eq!(recvd.msg_id().unwrap().as_u32(), 0x1901);
-        #[derive(Copy, Clone, Debug)]
-        struct DummyMsg {
-            _header: cfe_sys::CFE_MSG_Message_t,
-        }
-        let typed: Option<&DummyMsg> = recvd.as_msg();
-        assert!(typed.is_some());
+        let bytes = recvd.as_bytes();
+        assert_eq!(bytes.len(), 64);
     }
 
     // Pipe opts and name
@@ -816,10 +790,9 @@ fn test_osal_tcp_stream() {
     );
     SEND_CHUNK_MODE.store(0, Ordering::SeqCst);
 
-    // Test queue property helpers
-    assert_eq!(crate::osal::queue_get_id_by_name("TEST_Q").unwrap(), 77);
-    let qprop = crate::osal::queue_get_info(77).unwrap();
-    assert_eq!(qprop.creator, 55);
+    // Test task_delay
+    assert!(crate::osal::task_delay(25).is_ok());
+    assert_eq!(OS_TASK_DELAY_MS.load(Ordering::SeqCst), 25);
 
     assert!(stream.close().is_ok());
     assert_eq!(OS_CLOSE_CALLS.load(Ordering::SeqCst), 1);

@@ -1,4 +1,4 @@
-//! OSAL wrappers, including `TcpStream` and queue property helpers.
+//! OSAL wrappers, including `TcpStream` and task delay.
 
 use crate::status::Status;
 
@@ -182,58 +182,17 @@ impl Drop for TcpStream {
     }
 }
 
-/// Properties of an OSAL queue returned by [`queue_get_info`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QueueProp {
-    /// Object ID of the queue creator task.
-    pub creator: cfe_sys::osal_id_t,
-}
-
-/// Queries properties of an OSAL queue by its ID.
+/// Delays the calling task for the specified duration in milliseconds.
 ///
 /// # Errors
 ///
-/// Returns `Err(Status)` if `queue_id` is invalid or OSAL returns an error.
-pub fn queue_get_info(queue_id: cfe_sys::osal_id_t) -> Result<QueueProp, Status> {
-    let mut prop = core::mem::MaybeUninit::<cfe_sys::OS_queue_prop_t>::uninit();
-    // SAFETY: prop points to a valid local uninitialized struct.
-    let status = unsafe { cfe_sys::OS_QueueGetInfo(queue_id, prop.as_mut_ptr()) };
+/// Returns `Err(Status)` if OSAL task delay fails.
+pub fn task_delay(millisecond: u32) -> Result<(), Status> {
+    // SAFETY: OS_TaskDelay is thread-safe and suspends the calling thread for the duration.
+    let status = unsafe { cfe_sys::OS_TaskDelay(millisecond) };
     let status = Status::from_raw(status);
     if status.is_success() {
-        // SAFETY: OS_QueueGetInfo initialized prop on success.
-        let prop = unsafe { prop.assume_init() };
-        Ok(QueueProp {
-            creator: prop.creator,
-        })
-    } else {
-        Err(status)
-    }
-}
-
-/// Finds an OSAL queue ID by its name.
-///
-/// # Errors
-///
-/// Returns `Err(Status)` if the queue name is not found or is too long.
-pub fn queue_get_id_by_name(name: &str) -> Result<cfe_sys::osal_id_t, Status> {
-    let max_len = cfe_sys::OS_MAX_API_NAME as usize;
-    if name.len() >= max_len {
-        return Err(Status::from_raw(cfe_sys::OS_ERR_NAME_TOO_LONG));
-    }
-    let mut name_buf = [0u8; cfe_sys::OS_MAX_API_NAME as usize];
-    if let (Some(dest), Some(src)) = (
-        name_buf.get_mut(..name.len()),
-        name.as_bytes().get(..name.len()),
-    ) {
-        dest.copy_from_slice(src);
-    }
-    let mut queue_id = cfe_sys::OS_OBJECT_ID_UNDEFINED;
-    // SAFETY: queue_id is a valid out-pointer; name_buf is null-terminated and bounded by OS_MAX_API_NAME.
-    let status =
-        unsafe { cfe_sys::OS_QueueGetIdByName(&raw mut queue_id, name_buf.as_ptr().cast()) };
-    let status = Status::from_raw(status);
-    if status.is_success() {
-        Ok(queue_id)
+        Ok(())
     } else {
         Err(status)
     }

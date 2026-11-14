@@ -41,7 +41,7 @@ bindgen \
   --use-core \
   --no-layout-tests \
   --clang-macro-fallback \
-  --allowlist-function "CFE_ES_.*|CFE_EVS_.*|CFE_SB_.*|CFE_MSG_.*|OS_Socket.*|OS_Queue.*|OS_close|OS_read|OS_write|OS_TimedRead|OS_TimedWrite" \
+  --allowlist-function "CFE_ES_.*|CFE_EVS_.*|CFE_SB_.*|CFE_MSG_.*|OS_Socket.*|OS_Queue.*|OS_close|OS_read|OS_write|OS_TimedRead|OS_TimedWrite|OS_TaskDelay" \
   --allowlist-type "CFE_ES_RunStatus.*|CFE_EVS_.*|CFE_SB_.*|CFE_MSG_.*|OS_.*|osal_id_t|CFE_Status_t" \
   --allowlist-var "OS_.*|CFE_.*|NODE_.*" \
   -o "$tmp_bindings" \

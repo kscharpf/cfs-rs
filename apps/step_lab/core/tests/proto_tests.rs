@@ -229,6 +229,16 @@ fn test_msg_struct_sizes_and_helpers() {
 
     let start = StartMsg::new(LinkLevel::Packets);
     assert_eq!(start.level, 0);
+    assert_eq!(start.link_level(), Some(LinkLevel::Packets));
+
+    // Test StartMsg from_bytes
+    let start_raw = [0u8; 16];
+    let decoded_start = StartMsg::from_bytes(&start_raw).unwrap();
+    assert_eq!(decoded_start.link_level(), Some(LinkLevel::Packets));
+    let mut bad_level = [0u8; 16];
+    bad_level[8] = 99;
+    assert!(StartMsg::from_bytes(&bad_level).is_none());
+    assert!(StartMsg::from_bytes(&[0u8; 15]).is_none());
 
     let wake_rx = WakeRxMsg::new(1000, &[1, 2, 3, 4]).unwrap();
     assert_eq!(wake_rx.now, 1000);
@@ -237,12 +247,40 @@ fn test_msg_struct_sizes_and_helpers() {
 
     assert!(WakeRxMsg::new(1000, &[0u8; MAX_UNIT_LEN + 1]).is_none());
 
+    // Test WakeRxMsg from_bytes
+    let mut rx_buf = [0u8; 1048];
+    rx_buf[8..16].copy_from_slice(&1000u64.to_ne_bytes());
+    rx_buf[16..18].copy_from_slice(&4u16.to_ne_bytes());
+    rx_buf[24..28].copy_from_slice(&[1, 2, 3, 4]);
+    let decoded_rx = WakeRxMsg::from_bytes(&rx_buf).unwrap();
+    assert_eq!(decoded_rx.now, 1000);
+    assert_eq!(decoded_rx.unit_bytes(), &[1, 2, 3, 4]);
+    assert!(WakeRxMsg::from_bytes(&[0u8; 1047]).is_none());
+
     let wake_tx = WakeTxMsg::new(2000, true);
     assert_eq!(wake_tx.now, 2000);
     assert!(wake_tx.is_tx_slot());
 
+    // Test WakeTxMsg from_bytes
+    let mut tx_buf = [0u8; 24];
+    tx_buf[8..16].copy_from_slice(&2000u64.to_ne_bytes());
+    tx_buf[16] = 1;
+    let decoded_tx = WakeTxMsg::from_bytes(&tx_buf).unwrap();
+    assert_eq!(decoded_tx.now, 2000);
+    assert!(decoded_tx.is_tx_slot());
+    tx_buf[16] = 2; // invalid tx_slot
+    assert!(WakeTxMsg::from_bytes(&tx_buf).is_none());
+    assert!(WakeTxMsg::from_bytes(&[0u8; 23]).is_none());
+
     let done = DoneMsg::new(Some(3000));
     assert_eq!(done.deadline(), Some(3000));
+
+    // Test DoneMsg from_bytes
+    let mut done_buf = [0u8; 24];
+    done_buf[16..24].copy_from_slice(&3000u64.to_ne_bytes());
+    let decoded_done = DoneMsg::from_bytes(&done_buf).unwrap();
+    assert_eq!(decoded_done.deadline(), Some(3000));
+    assert!(DoneMsg::from_bytes(&[0u8; 23]).is_none());
 
     let done_none = DoneMsg::new(None);
     assert_eq!(done_none.deadline(), None);

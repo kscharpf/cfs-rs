@@ -64,7 +64,7 @@ fn wait_for_done(pipe: &mut Pipe, earliest_deadline: &mut Option<u64>) {
             continue;
         };
         if mid.as_u32() == cfe_sys::NODE_DONE_MID {
-            if let Some(done) = buf.as_msg::<DoneMsg>()
+            if let Some(done) = DoneMsg::from_bytes(buf.as_bytes())
                 && let Some(d) = done.deadline()
             {
                 *earliest_deadline = Some(earliest_deadline.map_or(d, |prev| prev.min(d)));
@@ -80,6 +80,7 @@ fn connect_harness() -> Result<TcpStream, ()> {
         if let Ok(s) = TcpStream::connect("127.0.0.1", HARNESS_PORT) {
             return Ok(s);
         }
+        let _ = cfe::osal::task_delay(10);
     }
     Err(())
 }
@@ -147,17 +148,37 @@ fn handle_step(
 
     // Process delivered units
     for unit in units {
-        if let Some(mut wake_rx) = WakeRxMsg::new(now, unit)
-            && cfe::msg::init(
-                wake_rx.msg_mut(),
-                MsgId::from_u32(cfe_sys::NODE_WAKE_RX_MID),
-                core::mem::size_of::<WakeRxMsg>(),
-            )
-            .is_ok()
+        let Some(mut wake_rx) = WakeRxMsg::new(now, unit) else {
+            let _ = evs::send_event(
+                10,
+                EventType::Critical,
+                "STEP_LAB: Failed to create WakeRxMsg",
+            );
+            return Err(());
+        };
+        if cfe::msg::init(
+            wake_rx.msg_mut(),
+            MsgId::from_u32(cfe_sys::NODE_WAKE_RX_MID),
+            core::mem::size_of::<WakeRxMsg>(),
+        )
+        .is_err()
         {
-            let _ = transmit_msg(wake_rx.msg(), true);
-            wait_for_done(pipe, &mut earliest_deadline);
+            let _ = evs::send_event(
+                11,
+                EventType::Critical,
+                "STEP_LAB: Failed to init WakeRxMsg",
+            );
+            return Err(());
         }
+        if transmit_msg(wake_rx.msg(), true).is_err() {
+            let _ = evs::send_event(
+                12,
+                EventType::Critical,
+                "STEP_LAB: Failed to transmit WakeRxMsg",
+            );
+            return Err(());
+        }
+        wait_for_done(pipe, &mut earliest_deadline);
     }
 
     // Process transmit slot
@@ -167,11 +188,24 @@ fn handle_step(
         MsgId::from_u32(cfe_sys::NODE_WAKE_TX_MID),
         core::mem::size_of::<WakeTxMsg>(),
     )
-    .is_ok()
+    .is_err()
     {
-        let _ = transmit_msg(wake_tx.msg(), true);
-        wait_for_done(pipe, &mut earliest_deadline);
+        let _ = evs::send_event(
+            13,
+            EventType::Critical,
+            "STEP_LAB: Failed to init WakeTxMsg",
+        );
+        return Err(());
     }
+    if transmit_msg(wake_tx.msg(), true).is_err() {
+        let _ = evs::send_event(
+            14,
+            EventType::Critical,
+            "STEP_LAB: Failed to transmit WakeTxMsg",
+        );
+        return Err(());
+    }
+    wait_for_done(pipe, &mut earliest_deadline);
 
     // Reply STEP_RESULT
     let result_msg = Message::StepResult {
@@ -193,12 +227,25 @@ fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
         MsgId::from_u32(cfe_sys::NODE_START_MID),
         core::mem::size_of::<StartMsg>(),
     )
-    .is_ok()
+    .is_err()
     {
-        let _ = transmit_msg(start_msg.msg(), true);
-        let mut unused_deadline = None;
-        wait_for_done(&mut pipe, &mut unused_deadline);
+        let _ = evs::send_event(15, EventType::Critical, "STEP_LAB: Failed to init StartMsg");
+        let _ = stream.close();
+        let _ = pipe.delete();
+        return;
     }
+    if transmit_msg(start_msg.msg(), true).is_err() {
+        let _ = evs::send_event(
+            16,
+            EventType::Critical,
+            "STEP_LAB: Failed to transmit StartMsg",
+        );
+        let _ = stream.close();
+        let _ = pipe.delete();
+        return;
+    }
+    let mut unused_deadline = None;
+    wait_for_done(&mut pipe, &mut unused_deadline);
 
     let mut run_status = RunStatus::AppRun;
     while es::run_loop(&mut run_status) {
@@ -240,7 +287,7 @@ pub extern "C" fn STEP_LAB_AppMain() {
     }
 
     // 2. Perform pipe-depth check (link-lab.md §9).
-    if check_pipe_depth(8, MsgId::from_u32(cfe_sys::NODE_TEST_MID)).is_err() {
+    if check_pipe_depth(16, MsgId::from_u32(cfe_sys::NODE_TEST_MID)).is_err() {
         let _ = evs::send_event(
             2,
             EventType::Critical,
@@ -257,7 +304,19 @@ pub extern "C" fn STEP_LAB_AppMain() {
         return;
     };
 
-    let _ = pipe.subscribe_ex(MsgId::from_u32(cfe_sys::NODE_DONE_MID), Qos::DEFAULT, 16);
+    if pipe
+        .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_DONE_MID), Qos::DEFAULT, 16)
+        .is_err()
+    {
+        let _ = evs::send_event(
+            3,
+            EventType::Critical,
+            "STEP_LAB: Failed to subscribe to DONE",
+        );
+        let _ = pipe.delete();
+        es::exit_app(RunStatus::AppError);
+        return;
+    }
 
     // 4. Send start-up event.
     let _ = evs::send_event(

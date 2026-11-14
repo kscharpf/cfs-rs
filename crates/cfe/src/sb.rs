@@ -145,22 +145,18 @@ impl ReceivedBuffer<'_> {
         }
     }
 
-    /// Casts the received message to a typed reference `&T` if the message total size
-    /// is at least `size_of::<T>()`.
+    /// Returns a slice of the total message bytes including headers.
     #[must_use]
-    pub fn as_msg<T: Copy>(&self) -> Option<&T> {
+    pub fn as_bytes(&self) -> &[u8] {
         let mut total_size = 0usize;
         // SAFETY: self.msg() is a valid pointer.
         let status = unsafe { cfe_sys::CFE_MSG_GetSize(self.msg(), &raw mut total_size) };
-        if status != cfe_sys::CFE_SUCCESS.cast_signed() || total_size < core::mem::size_of::<T>() {
-            return None;
+        if status != cfe_sys::CFE_SUCCESS.cast_signed() || total_size == 0 {
+            return &[];
         }
-        let ptr = core::ptr::from_ref(self.msg());
-        if ptr.align_offset(core::mem::align_of::<T>()) != 0 {
-            return None;
-        }
-        // SAFETY: The buffer is at least size_of::<T>() bytes and properly aligned.
-        Some(unsafe { &*ptr.cast::<T>() })
+        let ptr = core::ptr::from_ref(self.msg()).cast::<u8>();
+        // SAFETY: CFE_MSG_GetSize returned a valid size and msg points to at least total_size initialized bytes.
+        unsafe { core::slice::from_raw_parts(ptr, total_size) }
     }
 
     /// Returns a slice of the message user data payload.
@@ -469,7 +465,10 @@ pub fn transmit_buffer(mut buf: MessageBuffer, is_origination: bool) -> Result<(
 /// Returns `Err(Status)` if pipe creation, subscription, or message transmission fails.
 pub fn check_pipe_depth(depth: u16, test_mid: MsgId) -> Result<(), Status> {
     let pipe = Pipe::create(depth, "DEPTH_TEST_PIPE")?;
-    pipe.subscribe_ex(test_mid, Qos::DEFAULT, depth)?;
+    if let Err(e) = pipe.subscribe_ex(test_mid, Qos::DEFAULT, depth) {
+        let _ = pipe.delete();
+        return Err(e);
+    }
 
     let mut cmd_msg = cfe_sys::CFE_MSG_CommandHeader_t {
         Msg: cfe_sys::CFE_MSG_Message_t {

@@ -19,9 +19,17 @@ fn send_done(next_deadline: Option<u64>) {
         MsgId::from_u32(cfe_sys::NODE_DONE_MID),
         core::mem::size_of::<DoneMsg>(),
     )
-    .is_ok()
+    .is_err()
     {
-        let _ = transmit_msg(done.msg(), true);
+        let _ = evs::send_event(4, EventType::Critical, "LINK_LAB: Failed to init DONE msg");
+        return;
+    }
+    if transmit_msg(done.msg(), true).is_err() {
+        let _ = evs::send_event(
+            5,
+            EventType::Critical,
+            "LINK_LAB: Failed to transmit DONE msg",
+        );
     }
 }
 
@@ -43,9 +51,25 @@ pub extern "C" fn LINK_LAB_AppMain() {
     };
 
     // 3. Subscribe to scenario turns.
-    let _ = pipe.subscribe_ex(MsgId::from_u32(cfe_sys::NODE_START_MID), Qos::DEFAULT, 4);
-    let _ = pipe.subscribe_ex(MsgId::from_u32(cfe_sys::NODE_WAKE_RX_MID), Qos::DEFAULT, 16);
-    let _ = pipe.subscribe_ex(MsgId::from_u32(cfe_sys::NODE_WAKE_TX_MID), Qos::DEFAULT, 4);
+    if pipe
+        .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_START_MID), Qos::DEFAULT, 4)
+        .is_err()
+        || pipe
+            .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_WAKE_RX_MID), Qos::DEFAULT, 16)
+            .is_err()
+        || pipe
+            .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_WAKE_TX_MID), Qos::DEFAULT, 4)
+            .is_err()
+    {
+        let _ = evs::send_event(
+            3,
+            EventType::Critical,
+            "LINK_LAB: Failed to subscribe to turns",
+        );
+        let _ = pipe.delete();
+        es::exit_app(RunStatus::AppError);
+        return;
+    }
 
     // 4. Send start-up event.
     let _ = evs::send_event(
