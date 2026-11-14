@@ -6,6 +6,7 @@ members = [
     "crates/cfe-sys",
     "crates/cfe",
     "apps/link_lab",
+    "apps/link_lab/core",
     "apps/step_lab",
 ]
 
@@ -21,6 +22,8 @@ publish = false
 cfe-msg = { path = "crates/cfe-msg" }
 cfe-sys = { path = "crates/cfe-sys" }
 cfe = { path = "crates/cfe" }
+aldis = { git = "https://github.com/kscharpf/aldis.git", rev = "4e4468f96357a301271b1650f6fef145cd5ced94", default-features = false, features = ["core", "spp", "epp", "tm", "tc", "link", "cop1", "time", "spp-time"] }
+refapp-scenario = { git = "https://github.com/kscharpf/aldis.git", rev = "4e4468f96357a301271b1650f6fef145cd5ced94" }
 
 [workspace.lints.rust]
 unsafe_code = "warn"
