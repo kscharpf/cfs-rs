@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "cfe"
+version = "0.0.0"
+dependencies = [
+ "cfe-sys",
+]
+
+[[package]]
 name = "cfe-msg"
 version = "0.0.0"
 
@@ -11,4 +18,22 @@ name = "cfe-msg-ffi"
 version = "0.0.0"
 dependencies = [
  "cfe-msg",
+]
+
+[[package]]
+name = "cfe-sys"
+version = "0.0.0"
+
+[[package]]
+name = "link-lab"
+version = "0.0.0"
+dependencies = [
+ "cfe",
+]
+
+[[package]]
+name = "step-lab"
+version = "0.0.0"
+dependencies = [
+ "cfe",
 ]

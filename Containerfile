@@ -3,7 +3,7 @@ FROM docker.io/library/ubuntu:24.04
 
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        build-essential ca-certificates cmake curl git \
+        build-essential ca-certificates cmake curl git libclang-dev \
  && rm -rf /var/lib/apt/lists/*
 
 # The toolchain and components of rust-toolchain.toml, installed here so that no build downloads
@@ -14,6 +14,7 @@ ENV RUSTUP_HOME=/opt/rustup \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | CARGO_HOME=/opt/rustup-init sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.100.0 \
           --component clippy,rustfmt \
+ && CARGO_HOME=/opt/rustup-init /opt/rustup-init/bin/cargo install --locked bindgen-cli \
  && mkdir -p /opt/rustup-bin \
  && ln -s /opt/rustup-init/bin/* /opt/rustup-bin/
 

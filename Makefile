@@ -3,7 +3,7 @@ CONTAINER ?= podman
 IMAGE     ?= cfs-rs-build
 RUN        = $(CONTAINER) run --rm -v "$(CURDIR)":/work -v cfs-rs-cargo:/cargo $(IMAGE)
 
-.PHONY: check image stock rs shell clean
+.PHONY: check image stock rs node shell clean
 
 # Rust only: format, lints, unit tests.
 check:
@@ -21,6 +21,10 @@ stock:
 # cFS with the Rust MSG module, with the same MSG unit tests.
 rs:
 	$(RUN) scripts/cfs-build.sh rs
+
+# Node build with link_lab and step_lab on stock and rs MSG, with checks.
+node:
+	$(RUN) scripts/cfs-node.sh
 
 shell:
 	$(CONTAINER) run --rm -it -v "$(CURDIR)":/work -v cfs-rs-cargo:/cargo $(IMAGE) bash
