@@ -8,6 +8,12 @@ pub struct TcpStream {
     id: cfe_sys::osal_id_t,
 }
 
+#[expect(
+    clippy::as_conversions,
+    reason = "OS_SOCKADDR_MAX_LEN is a C bindgen u32 constant used as buffer size"
+)]
+const OS_SOCKADDR_MAX_LEN: usize = cfe_sys::OS_SOCKADDR_MAX_LEN as usize;
+
 impl TcpStream {
     /// Connects to a remote IPv4 host and port via OSAL.
     ///
@@ -31,7 +37,7 @@ impl TcpStream {
         let mut addr = cfe_sys::OS_SockAddr_t {
             ActualLength: 0,
             AddrData: cfe_sys::OS_SockAddrData_t {
-                Buffer: [0; cfe_sys::OS_SOCKADDR_MAX_LEN as usize],
+                Buffer: [0; OS_SOCKADDR_MAX_LEN],
             },
         };
 

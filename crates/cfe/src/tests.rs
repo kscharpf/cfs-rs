@@ -67,12 +67,15 @@ pub unsafe extern "C" fn CFE_ES_RunLoop(RunStatus: *mut u32) -> bool {
     let calls = RUN_LOOP_CALLS.fetch_add(1, Ordering::SeqCst);
     if !RunStatus.is_null() {
         if calls == 0 {
+            // SAFETY: RunStatus is checked non-null.
             unsafe { *RunStatus = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_RUN };
             true
         } else if calls == 1 {
+            // SAFETY: RunStatus is checked non-null.
             unsafe { *RunStatus = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_EXIT };
             false
         } else {
+            // SAFETY: RunStatus is checked non-null.
             unsafe { *RunStatus = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_SYS_DELETE };
             false
         }
@@ -109,7 +112,7 @@ pub unsafe extern "C" fn CFE_EVS_SendEvent(
     _: ...
 ) -> cfe_sys::CFE_Status_t {
     LAST_EVENT_ID.store(EventID, Ordering::SeqCst);
-    LAST_EVENT_TYPE.store(EventType as u16, Ordering::SeqCst);
+    LAST_EVENT_TYPE.store(EventType, Ordering::SeqCst);
     0
 }
 
@@ -123,6 +126,7 @@ pub unsafe extern "C" fn CFE_SB_CreatePipe(
     if PipeIdPtr.is_null() || PipeName.is_null() {
         cfe_sys::CFE_SB_BAD_ARGUMENT
     } else {
+        // SAFETY: PipeIdPtr is checked non-null.
         unsafe { *PipeIdPtr = 42 };
         0
     }
@@ -169,9 +173,11 @@ pub unsafe extern "C" fn CFE_SB_ReceiveBuffer(
         return cfe_sys::CFE_SB_TIME_OUT;
     }
     if SIMULATE_RECEIVE_NULL_BUFFER.load(Ordering::SeqCst) {
+        // SAFETY: BufPtr is checked non-null.
         unsafe { *BufPtr = core::ptr::null_mut() };
         return 0;
     }
+    // SAFETY: BufPtr is checked non-null and points to valid storage.
     unsafe {
         *BufPtr = core::ptr::addr_of_mut!(STATIC_BUFFER);
     }
@@ -221,6 +227,7 @@ pub unsafe extern "C" fn CFE_SB_GetPipeOpts(
     if OptsPtr.is_null() {
         cfe_sys::CFE_SB_BAD_ARGUMENT
     } else {
+        // SAFETY: OptsPtr is checked non-null.
         unsafe { *OptsPtr = 1 };
         0
     }
@@ -236,6 +243,7 @@ pub unsafe extern "C" fn CFE_SB_GetPipeName(
         cfe_sys::CFE_SB_BAD_ARGUMENT
     } else {
         let name = c"TEST";
+        // SAFETY: PipeNameBuf is non-null and PipeNameSize >= 5.
         unsafe {
             core::ptr::copy_nonoverlapping(name.as_ptr(), PipeNameBuf, 5);
         }
@@ -309,6 +317,7 @@ pub unsafe extern "C" fn CFE_MSG_GetSize(
     if MsgPtr.is_null() || Size.is_null() {
         cfe_sys::CFE_MSG_BAD_ARGUMENT
     } else {
+        // SAFETY: Size is checked non-null.
         unsafe { *Size = 64 };
         0
     }
@@ -334,6 +343,7 @@ pub unsafe extern "C" fn CFE_MSG_GetMsgId(
     if MsgPtr.is_null() || MsgId.is_null() {
         cfe_sys::CFE_MSG_BAD_ARGUMENT
     } else {
+        // SAFETY: MsgId is checked non-null.
         unsafe { (*MsgId).Value = 0x1901 };
         0
     }
@@ -363,6 +373,7 @@ pub unsafe extern "C" fn OS_SocketOpen(
     }
     OS_SOCKET_OPEN_CALLS.fetch_add(1, Ordering::SeqCst);
     if !sock_id.is_null() {
+        // SAFETY: sock_id is checked non-null.
         unsafe { *sock_id = 99 };
         0
     } else {
@@ -420,9 +431,11 @@ pub unsafe extern "C" fn OS_read(
             let n = nbytes.min(2);
             let dest = buffer.cast::<u8>();
             for i in 0..n {
-                unsafe { *dest.add(i) = (i + 1) as u8 };
+                let byte_val = u8::try_from(i.saturating_add(1)).unwrap_or(0);
+                // SAFETY: buffer is non-null and holds at least nbytes; i < n <= nbytes.
+                unsafe { *dest.add(i) = byte_val };
             }
-            n as i32
+            i32::try_from(n).unwrap_or(0)
         }
         2 => {
             // EOF disconnect
@@ -431,6 +444,7 @@ pub unsafe extern "C" fn OS_read(
         _ => {
             if nbytes >= 4 {
                 let dest = buffer.cast::<u8>();
+                // SAFETY: buffer is non-null and holds at least nbytes >= 4.
                 unsafe {
                     *dest = 1;
                     *dest.add(1) = 2;
@@ -452,6 +466,7 @@ pub unsafe extern "C" fn OS_TimedRead(
     nbytes: usize,
     _timeout: i32,
 ) -> i32 {
+    // SAFETY: caller guarantees filedes and buffer are valid for OS_read.
     unsafe { OS_read(filedes, buffer, nbytes) }
 }
 
@@ -465,13 +480,13 @@ pub unsafe extern "C" fn OS_write(
     match SEND_CHUNK_MODE.load(Ordering::SeqCst) {
         1 => {
             // Send half (at least 1 byte if non-empty)
-            (nbytes.min(2)) as i32
+            i32::try_from(nbytes.min(2)).unwrap_or(0)
         }
         2 => {
             // Disconnect
             0
         }
-        _ => nbytes as i32,
+        _ => i32::try_from(nbytes).unwrap_or(0),
     }
 }
 
@@ -482,6 +497,7 @@ pub unsafe extern "C" fn OS_TimedWrite(
     nbytes: usize,
     _timeout: i32,
 ) -> i32 {
+    // SAFETY: caller guarantees filedes and buffer are valid for OS_write.
     unsafe { OS_write(filedes, buffer, nbytes) }
 }
 
@@ -573,7 +589,7 @@ fn test_evs_wrappers() {
     assert_eq!(LAST_EVENT_ID.load(Ordering::SeqCst), 101);
     assert_eq!(
         LAST_EVENT_TYPE.load(Ordering::SeqCst),
-        EventType::Information.to_raw() as u16
+        EventType::Information.to_raw()
     );
 
     // Message exceeding MAX_EVENT_MESSAGE_LEN bytes returns CFE_EVS_INVALID_PARAMETER error
@@ -640,7 +656,7 @@ fn test_sb_wrappers() {
 
     // Pipe opts and name
     assert_eq!(pipe.opts().unwrap(), 1);
-    let mut name_buf = [0u8; cfe_sys::OS_MAX_API_NAME as usize];
+    let mut name_buf = [0u8; sb::OS_MAX_API_NAME];
     assert_eq!(pipe.name(&mut name_buf).unwrap(), "TEST");
 
     // receive_buffer returning null pointer maps to CFE_SB_PIPE_RD_ERR

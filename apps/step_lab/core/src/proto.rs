@@ -161,8 +161,8 @@ impl<'a> UnitsIter<'a> {
 
     /// Returns the number of units.
     #[must_use]
-    pub const fn count(&self) -> usize {
-        self.count as usize
+    pub fn count(&self) -> usize {
+        usize::from(self.count)
     }
 
     /// Returns `true` if there are no units.
@@ -249,8 +249,8 @@ impl<'a> OpsIter<'a> {
 
     /// Returns the number of ops entries.
     #[must_use]
-    pub const fn count(&self) -> usize {
-        self.count as usize
+    pub fn count(&self) -> usize {
+        usize::from(self.count)
     }
 
     /// Returns `true` if there are no ops.
@@ -328,7 +328,7 @@ pub enum Outputs<'a> {
 impl Outputs<'_> {
     /// Returns the number of outputs.
     #[must_use]
-    pub const fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         match self {
             Self::Slice(slice) => slice.len(),
             Self::Iter(iter) => iter.count(),
@@ -337,7 +337,7 @@ impl Outputs<'_> {
 
     /// Returns `true` if there are no outputs.
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }
@@ -358,8 +358,8 @@ impl<'a> OutputsIter<'a> {
 
     /// Returns the count of outputs.
     #[must_use]
-    pub const fn count(&self) -> usize {
-        self.count as usize
+    pub fn count(&self) -> usize {
+        usize::from(self.count)
     }
 
     /// Returns an iterator yielding each output.

@@ -3,28 +3,29 @@
 use crate::status::Status;
 
 /// Severity of an EVS event.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "cFE event types fit in u16"
-)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u16)]
 pub enum EventType {
     /// Debug event.
-    Debug = cfe_sys::CFE_EVS_EventType_CFE_EVS_EventType_DEBUG as u16,
+    Debug = 1,
     /// Informational event.
-    Information = cfe_sys::CFE_EVS_EventType_CFE_EVS_EventType_INFORMATION as u16,
+    Information = 2,
     /// Error event.
-    Error = cfe_sys::CFE_EVS_EventType_CFE_EVS_EventType_ERROR as u16,
+    Error = 3,
     /// Critical event.
-    Critical = cfe_sys::CFE_EVS_EventType_CFE_EVS_EventType_CRITICAL as u16,
+    Critical = 4,
 }
 
 impl EventType {
     /// Convert to the raw C enum value.
     #[must_use]
     pub const fn to_raw(self) -> cfe_sys::CFE_EVS_EventType_Enum_t {
-        self as cfe_sys::CFE_EVS_EventType_Enum_t
+        match self {
+            Self::Debug => 1,
+            Self::Information => 2,
+            Self::Error => 3,
+            Self::Critical => 4,
+        }
     }
 }
 
@@ -36,23 +37,19 @@ impl EventType {
 ///
 /// Returns `Err(Status)` if cFE EVS registration fails.
 pub fn register() -> Result<(), Status> {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "binary filter scheme fits in uint8"
-    )]
-    // SAFETY: NULL filters with count 0 and BINARY scheme is valid and standard in cFS apps.
-    let status = unsafe {
-        cfe_sys::CFE_EVS_Register(
-            core::ptr::null(),
-            0,
-            cfe_sys::CFE_EVS_EventFilter_CFE_EVS_EventFilter_BINARY as _,
-        )
-    };
+    // SAFETY: NULL filters with count 0 and BINARY scheme (0) is valid and standard in cFS apps.
+    let status = unsafe { cfe_sys::CFE_EVS_Register(core::ptr::null(), 0, 0) };
     Status::from_raw(status).result()
 }
 
+#[expect(
+    clippy::as_conversions,
+    reason = "CFE_MISSION_EVS_MAX_MESSAGE_LENGTH is a C bindgen u32 constant used as buffer size"
+)]
+const EVS_MAX_MESSAGE_LENGTH: usize = cfe_sys::CFE_MISSION_EVS_MAX_MESSAGE_LENGTH as usize;
+
 /// Maximum length of an event message payload excluding the null terminator.
-pub const MAX_EVENT_MESSAGE_LEN: usize = (cfe_sys::CFE_MISSION_EVS_MAX_MESSAGE_LENGTH - 1) as usize;
+pub const MAX_EVENT_MESSAGE_LEN: usize = EVS_MAX_MESSAGE_LENGTH - 1;
 
 /// Sends an event message with the specified ID and severity.
 ///
@@ -64,7 +61,7 @@ pub fn send_event(event_id: u16, event_type: EventType, message: &str) -> Result
     if message.len() > MAX_EVENT_MESSAGE_LEN {
         return Err(Status::from_raw(cfe_sys::CFE_EVS_INVALID_PARAMETER));
     }
-    let mut buf = [0u8; cfe_sys::CFE_MISSION_EVS_MAX_MESSAGE_LENGTH as usize];
+    let mut buf = [0u8; EVS_MAX_MESSAGE_LENGTH];
     if let Some(dest) = buf.get_mut(..message.len()) {
         dest.copy_from_slice(message.as_bytes());
     }

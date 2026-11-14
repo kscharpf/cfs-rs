@@ -250,6 +250,13 @@ pub struct Pipe {
     id: PipeId,
 }
 
+/// Maximum length of an OSAL API name including the null terminator.
+#[expect(
+    clippy::as_conversions,
+    reason = "OS_MAX_API_NAME is a C bindgen u32 constant used as buffer size and slice bound"
+)]
+pub const OS_MAX_API_NAME: usize = cfe_sys::OS_MAX_API_NAME as usize;
+
 impl Pipe {
     /// Creates a new Software Bus pipe with the given queue depth and name.
     ///
@@ -258,12 +265,11 @@ impl Pipe {
     /// Returns `Err(Status)` with `CFE_SB_BAD_ARGUMENT` if `name` is longer than
     /// `OS_MAX_API_NAME - 1` bytes, or if cFE pipe creation fails.
     pub fn create(depth: u16, name: &str) -> Result<Self, Status> {
-        let max_len = cfe_sys::OS_MAX_API_NAME as usize;
-        if name.len() >= max_len {
+        if name.len() >= OS_MAX_API_NAME {
             return Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT));
         }
 
-        let mut name_buf = [0u8; cfe_sys::OS_MAX_API_NAME as usize];
+        let mut name_buf = [0u8; OS_MAX_API_NAME];
         if let Some(dest) = name_buf.get_mut(..name.len()) {
             dest.copy_from_slice(name.as_bytes());
         }
@@ -360,10 +366,7 @@ impl Pipe {
     /// # Errors
     ///
     /// Returns `Err(Status)` if querying pipe name fails or name is not valid UTF-8.
-    pub fn name<'a>(
-        &self,
-        buf: &'a mut [u8; cfe_sys::OS_MAX_API_NAME as usize],
-    ) -> Result<&'a str, Status> {
+    pub fn name<'a>(&self, buf: &'a mut [u8; OS_MAX_API_NAME]) -> Result<&'a str, Status> {
         // SAFETY: self.id is a valid pipe ID, buf is a valid buffer of OS_MAX_API_NAME bytes.
         let status = unsafe {
             cfe_sys::CFE_SB_GetPipeName(buf.as_mut_ptr().cast(), buf.len(), self.id.to_raw())

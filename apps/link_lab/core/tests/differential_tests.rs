@@ -127,16 +127,21 @@ fn run_trace(case_name: &str) {
                     let fault_name = rec["fault"].as_str().unwrap_or_default();
                     match fault_name {
                         "flip" => {
-                            let octet = rec["args"][0].as_u64().expect("octet in flip") as usize;
-                            let bit = rec["args"][1].as_u64().expect("bit in flip") as u8;
+                            let octet =
+                                usize::try_from(rec["args"][0].as_u64().expect("octet in flip"))
+                                    .expect("octet fits in usize");
+                            let bit = u8::try_from(rec["args"][1].as_u64().expect("bit in flip"))
+                                .expect("bit fits in u8");
                             up_faults
                                 .entry(index)
                                 .or_default()
                                 .push(Fault::Flip { octet, bit });
                         }
                         "truncate" => {
-                            let octets =
-                                rec["args"][0].as_u64().expect("octets in truncate") as usize;
+                            let octets = usize::try_from(
+                                rec["args"][0].as_u64().expect("octets in truncate"),
+                            )
+                            .expect("octets fits in usize");
                             up_faults
                                 .entry(index)
                                 .or_default()
@@ -152,24 +157,28 @@ fn run_trace(case_name: &str) {
                 let mut octets = unhex(hex_str);
                 let index = rec["index"].as_u64().expect("index in unit_sent");
 
-                if dir == "up" {
-                    if let Some(faults) = up_faults.get(&index) {
-                        for fault in faults {
-                            match fault {
-                                Fault::Flip { octet, bit } => {
-                                    if let Some(byte) = octets.get_mut(*octet) {
-                                        *byte ^= 0x80 >> bit;
+                match dir {
+                    "up" => {
+                        if let Some(faults) = up_faults.get(&index) {
+                            for fault in faults {
+                                match fault {
+                                    Fault::Flip { octet, bit } => {
+                                        if let Some(byte) = octets.get_mut(*octet) {
+                                            *byte ^= 0x80 >> bit;
+                                        }
                                     }
-                                }
-                                Fault::Truncate { octets: n } => {
-                                    octets.truncate(*n);
+                                    Fault::Truncate { octets: n } => {
+                                        octets.truncate(*n);
+                                    }
                                 }
                             }
                         }
+                        up_sent.insert(index, octets);
                     }
-                    up_sent.insert(index, octets);
-                } else if dir == "down" {
-                    expected_down_units.push((t_us, octets));
+                    "down" => {
+                        expected_down_units.push((t_us, octets));
+                    }
+                    _ => {}
                 }
             }
             "unit_delivered" => {
@@ -192,7 +201,8 @@ fn run_trace(case_name: &str) {
                 }
             }
             "app_event" if rec["node"].as_str() == Some("flight") => {
-                let code = rec["code"].as_u64().expect("code in app_event") as u16;
+                let code = u16::try_from(rec["code"].as_u64().expect("code in app_event"))
+                    .expect("code fits in u16");
                 let args: Vec<u64> = rec["args"]
                     .as_array()
                     .expect("args array")
@@ -200,21 +210,22 @@ fn run_trace(case_name: &str) {
                     .map(|v| v.as_u64().expect("u64 arg"))
                     .collect();
 
-                if matches!(
-                    code,
+                match code {
                     APP_PACKET_REJECTED
-                        | APP_FRAME_REJECTED
-                        | APP_FRAME_DISCARDED
-                        | APP_SEQUENCE_VIOLATION
-                        | APP_UNKNOWN_MAP
-                        | APP_SDU_TOO_LONG
-                        | APP_DOWNLINK_REFUSED
-                        | APP_FARM1_STATE
-                        | APP_FARM1_UNLOCK
-                ) {
-                    expected_link_events.push((t_us, code, args));
-                } else if matches!(code, 20 | 21) {
-                    expected_app_intake.push((t_us, code, args));
+                    | APP_FRAME_REJECTED
+                    | APP_FRAME_DISCARDED
+                    | APP_SEQUENCE_VIOLATION
+                    | APP_UNKNOWN_MAP
+                    | APP_SDU_TOO_LONG
+                    | APP_DOWNLINK_REFUSED
+                    | APP_FARM1_STATE
+                    | APP_FARM1_UNLOCK => {
+                        expected_link_events.push((t_us, code, args));
+                    }
+                    20 | 21 => {
+                        expected_app_intake.push((t_us, code, args));
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -370,6 +381,8 @@ fn run_trace(case_name: &str) {
                 expected.2[1],
                 "case {case_name}: table length mismatch"
             );
+        } else {
+            panic!("case {case_name}: unexpected intake code {}", expected.1);
         }
     }
 }

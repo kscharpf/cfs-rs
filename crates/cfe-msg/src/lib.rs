@@ -66,7 +66,18 @@ impl SequenceFlags {
     /// Returns the 2-bit CCSDS encoding (`0..=3`) of this flag.
     #[must_use]
     pub const fn bits(self) -> u8 {
-        self as u8
+        match self {
+            Self::Continuation => 0b00,
+            Self::First => 0b01,
+            Self::Last => 0b10,
+            Self::Unsegmented => 0b11,
+        }
+    }
+}
+
+impl From<SequenceFlags> for u8 {
+    fn from(flags: SequenceFlags) -> Self {
+        flags.bits()
     }
 }
 
@@ -78,7 +89,7 @@ pub const COMMAND_HEADER_LEN: usize = PRIMARY_HEADER_LEN + 2;
 pub const TELEMETRY_HEADER_LEN: usize = PRIMARY_HEADER_LEN + 6 + 4;
 
 /// Maximum 7-bit command function code (`CFE_MSG_FC_MASK`).
-pub const MAX_FCN_CODE: u16 = FCN_CODE_MASK as u16;
+pub const MAX_FCN_CODE: u16 = 0x7F;
 
 /// Expected CCSDS Packet Version Number for cFE messages (`CFE_MISSION_CCSDSVER`).
 const CCSDS_VERSION: u16 = 0;
