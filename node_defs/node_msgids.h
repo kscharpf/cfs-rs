@@ -18,6 +18,9 @@
 #define NODE_CMD_MID_BASE 0x1900
 #define NODE_TLM_MID_BASE 0x0900
 
+/* Harness TCP Port */
+#define NODE_HARNESS_PORT 5010
+
 /* Commands / Turns */
 #define NODE_START_MID           (NODE_CMD_MID_BASE + 0x00) /* step_lab -> all: link level of case */
 #define NODE_WAKE_RX_MID         (NODE_CMD_MID_BASE + 0x01) /* step_lab -> link_lab: process delivered unit */
@@ -25,6 +28,7 @@
 #define NODE_WAKE_APPS_MID       (NODE_CMD_MID_BASE + 0x03) /* step_lab -> scn_lab: scenario steps 2-5 */
 #define NODE_CMD_PACKET_MID      (NODE_CMD_MID_BASE + 0x04) /* link_lab -> scn_lab: one command packet */
 #define NODE_CMD_PACKET_DONE_MID (NODE_CMD_MID_BASE + 0x05) /* scn_lab -> link_lab: return turn */
+#define NODE_TEST_MID            (NODE_CMD_MID_BASE + 0x0F) /* step_lab pipe depth self-check */
 
 /* Telemetry / Data */
 #define NODE_TLM_PACKET_MID      (NODE_TLM_MID_BASE + 0x00) /* scn_lab -> link_lab: one telemetry packet */
@@ -53,5 +57,6 @@ NODE_CHECK_MID(NODE_TLM_PACKET_MID);
 NODE_CHECK_MID(NODE_RECORD_MID);
 NODE_CHECK_MID(NODE_UNIT_MID);
 NODE_CHECK_MID(NODE_DONE_MID);
+NODE_CHECK_MID(NODE_TEST_MID);
 
 #endif /* NODE_MSGIDS_H */

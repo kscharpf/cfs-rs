@@ -573,12 +573,14 @@ pub const CFE_PSP_RST_SUBTYPE_BANKSWITCH_RESET: u32 = 9;
 pub const CFE_PSP_RST_SUBTYPE_MAX: u32 = 10;
 pub const NODE_CMD_MID_BASE: u32 = 6400;
 pub const NODE_TLM_MID_BASE: u32 = 2304;
+pub const NODE_HARNESS_PORT: u32 = 5010;
 pub const NODE_START_MID: u32 = 6400;
 pub const NODE_WAKE_RX_MID: u32 = 6401;
 pub const NODE_WAKE_TX_MID: u32 = 6402;
 pub const NODE_WAKE_APPS_MID: u32 = 6403;
 pub const NODE_CMD_PACKET_MID: u32 = 6404;
 pub const NODE_CMD_PACKET_DONE_MID: u32 = 6405;
+pub const NODE_TEST_MID: u32 = 6415;
 pub const NODE_TLM_PACKET_MID: u32 = 2304;
 pub const NODE_RECORD_MID: u32 = 2305;
 pub const NODE_UNIT_MID: u32 = 2306;
@@ -679,6 +681,33 @@ unsafe extern "C" {
     #[doc = " @brief Closes an open file handle\n\n This closes regular file handles and any other file-like resource, such as\n network streams or pipes.\n\n @param[in] filedes   The handle ID to operate on\n\n @return Execution status, see @ref OSReturnCodes\n @retval #OS_SUCCESS @copybrief OS_SUCCESS\n @retval #OS_ERR_INVALID_ID if the file descriptor passed in is invalid\n @retval #OS_ERROR if an unexpected/unhandled error occurs @covtest"]
     pub fn OS_close(filedes: osal_id_t) -> int32;
 }
+unsafe extern "C" {
+    #[doc = " @brief Read from a file handle\n\n Reads up to nbytes from a file, and puts them into buffer.\n\n If the file position is at the end of file (or beyond, if the OS allows) then this\n function will return 0.\n\n @param[in]  filedes  The handle ID to operate on\n @param[out] buffer   Storage location for file data @nonnull\n @param[in]  nbytes   Maximum number of bytes to read @nonzero\n\n @note All OSAL error codes are negative int32 values.  Failure of this\n call can be checked by testing if the result is less than 0.\n\n @return A non-negative byte count or appropriate error code, see @ref OSReturnCodes\n @retval #OS_INVALID_POINTER if buffer is a null pointer\n @retval #OS_ERR_INVALID_SIZE if the passed-in size is not valid\n @retval #OS_ERROR if OS call failed @covtest\n @retval #OS_ERR_INVALID_ID if the file descriptor passed in is invalid\n @retval 0 if at end of file/stream data"]
+    pub fn OS_read(filedes: osal_id_t, buffer: *mut ::core::ffi::c_void, nbytes: usize) -> int32;
+}
+unsafe extern "C" {
+    #[doc = " @brief Write to a file handle\n\n Writes to a file. copies up to a maximum of nbytes of buffer to the file\n described in filedes\n\n @param[in] filedes   The handle ID to operate on\n @param[in] buffer    Source location for file data @nonnull\n @param[in] nbytes    Maximum number of bytes to read @nonzero\n\n @note All OSAL error codes are negative int32 values.  Failure of this\n call can be checked by testing if the result is less than 0.\n\n @return A non-negative byte count or appropriate error code, see @ref OSReturnCodes\n @retval #OS_INVALID_POINTER if buffer is NULL\n @retval #OS_ERR_INVALID_SIZE if the passed-in size is not valid\n @retval #OS_ERROR if OS call failed @covtest\n @retval #OS_ERR_INVALID_ID if the file descriptor passed in is invalid\n @retval 0 if file/stream cannot accept any more data"]
+    pub fn OS_write(filedes: osal_id_t, buffer: *const ::core::ffi::c_void, nbytes: usize)
+    -> int32;
+}
+unsafe extern "C" {
+    #[doc = " @brief File/Stream input read with a timeout\n\n This implements a time-limited read and is primarily intended for use with\n sockets but may also work with any other stream-like resource that the underlying\n OS supports, such as pipes or special devices.\n\n If data is immediately available on the file/socket, this will return that data\n along with the actual number of bytes that were immediately available.  It will\n not block.\n\n If the file position is at the end of file or end of stream data (e.g. if the remote\n end has closed the connection), then this function will immediately return 0 without\n blocking for the timeout period.\n\n If no data is immediately available, but the underlying resource/stream is still\n connected to a peer, this will wait up to the given timeout for additional\n data to appear.  If no data appears within the timeout period, then this returns\n the #OS_ERROR_TIMEOUT status code.  This allows the caller to differentiate\n an open (but idle) socket connection from a connection which has been closed\n by the remote peer.\n\n In all cases this will return successfully as soon as at least 1 byte of actual\n data is available.  It will not attempt to read the entire input buffer.\n\n If an EOF condition occurs prior to timeout, this function returns zero.\n\n @param[in]  filedes   The handle ID to operate on\n @param[out] buffer    Storage location for file data @nonnull\n @param[in]  nbytes    Maximum number of bytes to read @nonzero\n @param[in]  timeout   Maximum time to wait, in milliseconds, relative to current time (OS_PEND = forever)\n\n @returns Byte count on success or appropriate error code, see @ref OSReturnCodes\n @retval #OS_ERROR_TIMEOUT if no data became available during timeout period\n @retval #OS_ERR_INVALID_ID if the file descriptor passed in is invalid\n @retval #OS_ERR_INVALID_SIZE if the passed-in size is not valid\n @retval #OS_INVALID_POINTER if the passed-in buffer is not valid\n @retval 0 if at end of file/stream data"]
+    pub fn OS_TimedRead(
+        filedes: osal_id_t,
+        buffer: *mut ::core::ffi::c_void,
+        nbytes: usize,
+        timeout: int32,
+    ) -> int32;
+}
+unsafe extern "C" {
+    #[doc = " @brief File/Stream output write with a timeout\n\n This implements a time-limited write and is primarily intended for use with\n sockets but may also work with any other stream-like resource that the underlying\n OS supports.\n\n If output buffer space is immediately available on the file/socket, this will\n place data into the buffer and return the actual number of bytes that were\n queued for output.  It will not block.\n\n If no output buffer space is immediately available, this will wait up to the\n given timeout for space to become available.  If no space becomes available within\n the timeout period, then this returns an error code (not zero).\n\n In all cases this will return successfully as soon as at least 1 byte of actual\n data is output.  It will _not_ attempt to write the entire output buffer.\n\n If an EOF condition occurs prior to timeout, this function returns zero.\n\n @param[in] filedes   The handle ID to operate on\n @param[in] buffer    Source location for file data @nonnull\n @param[in] nbytes    Maximum number of bytes to read @nonzero\n @param[in] timeout   Maximum time to wait, in milliseconds, relative to current time (OS_PEND = forever)\n\n @return A non-negative byte count or appropriate error code, see @ref OSReturnCodes\n @retval #OS_ERROR_TIMEOUT if no data became available during timeout period\n @retval #OS_ERR_INVALID_ID if the file descriptor passed in is invalid\n @retval #OS_ERR_INVALID_SIZE if the passed-in size is not valid\n @retval #OS_INVALID_POINTER if the passed-in buffer is not valid\n @retval 0 if file/stream cannot accept any more data"]
+    pub fn OS_TimedWrite(
+        filedes: osal_id_t,
+        buffer: *const ::core::ffi::c_void,
+        nbytes: usize,
+        timeout: int32,
+    ) -> int32;
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct OS_statvfs_t {
@@ -743,6 +772,50 @@ pub struct OS_mut_sem_prop_t {
 pub struct OS_queue_prop_t {
     pub name: [::core::ffi::c_char; 20usize],
     pub creator: osal_id_t,
+}
+unsafe extern "C" {
+    #[doc = " @brief Create a message queue\n\n This is the function used to create a queue in the operating system.\n Depending on the underlying operating system, the memory for the queue\n will be allocated automatically or allocated by the code that sets up\n the queue. Queue names must be unique; if the name already exists this\n function fails. Names cannot be NULL.\n\n @param[out]  queue_id will be set to the non-zero ID of the newly-created resource @nonnull\n @param[in]   queue_name the name of the new resource to create @nonnull\n @param[in]   queue_depth the maximum depth of the queue\n @param[in]   data_size the size of each entry in the queue @nonzero\n @param[in]   flags options for the queue (reserved for future use, pass as 0)\n\n @return Execution status, see @ref OSReturnCodes\n @retval #OS_SUCCESS @copybrief OS_SUCCESS\n @retval #OS_INVALID_POINTER if a pointer passed in is NULL\n @retval #OS_ERR_NAME_TOO_LONG name length including null terminator greater than #OS_MAX_API_NAME\n @retval #OS_ERR_NO_FREE_IDS if there are already the max queues created\n @retval #OS_ERR_NAME_TAKEN if the name is already being used on another queue\n @retval #OS_ERR_INVALID_SIZE if data_size is 0\n @retval #OS_QUEUE_INVALID_SIZE if the queue depth exceeds the limit\n @retval #OS_ERROR if the OS create call fails"]
+    pub fn OS_QueueCreate(
+        queue_id: *mut osal_id_t,
+        queue_name: *const ::core::ffi::c_char,
+        queue_depth: osal_blockcount_t,
+        data_size: usize,
+        flags: uint32,
+    ) -> int32;
+}
+unsafe extern "C" {
+    #[doc = " @brief Deletes the specified message queue.\n\n This is the function used to delete a queue in the operating system.\n This also frees the respective queue_id to be used again when another queue is created.\n\n @note If There are messages on the queue, they will be lost and any subsequent\n calls to QueueGet or QueuePut to this queue will result in errors\n\n @param[in] queue_id The object ID to delete\n\n @return Execution status, see @ref OSReturnCodes\n @retval #OS_SUCCESS @copybrief OS_SUCCESS\n @retval #OS_ERR_INVALID_ID if the id passed in does not exist\n @retval #OS_ERROR if the OS call returns an unexpected error @covtest"]
+    pub fn OS_QueueDelete(queue_id: osal_id_t) -> int32;
+}
+unsafe extern "C" {
+    #[doc = " @brief Receive a message on a message queue\n\n If a message is pending, it is returned immediately.  Otherwise the calling task\n will block until a message arrives or the timeout expires.\n\n @param[in]   queue_id The object ID to operate on\n @param[out]  data The buffer to store the received message @nonnull\n @param[in]   size The size of the data buffer @nonzero\n @param[out]  size_copied Set to the actual size of the message @nonnull\n @param[in]   timeout The maximum amount of time to block, or OS_PEND to wait forever\n\n @return Execution status, see @ref OSReturnCodes\n @retval #OS_SUCCESS @copybrief OS_SUCCESS\n @retval #OS_ERR_INVALID_ID if the given ID does not exist\n @retval #OS_INVALID_POINTER if a pointer passed in is NULL\n @retval #OS_QUEUE_EMPTY if the Queue has no messages on it to be received\n @retval #OS_QUEUE_TIMEOUT if the timeout was OS_PEND and the time expired\n @retval #OS_QUEUE_INVALID_SIZE if the size copied from the queue was not correct\n @retval #OS_ERROR if the OS call returns an unexpected error @covtest"]
+    pub fn OS_QueueGet(
+        queue_id: osal_id_t,
+        data: *mut ::core::ffi::c_void,
+        size: usize,
+        size_copied: *mut usize,
+        timeout: int32,
+    ) -> int32;
+}
+unsafe extern "C" {
+    #[doc = " @brief Put a message on a message queue.\n\n @param[in]  queue_id The object ID to operate on\n @param[in]  data The buffer containing the message to put @nonnull\n @param[in]  size The size of the data buffer @nonzero\n @param[in]  flags Currently reserved/unused, should be passed as 0\n\n @return Execution status, see @ref OSReturnCodes\n @retval #OS_SUCCESS @copybrief OS_SUCCESS\n @retval #OS_ERR_INVALID_ID if the queue id passed in is not a valid queue\n @retval #OS_INVALID_POINTER if the data pointer is NULL\n @retval #OS_QUEUE_INVALID_SIZE if the data message is too large for the queue\n @retval #OS_QUEUE_FULL if the queue cannot accept another message\n @retval #OS_ERROR if the OS call returns an unexpected error @covtest"]
+    pub fn OS_QueuePut(
+        queue_id: osal_id_t,
+        data: *const ::core::ffi::c_void,
+        size: usize,
+        flags: uint32,
+    ) -> int32;
+}
+unsafe extern "C" {
+    #[doc = " @brief Find an existing queue ID by name\n\n This function tries to find a queue Id given the name of the queue. The\n id of the queue is passed back in queue_id.\n\n @param[out]  queue_id will be set to the ID of the existing resource\n @param[in]   queue_name the name of the existing resource to find @nonnull\n\n @return Execution status, see @ref OSReturnCodes\n @retval #OS_SUCCESS @copybrief OS_SUCCESS\n @retval #OS_INVALID_POINTER if the name or id pointers are NULL\n @retval #OS_ERR_NAME_TOO_LONG name length including null terminator greater than #OS_MAX_API_NAME\n @retval #OS_ERR_NAME_NOT_FOUND the name was not found in the table"]
+    pub fn OS_QueueGetIdByName(
+        queue_id: *mut osal_id_t,
+        queue_name: *const ::core::ffi::c_char,
+    ) -> int32;
+}
+unsafe extern "C" {
+    #[doc = " @brief Fill a property object buffer with details regarding the resource\n\n This function will pass back a pointer to structure that contains\n all of the relevant info (name and creator) about the specified queue.\n\n @param[in]   queue_id The object ID to operate on\n @param[out]  queue_prop The property object buffer to fill @nonnull\n\n @return Execution status, see @ref OSReturnCodes\n @retval #OS_SUCCESS @copybrief OS_SUCCESS\n @retval #OS_INVALID_POINTER if queue_prop is NULL\n @retval #OS_ERR_INVALID_ID if the ID given is not  a valid queue"]
+    pub fn OS_QueueGetInfo(queue_id: osal_id_t, queue_prop: *mut OS_queue_prop_t) -> int32;
 }
 #[doc = " @brief OSAL rwlock properties"]
 #[repr(C)]

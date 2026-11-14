@@ -1,7 +1,7 @@
 # Entry points. `check` runs on the host; the cFS builds run in a Linux container.
 CONTAINER ?= podman
 IMAGE     ?= cfs-rs-build
-RUN        = $(CONTAINER) run --rm -v "$(CURDIR)":/work -v cfs-rs-cargo:/cargo $(IMAGE)
+RUN        = $(CONTAINER) run --rm --sysctl fs.mqueue.msg_max=64 -v "$(CURDIR)":/work -v cfs-rs-cargo:/cargo $(IMAGE)
 
 .PHONY: check image stock rs node shell clean
 

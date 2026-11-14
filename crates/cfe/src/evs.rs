@@ -52,7 +52,7 @@ pub fn register() -> Result<(), Status> {
 }
 
 /// Maximum length of an event message payload excluding the null terminator.
-pub const MAX_EVENT_MESSAGE_LEN: usize = 127;
+pub const MAX_EVENT_MESSAGE_LEN: usize = (cfe_sys::CFE_MISSION_EVS_MAX_MESSAGE_LENGTH - 1) as usize;
 
 /// Sends an event message with the specified ID and severity.
 ///
@@ -64,7 +64,7 @@ pub fn send_event(event_id: u16, event_type: EventType, message: &str) -> Result
     if message.len() > MAX_EVENT_MESSAGE_LEN {
         return Err(Status::from_raw(cfe_sys::CFE_EVS_INVALID_PARAMETER));
     }
-    let mut buf = [0u8; 128];
+    let mut buf = [0u8; cfe_sys::CFE_MISSION_EVS_MAX_MESSAGE_LENGTH as usize];
     if let Some(dest) = buf.get_mut(..message.len()) {
         dest.copy_from_slice(message.as_bytes());
     }

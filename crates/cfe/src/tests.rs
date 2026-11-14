@@ -46,6 +46,9 @@ static SIMULATE_ALLOC_FAIL: AtomicBool = AtomicBool::new(false);
 static RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
 static TRANSMIT_BUFFER_CALLS: AtomicU32 = AtomicU32::new(0);
 static TRANSMIT_MSG_CALLS: AtomicU32 = AtomicU32::new(0);
+static RECV_CHUNK_MODE: AtomicU32 = AtomicU32::new(0);
+static SEND_CHUNK_MODE: AtomicU32 = AtomicU32::new(0);
+static DUMMY_USER_DATA: [u8; 16] = [0xAA; 16];
 
 static mut STATIC_BUFFER: cfe_sys::CFE_SB_Buffer_t = cfe_sys::CFE_SB_Buffer_t {
     Msg: cfe_sys::CFE_MSG_Message {
@@ -185,6 +188,88 @@ pub unsafe extern "C" fn CFE_SB_TransmitMsg(
         cfe_sys::CFE_SB_BAD_ARGUMENT
     } else {
         0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_SB_GetUserData(
+    MsgPtr: *mut cfe_sys::CFE_MSG_Message_t,
+) -> *mut core::ffi::c_void {
+    if MsgPtr.is_null() {
+        core::ptr::null_mut()
+    } else {
+        DUMMY_USER_DATA.as_ptr().cast_mut().cast()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_SB_GetUserDataLength(
+    MsgPtr: *const cfe_sys::CFE_MSG_Message_t,
+) -> usize {
+    if MsgPtr.is_null() {
+        0
+    } else {
+        DUMMY_USER_DATA.len()
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_SB_GetPipeOpts(
+    _PipeId: cfe_sys::CFE_SB_PipeId_t,
+    OptsPtr: *mut u8,
+) -> cfe_sys::CFE_Status_t {
+    if OptsPtr.is_null() {
+        cfe_sys::CFE_SB_BAD_ARGUMENT
+    } else {
+        unsafe { *OptsPtr = 1 };
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_SB_GetPipeName(
+    PipeNameBuf: *mut core::ffi::c_char,
+    PipeNameSize: usize,
+    _PipeId: cfe_sys::CFE_SB_PipeId_t,
+) -> cfe_sys::CFE_Status_t {
+    if PipeNameBuf.is_null() || PipeNameSize < 5 {
+        cfe_sys::CFE_SB_BAD_ARGUMENT
+    } else {
+        let name = c"TEST";
+        unsafe {
+            core::ptr::copy_nonoverlapping(name.as_ptr(), PipeNameBuf, 5);
+        }
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn OS_QueueGetIdByName(
+    queue_id: *mut cfe_sys::osal_id_t,
+    queue_name: *const core::ffi::c_char,
+) -> i32 {
+    if queue_id.is_null() || queue_name.is_null() {
+        cfe_sys::OS_INVALID_POINTER
+    } else {
+        unsafe { *queue_id = 77 };
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn OS_QueueGetInfo(
+    queue_id: cfe_sys::osal_id_t,
+    queue_prop: *mut cfe_sys::OS_queue_prop_t,
+) -> i32 {
+    if queue_prop.is_null() {
+        cfe_sys::OS_INVALID_POINTER
+    } else if queue_id == 77 {
+        unsafe {
+            (*queue_prop).creator = 55;
+        }
+        0
+    } else {
+        cfe_sys::OS_ERR_INVALID_ID
     }
 }
 
@@ -342,37 +427,84 @@ pub unsafe extern "C" fn OS_SocketConnect(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn OS_SocketRecvFrom(
-    _sock_id: cfe_sys::osal_id_t,
+pub unsafe extern "C" fn OS_read(
+    _filedes: cfe_sys::osal_id_t,
     buffer: *mut core::ffi::c_void,
-    buflen: usize,
-    _RemoteAddr: *mut cfe_sys::OS_SockAddr_t,
-    _timeout: i32,
+    nbytes: usize,
 ) -> i32 {
     OS_SOCKET_RECV_CALLS.fetch_add(1, Ordering::SeqCst);
-    if !buffer.is_null() && buflen >= 4 {
-        let dest = buffer.cast::<u8>();
-        unsafe {
-            *dest = 1;
-            *dest.add(1) = 2;
-            *dest.add(2) = 3;
-            *dest.add(3) = 4;
+    if buffer.is_null() {
+        return -1;
+    }
+    match RECV_CHUNK_MODE.load(Ordering::SeqCst) {
+        1 => {
+            // Return 2 bytes first time, then 2 bytes next time
+            let n = nbytes.min(2);
+            let dest = buffer.cast::<u8>();
+            for i in 0..n {
+                unsafe { *dest.add(i) = (i + 1) as u8 };
+            }
+            n as i32
         }
-        4
-    } else {
-        -1
+        2 => {
+            // EOF disconnect
+            0
+        }
+        _ => {
+            if nbytes >= 4 {
+                let dest = buffer.cast::<u8>();
+                unsafe {
+                    *dest = 1;
+                    *dest.add(1) = 2;
+                    *dest.add(2) = 3;
+                    *dest.add(3) = 4;
+                }
+                4
+            } else {
+                -1
+            }
+        }
     }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn OS_SocketSendTo(
-    _sock_id: cfe_sys::osal_id_t,
+pub unsafe extern "C" fn OS_TimedRead(
+    filedes: cfe_sys::osal_id_t,
+    buffer: *mut core::ffi::c_void,
+    nbytes: usize,
+    _timeout: i32,
+) -> i32 {
+    unsafe { OS_read(filedes, buffer, nbytes) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn OS_write(
+    _filedes: cfe_sys::osal_id_t,
     _buffer: *const core::ffi::c_void,
-    buflen: usize,
-    _RemoteAddr: *const cfe_sys::OS_SockAddr_t,
+    nbytes: usize,
 ) -> i32 {
     OS_SOCKET_SEND_CALLS.fetch_add(1, Ordering::SeqCst);
-    buflen as i32
+    match SEND_CHUNK_MODE.load(Ordering::SeqCst) {
+        1 => {
+            // Send half (at least 1 byte if non-empty)
+            (nbytes.min(2)) as i32
+        }
+        2 => {
+            // Disconnect
+            0
+        }
+        _ => nbytes as i32,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn OS_TimedWrite(
+    filedes: cfe_sys::osal_id_t,
+    buffer: *const core::ffi::c_void,
+    nbytes: usize,
+    _timeout: i32,
+) -> i32 {
+    unsafe { OS_write(filedes, buffer, nbytes) }
 }
 
 #[unsafe(no_mangle)]
@@ -466,16 +598,16 @@ fn test_evs_wrappers() {
         EventType::Information.to_raw() as u16
     );
 
-    // Message exceeding 127 bytes returns CFE_EVS_INVALID_PARAMETER error
-    let long_msg = "A".repeat(128);
+    // Message exceeding MAX_EVENT_MESSAGE_LEN bytes returns CFE_EVS_INVALID_PARAMETER error
+    let long_msg = "A".repeat(evs::MAX_EVENT_MESSAGE_LEN + 1);
     let err = evs::send_event(102, EventType::Error, &long_msg);
     assert_eq!(
         err,
         Err(Status::from_raw(cfe_sys::CFE_EVS_INVALID_PARAMETER))
     );
 
-    // Exactly 127 bytes succeeds
-    let max_msg = "B".repeat(127);
+    // Exactly MAX_EVENT_MESSAGE_LEN bytes succeeds
+    let max_msg = "B".repeat(evs::MAX_EVENT_MESSAGE_LEN);
     assert!(evs::send_event(103, EventType::Information, &max_msg).is_ok());
 }
 
@@ -522,7 +654,20 @@ fn test_sb_wrappers() {
         let recvd = pipe.receive_buffer(Timeout::PendForever).unwrap();
         assert!(!recvd.as_ptr().is_null());
         let _ = recvd.msg();
+        assert_eq!(recvd.user_data(), &DUMMY_USER_DATA);
+        assert_eq!(recvd.msg_id().unwrap().as_u32(), 0x1901);
+        #[derive(Copy, Clone, Debug)]
+        struct DummyMsg {
+            _header: cfe_sys::CFE_MSG_Message_t,
+        }
+        let typed: Option<&DummyMsg> = recvd.as_msg();
+        assert!(typed.is_some());
     }
+
+    // Pipe opts and name
+    assert_eq!(pipe.opts().unwrap(), 1);
+    let mut name_buf = [0u8; cfe_sys::OS_MAX_API_NAME as usize];
+    assert_eq!(pipe.name(&mut name_buf).unwrap(), "TEST");
 
     // receive_buffer returning null pointer maps to CFE_SB_PIPE_RD_ERR
     SIMULATE_RECEIVE_NULL_BUFFER.store(true, Ordering::SeqCst);
@@ -578,6 +723,14 @@ fn test_sb_wrappers() {
     }
     assert_eq!(RELEASE_CALLS.load(Ordering::SeqCst), before_drops + 1);
 
+    // MessageBuffer size validation (< size_of::<CFE_MSG_Message_t>() returns CFE_SB_BAD_ARGUMENT)
+    let too_small =
+        sb::allocate_message_buffer(core::mem::size_of::<cfe_sys::CFE_MSG_Message_t>() - 1);
+    assert_eq!(
+        too_small.unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT)
+    );
+
     // Allocation failure returns CFE_SB_BUF_ALOC_ERR
     SIMULATE_ALLOC_FAIL.store(true, Ordering::SeqCst);
     let alloc_err = sb::allocate_message_buffer(64);
@@ -586,6 +739,8 @@ fn test_sb_wrappers() {
         Status::from_raw(cfe_sys::CFE_SB_BUF_ALOC_ERR)
     );
     SIMULATE_ALLOC_FAIL.store(false, Ordering::SeqCst);
+
+    assert!(sb::check_pipe_depth(4, MsgId::from_u32(0x190F)).is_ok());
 
     assert!(pipe.delete().is_ok());
 }
@@ -632,6 +787,39 @@ fn test_osal_tcp_stream() {
     let recvd = stream.recv(&mut recv_bytes, 1000).unwrap();
     assert_eq!(recvd, 4);
     assert_eq!(&recv_bytes[..4], &[1, 2, 3, 4]);
+
+    // Test read_exact with chunked recv
+    RECV_CHUNK_MODE.store(1, Ordering::SeqCst);
+    let mut exact_buf = [0u8; 4];
+    assert!(stream.read_exact(&mut exact_buf).is_ok());
+    assert_eq!(&exact_buf, &[1, 2, 1, 2]);
+    RECV_CHUNK_MODE.store(0, Ordering::SeqCst);
+
+    // Test read_exact with EOF disconnect
+    RECV_CHUNK_MODE.store(2, Ordering::SeqCst);
+    assert_eq!(
+        stream.read_exact(&mut exact_buf).unwrap_err(),
+        Status::from_raw(cfe_sys::OS_ERR_STREAM_DISCONNECTED)
+    );
+    RECV_CHUNK_MODE.store(0, Ordering::SeqCst);
+
+    // Test write_all with chunked send
+    SEND_CHUNK_MODE.store(1, Ordering::SeqCst);
+    assert!(stream.write_all(&[1, 2, 3, 4]).is_ok());
+    SEND_CHUNK_MODE.store(0, Ordering::SeqCst);
+
+    // Test write_all with disconnect
+    SEND_CHUNK_MODE.store(2, Ordering::SeqCst);
+    assert_eq!(
+        stream.write_all(&[1, 2, 3, 4]).unwrap_err(),
+        Status::from_raw(cfe_sys::OS_ERR_STREAM_DISCONNECTED)
+    );
+    SEND_CHUNK_MODE.store(0, Ordering::SeqCst);
+
+    // Test queue property helpers
+    assert_eq!(crate::osal::queue_get_id_by_name("TEST_Q").unwrap(), 77);
+    let qprop = crate::osal::queue_get_info(77).unwrap();
+    assert_eq!(qprop.creator, 55);
 
     assert!(stream.close().is_ok());
     assert_eq!(OS_CLOSE_CALLS.load(Ordering::SeqCst), 1);
