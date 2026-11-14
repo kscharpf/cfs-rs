@@ -7,7 +7,7 @@ set -eu
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
 mkdir -p "$root/build/node-stock" "$root/build/node-rs"
-chmod -R a+rwX "$root/build"
+chmod -R a+rwX "$root/build" 2>/dev/null || true
 
 # 1. Build core-cpu1 with node_defs on stock MSG
 echo "=== Building node-stock ==="
@@ -31,7 +31,7 @@ cmake -S "$root/cfs/cfe" -B "$root/build/node-rs" \
     -DCMAKE_BUILD_TYPE=debug
 make -C "$root/build/node-rs" -j"$(nproc)" mission-install DESTDIR="$root/build/node-rs"
 
-chmod -R a+rwX "$root/build"
+chmod -R a+rwX "$root/build" 2>/dev/null || true
 
 # 3. Regenerate crates/cfe-sys bindings and verify freshness
 echo "=== Checking cfe-sys bindings freshness ==="
@@ -41,7 +41,7 @@ bindgen \
   --use-core \
   --no-layout-tests \
   --clang-macro-fallback \
-  --allowlist-function "CFE_ES_.*|CFE_EVS_.*|CFE_SB_.*|CFE_MSG_.*|OS_Socket.*|OS_close" \
+  --allowlist-function "CFE_ES_.*|CFE_EVS_.*|CFE_SB_.*|CFE_MSG_.*|OS_Socket.*|OS_Queue.*|OS_close|OS_read|OS_write|OS_TimedRead|OS_TimedWrite|OS_TaskDelay" \
   --allowlist-type "CFE_ES_RunStatus.*|CFE_EVS_.*|CFE_SB_.*|CFE_MSG_.*|OS_.*|osal_id_t|CFE_Status_t" \
   --allowlist-var "OS_.*|CFE_.*|NODE_.*" \
   -o "$tmp_bindings" \
@@ -82,46 +82,48 @@ echo "=== Checking app symbol visibility (stock) ==="
 echo "=== Checking app symbol visibility (rs) ==="
 "$root/scripts/check-app-symbols.sh" "$root/build/node-rs/usr/local/cpu1/cf"
 
-# 5. Run core-cpu1 on stock MSG and check EVS events
-echo "=== Running core-cpu1 on stock MSG ==="
-stock_log="$(mktemp)"
-(
-    cd "$root/build/node-stock/usr/local/cpu1"
-    su nobody -s /bin/sh -c "timeout --kill-after=1s 3s ./core-cpu1" > "$stock_log" 2>&1 || true
-)
-cat "$stock_log"
-grep -q "LINK_LAB App Initialized. Version 0.1.0" "$stock_log" || {
-    echo "FAIL: LINK_LAB start-up event not found in node-stock log" >&2
-    rm -f "$stock_log"
-    exit 1
-}
-grep -q "STEP_LAB App Initialized. Version 0.1.0" "$stock_log" || {
-    echo "FAIL: STEP_LAB start-up event not found in node-stock log" >&2
-    rm -f "$stock_log"
-    exit 1
-}
-rm -f "$stock_log"
-echo "node-stock: start-up EVS events verified"
+# 5. Fetch Aldis repository at pinned revision
+aldis_rev="4852ee687ab64b22041dfb556c33ef0dc8666e83"
+aldis_dir="$root/build/aldis-$aldis_rev"
+if [ ! -d "$aldis_dir/.git" ]; then
+    echo "=== Fetching Aldis at $aldis_rev ==="
+    git clone https://github.com/kscharpf/aldis.git "$aldis_dir"
+fi
+(cd "$aldis_dir" && git checkout "$aldis_rev")
 
-# 6. Run core-cpu1 on rs MSG and check EVS events
-echo "=== Running core-cpu1 on rs MSG ==="
-rs_log="$(mktemp)"
-(
-    cd "$root/build/node-rs/usr/local/cpu1"
-    su nobody -s /bin/sh -c "timeout --kill-after=1s 3s ./core-cpu1" > "$rs_log" 2>&1 || true
-)
-cat "$rs_log"
-grep -q "LINK_LAB App Initialized. Version 0.1.0" "$rs_log" || {
-    echo "FAIL: LINK_LAB start-up event not found in node-rs log" >&2
-    rm -f "$rs_log"
-    exit 1
+# 6. Run a0-empty via refapp-harness against core-cpu1 (twice per build)
+run_a0() {
+    build_type="$1"
+    run_num="$2"
+    staging="$root/build/$build_type/usr/local/cpu1"
+    out_dir="$root/build/runs-$build_type-run$run_num"
+    echo "=== Running a0-empty against $build_type (run $run_num) ==="
+    cargo run --manifest-path "$aldis_dir/refapp/Cargo.toml" -p refapp-harness -- \
+        run-node a0-empty --out "$out_dir" cfs "$staging" 5010
+
+    # Verify byte-for-byte equality with golden trace
+    if ! cmp -s "$out_dir/a0-empty.jsonl" "$aldis_dir/refapp/golden/a0-empty.jsonl"; then
+        echo "FAIL: $out_dir/a0-empty.jsonl does not match golden trace" >&2
+        diff -u "$aldis_dir/refapp/golden/a0-empty.jsonl" "$out_dir/a0-empty.jsonl" >&2 || true
+        exit 1
+    fi
+
+    # Verify start-up EVS events in the node's console log
+    grep -q "LINK_LAB App Initialized. Version 0.1.0" "$out_dir/a0-empty.node.log" || {
+        echo "FAIL: LINK_LAB start-up event not found in $out_dir/a0-empty.node.log" >&2
+        exit 1
+    }
+    grep -q "STEP_LAB App Initialized. Version 0.1.0" "$out_dir/a0-empty.node.log" || {
+        echo "FAIL: STEP_LAB start-up event not found in $out_dir/a0-empty.node.log" >&2
+        exit 1
+    }
+
+    echo "$build_type (run $run_num): a0-empty passed and matched golden trace byte-for-byte"
 }
-grep -q "STEP_LAB App Initialized. Version 0.1.0" "$rs_log" || {
-    echo "FAIL: STEP_LAB start-up event not found in node-rs log" >&2
-    rm -f "$rs_log"
-    exit 1
-}
-rm -f "$rs_log"
-echo "node-rs: start-up EVS events verified"
+
+run_a0 "node-stock" 1
+run_a0 "node-stock" 2
+run_a0 "node-rs" 1
+run_a0 "node-rs" 2
 
 echo "=== node checks: ALL PASSED ==="

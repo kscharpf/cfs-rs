@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "aldis"
 version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4e4468f96357a301271b1650f6fef145cd5ced94#4e4468f96357a301271b1650f6fef145cd5ced94"
+source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
 dependencies = [
  "aldis-cop1",
  "aldis-core",
@@ -20,7 +20,7 @@ dependencies = [
 [[package]]
 name = "aldis-cop1"
 version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4e4468f96357a301271b1650f6fef145cd5ced94#4e4468f96357a301271b1650f6fef145cd5ced94"
+source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
 dependencies = [
  "aldis-core",
  "aldis-tc",
@@ -29,12 +29,12 @@ dependencies = [
 [[package]]
 name = "aldis-core"
 version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4e4468f96357a301271b1650f6fef145cd5ced94#4e4468f96357a301271b1650f6fef145cd5ced94"
+source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
 
 [[package]]
 name = "aldis-epp"
 version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4e4468f96357a301271b1650f6fef145cd5ced94#4e4468f96357a301271b1650f6fef145cd5ced94"
+source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
 dependencies = [
  "aldis-core",
 ]
@@ -42,7 +42,7 @@ dependencies = [
 [[package]]
 name = "aldis-link"
 version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4e4468f96357a301271b1650f6fef145cd5ced94#4e4468f96357a301271b1650f6fef145cd5ced94"
+source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
 dependencies = [
  "aldis-core",
  "aldis-epp",
@@ -54,7 +54,7 @@ dependencies = [
 [[package]]
 name = "aldis-spp"
 version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4e4468f96357a301271b1650f6fef145cd5ced94#4e4468f96357a301271b1650f6fef145cd5ced94"
+source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
 dependencies = [
  "aldis-core",
  "aldis-time",
@@ -63,7 +63,7 @@ dependencies = [
 [[package]]
 name = "aldis-tc"
 version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4e4468f96357a301271b1650f6fef145cd5ced94#4e4468f96357a301271b1650f6fef145cd5ced94"
+source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
 dependencies = [
  "aldis-core",
 ]
@@ -71,7 +71,7 @@ dependencies = [
 [[package]]
 name = "aldis-time"
 version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4e4468f96357a301271b1650f6fef145cd5ced94#4e4468f96357a301271b1650f6fef145cd5ced94"
+source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
 dependencies = [
  "aldis-core",
 ]
@@ -79,7 +79,7 @@ dependencies = [
 [[package]]
 name = "aldis-tm"
 version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4e4468f96357a301271b1650f6fef145cd5ced94#4e4468f96357a301271b1650f6fef145cd5ced94"
+source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
 dependencies = [
  "aldis-core",
 ]
@@ -117,6 +117,8 @@ name = "link-lab"
 version = "0.0.0"
 dependencies = [
  "cfe",
+ "cfe-sys",
+ "step-lab-core",
 ]
 
 [[package]]
@@ -155,7 +157,7 @@ dependencies = [
 [[package]]
 name = "refapp-scenario"
 version = "0.1.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4e4468f96357a301271b1650f6fef145cd5ced94#4e4468f96357a301271b1650f6fef145cd5ced94"
+source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
 dependencies = [
  "aldis",
 ]
@@ -207,6 +209,15 @@ name = "step-lab"
 version = "0.0.0"
 dependencies = [
  "cfe",
+ "cfe-sys",
+ "step-lab-core",
+]
+
+[[package]]
+name = "step-lab-core"
+version = "0.0.0"
+dependencies = [
+ "cfe-sys",
 ]
 
 [[package]]

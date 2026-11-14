@@ -127,6 +127,53 @@ impl ReceivedBuffer<'_> {
     pub const fn as_ptr(&self) -> *const cfe_sys::CFE_SB_Buffer_t {
         self.ptr
     }
+
+    /// Returns the message ID of the received message.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` if querying the message ID fails.
+    pub fn msg_id(&self) -> Result<MsgId, Status> {
+        let mut raw_id = cfe_sys::CFE_SB_MsgId_t { Value: 0 };
+        // SAFETY: self.msg() is a valid pointer.
+        let status = unsafe { cfe_sys::CFE_MSG_GetMsgId(self.msg(), &raw mut raw_id) };
+        let status = Status::from_raw(status);
+        if status.is_success() {
+            Ok(MsgId::from_raw(raw_id))
+        } else {
+            Err(status)
+        }
+    }
+
+    /// Returns a slice of the total message bytes including headers.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        let mut total_size = 0usize;
+        // SAFETY: self.msg() is a valid pointer.
+        let status = unsafe { cfe_sys::CFE_MSG_GetSize(self.msg(), &raw mut total_size) };
+        if status != cfe_sys::CFE_SUCCESS.cast_signed() || total_size == 0 {
+            return &[];
+        }
+        let ptr = core::ptr::from_ref(self.msg()).cast::<u8>();
+        // SAFETY: CFE_MSG_GetSize returned a valid size and msg points to at least total_size initialized bytes.
+        unsafe { core::slice::from_raw_parts(ptr, total_size) }
+    }
+
+    /// Returns a slice of the message user data payload.
+    #[must_use]
+    pub fn user_data(&self) -> &[u8] {
+        let msg_ptr = core::ptr::from_ref(self.msg()).cast_mut();
+        // SAFETY: msg_ptr is non-null and points to a valid message.
+        let data = unsafe { cfe_sys::CFE_SB_GetUserData(msg_ptr) };
+        // SAFETY: msg_ptr is non-null and points to a valid message.
+        let len = unsafe { cfe_sys::CFE_SB_GetUserDataLength(self.msg()) };
+        if data.is_null() || len == 0 {
+            &[]
+        } else {
+            // SAFETY: data points to len initialized payload bytes.
+            unsafe { core::slice::from_raw_parts(data.cast::<u8>(), len) }
+        }
+    }
 }
 
 /// A zero-copy Software Bus message buffer allocated via [`allocate_message_buffer`].
@@ -291,6 +338,47 @@ impl Pipe {
         }
     }
 
+    /// Returns options currently set on this pipe.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` if querying pipe options fails.
+    pub fn opts(&self) -> Result<u8, Status> {
+        let mut opts = 0u8;
+        // SAFETY: self.id is a valid pipe ID, opts is a valid out-pointer.
+        let status = unsafe { cfe_sys::CFE_SB_GetPipeOpts(self.id.to_raw(), &raw mut opts) };
+        let status = Status::from_raw(status);
+        if status.is_success() {
+            Ok(opts)
+        } else {
+            Err(status)
+        }
+    }
+
+    /// Returns the name of this pipe.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` if querying pipe name fails or name is not valid UTF-8.
+    pub fn name<'a>(
+        &self,
+        buf: &'a mut [u8; cfe_sys::OS_MAX_API_NAME as usize],
+    ) -> Result<&'a str, Status> {
+        // SAFETY: self.id is a valid pipe ID, buf is a valid buffer of OS_MAX_API_NAME bytes.
+        let status = unsafe {
+            cfe_sys::CFE_SB_GetPipeName(buf.as_mut_ptr().cast(), buf.len(), self.id.to_raw())
+        };
+        let status = Status::from_raw(status);
+        if !status.is_success() {
+            return Err(status);
+        }
+        let nul_pos = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        let slice = buf
+            .get(..nul_pos)
+            .ok_or(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT))?;
+        core::str::from_utf8(slice).map_err(|_| Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT))
+    }
+
     /// Deletes this pipe.
     ///
     /// # Errors
@@ -318,8 +406,12 @@ pub fn transmit_msg(msg: &cfe_sys::CFE_MSG_Message_t, is_origination: bool) -> R
 ///
 /// # Errors
 ///
-/// Returns `Err(Status)` with `CFE_SB_BUF_ALOC_ERR` if allocation fails.
+/// Returns `Err(Status)` with `CFE_SB_BUF_ALOC_ERR` if allocation fails, or
+/// `CFE_SB_BAD_ARGUMENT` if `size` is smaller than `CFE_MSG_Message_t`.
 pub fn allocate_message_buffer(size: usize) -> Result<MessageBuffer, Status> {
+    if size < core::mem::size_of::<cfe_sys::CFE_MSG_Message_t>() {
+        return Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT));
+    }
     // SAFETY: CFE_SB_AllocateMessageBuffer takes a size.
     let ptr = unsafe { cfe_sys::CFE_SB_AllocateMessageBuffer(size) };
     if ptr.is_null() {
@@ -359,4 +451,68 @@ pub fn transmit_buffer(mut buf: MessageBuffer, is_origination: bool) -> Result<(
         // buf will drop here and release the buffer.
         Err(status)
     }
+}
+
+/// Checks that the Software Bus and underlying OSAL queue can hold `depth` messages
+/// without silent truncation.
+///
+/// Creates a temporary pipe with depth `depth`, subscribes to `test_mid` with limit `depth`,
+/// transmits `depth` messages, verifies that none fail with `CFE_SB_PIPE_WR_ERR`,
+/// drains the pipe, and deletes it.
+///
+/// # Errors
+///
+/// Returns `Err(Status)` if pipe creation, subscription, or message transmission fails.
+pub fn check_pipe_depth(depth: u16, test_mid: MsgId) -> Result<(), Status> {
+    let pipe = Pipe::create(depth, "DEPTH_TEST_PIPE")?;
+    if let Err(e) = pipe.subscribe_ex(test_mid, Qos::DEFAULT, depth) {
+        let _ = pipe.delete();
+        return Err(e);
+    }
+
+    let mut cmd_msg = cfe_sys::CFE_MSG_CommandHeader_t {
+        Msg: cfe_sys::CFE_MSG_Message_t {
+            CCSDS: cfe_sys::CCSDS_SpacePacket_t {
+                Pri: cfe_sys::CCSDS_PrimaryHeader {
+                    StreamId: [0, 0],
+                    Sequence: [0, 0],
+                    Length: [0, 0],
+                },
+            },
+        },
+        Sec: cfe_sys::CFE_MSG_CommandSecondaryHeader_t {
+            FunctionCode: 0,
+            Checksum: 0,
+        },
+    };
+    // SAFETY: Initializing command header with test_mid and valid size >= 7.
+    let init_status = unsafe {
+        cfe_sys::CFE_MSG_Init(
+            &raw mut cmd_msg.Msg,
+            test_mid.to_raw(),
+            core::mem::size_of::<cfe_sys::CFE_MSG_CommandHeader_t>(),
+        )
+    };
+    if init_status != cfe_sys::CFE_SUCCESS.cast_signed() {
+        let _ = pipe.delete();
+        return Err(Status::from_raw(init_status));
+    }
+
+    let mut send_err = None;
+    for _ in 0..depth {
+        let tx_status = transmit_msg(&cmd_msg.Msg, true);
+        if let Err(e) = tx_status {
+            send_err = Some(e);
+            break;
+        }
+    }
+
+    // Drain all queued messages
+    let mut drain_pipe = pipe;
+    for _ in 0..depth {
+        let _ = drain_pipe.receive_buffer(Timeout::Poll);
+    }
+    let _ = drain_pipe.delete();
+
+    send_err.map_or(Ok(()), Err)
 }
