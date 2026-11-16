@@ -19,9 +19,12 @@ pub const STEP_LAB_STARTUP_EID: u16 = 1;
 /// Frame buffer capacity for socket communication.
 const FRAME_BUF_LEN: usize = 4096;
 
-/// Harness port as `u16`.
-const HARNESS_PORT: u16 = 5010;
-const _: () = assert!(cfe_sys::NODE_HARNESS_PORT == HARNESS_PORT as u32);
+/// Harness port as `u16`, derived from node headers.
+const HARNESS_PORT: u16 = {
+    let [b0, b1, b2, b3] = cfe_sys::NODE_HARNESS_PORT.to_le_bytes();
+    assert!(b2 == 0 && b3 == 0, "NODE_HARNESS_PORT must fit in u16");
+    u16::from_le_bytes([b0, b1])
+};
 
 /// Reads one framed message from the TCP stream.
 fn read_msg_frame<'a>(
@@ -268,7 +271,10 @@ fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
                 let _ = write_msg_frame(&mut stream, &Message::EndAck, &mut tx_buf);
                 break;
             }
-            _ => break,
+            Message::Hello { .. }
+            | Message::HelloAck { .. }
+            | Message::StepResult { .. }
+            | Message::EndAck => break,
         }
     }
 

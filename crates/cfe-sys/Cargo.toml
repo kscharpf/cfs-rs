@@ -10,5 +10,6 @@ publish.workspace = true
 [lib]
 doctest = false
 
+# Declarations only (bindgen generated); do not inherit workspace restriction lints.
 [lints]
-workspace = true
+

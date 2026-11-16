@@ -18,6 +18,16 @@ pub enum LinkLevel {
 }
 
 impl LinkLevel {
+    /// Returns the raw `u8` value.
+    #[must_use]
+    pub const fn to_raw(self) -> u8 {
+        match self {
+            Self::Packets => 0,
+            Self::Frames => 1,
+            Self::Cop1 => 2,
+        }
+    }
+
     /// Determines the link level from the ASCII case ID prefix.
     #[must_use]
     pub const fn from_case_id(case_id: &str) -> Self {
@@ -135,7 +145,7 @@ impl StartMsg {
     pub const fn new(level: LinkLevel) -> Self {
         Self {
             header: default_cmd_header(),
-            level: level as u8,
+            level: level.to_raw(),
             pad: [0; 7],
         }
     }
@@ -287,7 +297,7 @@ impl WakeTxMsg {
         Self {
             header: default_cmd_header(),
             now,
-            tx_slot: tx_slot as u8,
+            tx_slot: if tx_slot { 1 } else { 0 },
             pad: [0; 7],
         }
     }

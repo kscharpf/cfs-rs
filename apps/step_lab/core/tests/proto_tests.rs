@@ -25,20 +25,19 @@ fn test_hello_round_trip() {
     assert_eq!(len, 4 + 1 + 2 + 2 + 1 + 1 + 8); // 4 (len) + 1 (T) + 2 + 2 + 1 + 1 + 8 = 19
 
     let decoded = decode_frame(&buf[..len]).unwrap();
-    match decoded {
-        Message::Hello {
-            version,
-            scenario_version,
-            role,
-            case_id,
-        } => {
-            assert_eq!(version, 1);
-            assert_eq!(scenario_version, 1);
-            assert_eq!(role, Role::Flight);
-            assert_eq!(case_id, "a0-empty");
-        }
-        _ => panic!("wrong message variant"),
-    }
+    let Message::Hello {
+        version,
+        scenario_version,
+        role,
+        case_id,
+    } = decoded
+    else {
+        panic!("wrong message variant");
+    };
+    assert_eq!(version, 1);
+    assert_eq!(scenario_version, 1);
+    assert_eq!(role, Role::Flight);
+    assert_eq!(case_id, "a0-empty");
 }
 
 #[test]
@@ -51,10 +50,10 @@ fn test_hello_ack_round_trip() {
     assert_eq!(len, 4 + 3);
 
     let decoded = decode_frame(&buf[..len]).unwrap();
-    match decoded {
-        Message::HelloAck { version } => assert_eq!(version, 1),
-        _ => panic!("wrong message variant"),
-    }
+    let Message::HelloAck { version } = decoded else {
+        panic!("wrong message variant");
+    };
+    assert_eq!(version, 1);
 }
 
 #[test]
@@ -87,27 +86,26 @@ fn test_step_and_step_result_round_trip() {
     ];
 
     let decoded_step = decode_body(&step_body).unwrap();
-    match decoded_step {
-        Message::Step {
-            now,
-            tx_slot,
-            units,
-            ops,
-        } => {
-            assert_eq!(now, 100_000);
-            assert!(tx_slot);
-            assert_eq!(units.count(), 2);
-            let unit_vec: Vec<&[u8]> = units.iter().collect();
-            assert_eq!(unit_vec.len(), 2);
-            assert_eq!(unit_vec[0], &[0xaa, 0xbb, 0xcc]);
-            assert_eq!(unit_vec[1], &[0xdd]);
+    let Message::Step {
+        now,
+        tx_slot,
+        units,
+        ops,
+    } = decoded_step
+    else {
+        panic!("wrong message variant");
+    };
+    assert_eq!(now, 100_000);
+    assert!(tx_slot);
+    assert_eq!(units.count(), 2);
+    let unit_vec: Vec<&[u8]> = units.iter().collect();
+    assert_eq!(unit_vec.len(), 2);
+    assert_eq!(unit_vec[0], &[0xaa, 0xbb, 0xcc]);
+    assert_eq!(unit_vec[1], &[0xdd]);
 
-            assert_eq!(ops.count(), 2);
-            let op_vec: Vec<u16> = ops.iter().collect();
-            assert_eq!(op_vec, vec![10, 20]);
-        }
-        _ => panic!("wrong message variant"),
-    }
+    assert_eq!(ops.count(), 2);
+    let op_vec: Vec<u16> = ops.iter().collect();
+    assert_eq!(op_vec, vec![10, 20]);
 
     // STEP_RESULT with outputs
     let unit_bytes = [1, 2, 3];
@@ -127,39 +125,36 @@ fn test_step_and_step_result_round_trip() {
     let res_len = encode_frame(&step_res, &mut buf).unwrap();
 
     let decoded_res = decode_frame(&buf[..res_len]).unwrap();
-    match decoded_res {
-        Message::StepResult {
-            outputs,
-            next_deadline,
-        } => {
-            assert_eq!(next_deadline, Some(150_000));
-            assert_eq!(outputs.len(), 4);
-            let Outputs::Iter(iter) = outputs else {
-                panic!("expected Outputs::Iter");
-            };
-            let decoded_outputs: Vec<NodeOutput> = iter.iter().collect();
-            assert_eq!(decoded_outputs.len(), 4);
-            assert_eq!(decoded_outputs[0], NodeOutput::Unit(&unit_bytes));
-            assert_eq!(
-                decoded_outputs[1],
-                NodeOutput::PacketOut(0x010, &pkt_out_bytes)
-            );
-            assert_eq!(
-                decoded_outputs[2],
-                NodeOutput::PacketIn(0x020, &pkt_in_bytes)
-            );
-            match decoded_outputs[3] {
-                NodeOutput::Event(code, args) => {
-                    assert_eq!(code, 42);
-                    assert_eq!(args.len(), 2);
-                    let arg_vec: Vec<u64> = args.iter().collect();
-                    assert_eq!(arg_vec, vec![100, 200]);
-                }
-                _ => panic!("expected Event"),
-            }
-        }
-        _ => panic!("wrong message variant"),
-    }
+    let Message::StepResult {
+        outputs,
+        next_deadline,
+    } = decoded_res
+    else {
+        panic!("wrong message variant");
+    };
+    assert_eq!(next_deadline, Some(150_000));
+    assert_eq!(outputs.len(), 4);
+    let Outputs::Iter(iter) = outputs else {
+        panic!("expected Outputs::Iter");
+    };
+    let decoded_outputs: Vec<NodeOutput> = iter.iter().collect();
+    assert_eq!(decoded_outputs.len(), 4);
+    assert_eq!(decoded_outputs[0], NodeOutput::Unit(&unit_bytes));
+    assert_eq!(
+        decoded_outputs[1],
+        NodeOutput::PacketOut(0x010, &pkt_out_bytes)
+    );
+    assert_eq!(
+        decoded_outputs[2],
+        NodeOutput::PacketIn(0x020, &pkt_in_bytes)
+    );
+    let NodeOutput::Event(code, args) = decoded_outputs[3] else {
+        panic!("expected Event");
+    };
+    assert_eq!(code, 42);
+    assert_eq!(args.len(), 2);
+    let arg_vec: Vec<u64> = args.iter().collect();
+    assert_eq!(arg_vec, vec![100, 200]);
 }
 
 #[test]

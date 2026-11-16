@@ -52,7 +52,22 @@ impl RunStatus {
     /// Convert to the raw `uint32`.
     #[must_use]
     pub const fn to_raw(self) -> u32 {
-        self as u32
+        match self {
+            Self::Undefined => cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_UNDEFINED,
+            Self::AppRun => cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_RUN,
+            Self::AppExit => cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_EXIT,
+            Self::AppError => cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_ERROR,
+            Self::SysException => cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_SYS_EXCEPTION,
+            Self::SysRestart => cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_SYS_RESTART,
+            Self::SysReload => cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_SYS_RELOAD,
+            Self::SysDelete => cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_SYS_DELETE,
+            Self::CoreAppInitError => {
+                cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_INIT_ERROR
+            }
+            Self::CoreAppRuntimeError => {
+                cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_RUNTIME_ERROR
+            }
+        }
     }
 }
 

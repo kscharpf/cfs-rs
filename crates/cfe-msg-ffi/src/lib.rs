@@ -21,18 +21,10 @@ pub type CfeStatus = i32;
 const CFE_SUCCESS: CfeStatus = 0;
 
 /// `CFE_MSG_BAD_ARGUMENT` of `cfe_error.h`.
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "CFE_MSG_BAD_ARGUMENT is 0xCA000003 as a signed 32-bit CFE_Status_t"
-)]
-const CFE_MSG_BAD_ARGUMENT: CfeStatus = 0xca00_0003_u32 as i32;
+const CFE_MSG_BAD_ARGUMENT: CfeStatus = 0xca00_0003_u32.cast_signed();
 
 /// `CFE_MSG_WRONG_MSG_TYPE` (`CFE_SB_WRONG_MSG_TYPE`) of `cfe_error.h`.
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "CFE_MSG_WRONG_MSG_TYPE is 0xCA00000D as a signed 32-bit CFE_Status_t"
-)]
-const CFE_MSG_WRONG_MSG_TYPE: CfeStatus = 0xca00_000d_u32 as i32;
+const CFE_MSG_WRONG_MSG_TYPE: CfeStatus = 0xca00_000d_u32.cast_signed();
 
 /// `CFE_MSG_ApId_t` of `cfe_msg_api_typedefs.h`.
 pub type CfeMsgApId = u16;
@@ -787,11 +779,8 @@ pub unsafe extern "C" fn CFE_MSG_SetMsgId(
     if msg_ptr.is_null() || !CFE_SB_IsValidMsgId(msg_id) {
         return CFE_MSG_BAD_ARGUMENT;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "CFE_MSG_SetMsgId v1 uses the low 16 bits of CFE_SB_MsgId_Atom_t"
-    )]
-    let id = MsgId::new(msg_id.value as u16);
+    let [b0, b1, _, _] = msg_id.value.to_le_bytes();
+    let id = MsgId::new(u16::from_le_bytes([b0, b1]));
     // SAFETY: `msg_ptr` is non-null, and the caller guarantees it points to a valid mutable
     // `CFE_MSG_Message_t` for the duration of this call.
     unsafe {
@@ -812,11 +801,8 @@ pub unsafe extern "C" fn CFE_MSG_GetTypeFromMsgId(
     if msg_type.is_null() || !CFE_SB_IsValidMsgId(msg_id) {
         return CFE_MSG_BAD_ARGUMENT;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "CFE_MSG_GetTypeFromMsgId v1 uses the low 16 bits of CFE_SB_MsgId_Atom_t"
-    )]
-    let id = MsgId::new(msg_id.value as u16);
+    let [b0, b1, _, _] = msg_id.value.to_le_bytes();
+    let id = MsgId::new(u16::from_le_bytes([b0, b1]));
     let ty = match cfe_msg::get_type_from_msg_id(id) {
         PacketType::Telecommand => CFE_MSG_TYPE_CMD,
         PacketType::Telemetry => CFE_MSG_TYPE_TLM,
