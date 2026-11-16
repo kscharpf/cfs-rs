@@ -48,7 +48,7 @@ pub const TC_REASSEMBLY_AREA_LEN: usize = TC_ASSEMBLY_LEN.saturating_add(TC_FRAM
 
 #[expect(
     clippy::as_conversions,
-    reason = "const context: usize from u16 is not const in older editions"
+    reason = "usize::from is not const in stable Rust (RFC 143874)"
 )]
 const _: () = {
     assert!(TC_FRAME_AREA_LEN == tc::MAX_FRAME_LENGTH as usize);

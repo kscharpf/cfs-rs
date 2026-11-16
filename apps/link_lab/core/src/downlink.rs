@@ -20,7 +20,7 @@ use refapp_scenario::Instant;
 use refapp_scenario::generated::tm;
 
 use crate::DownlinkSink;
-use crate::config::LinkConfig;
+use crate::config::{DataVc, LinkConfig};
 
 /// Octets of a transfer frame (§4.1, APP-030).
 pub const TM_FRAME_LEN: usize = 223;
@@ -36,7 +36,7 @@ pub const DATA_VCS: [u8; 2] = [tm::VCID_REALTIME, tm::VCID_PAYLOAD];
 
 #[expect(
     clippy::as_conversions,
-    reason = "const context: usize from u16 is not const in older editions"
+    reason = "usize::from is not const in stable Rust (RFC 143874)"
 )]
 const _: () = {
     assert!(TM_FRAME_LEN == tm::FRAME_LENGTH as usize);
@@ -147,15 +147,12 @@ impl DownlinkState {
     /// Submits a packet to the generator of `vc` at `now`.
     ///
     /// # Errors
-    /// Returns `ErrorKind::UnknownChannel` if `vc` is unknown, or `ErrorKind::WouldBlock`
-    /// if the generator queue is full.
-    pub fn submit(&mut self, vc: u8, packet: &[u8], now: Instant) -> Result<()> {
-        let generator = self
-            .generators
-            .iter_mut()
-            .zip(DATA_VCS)
-            .find_map(|(g, id)| (id == vc).then_some(g))
-            .ok_or(Error::new(ErrorKind::UnknownChannel))?;
+    /// Returns `ErrorKind::WouldBlock` if the generator queue is full.
+    pub fn submit(&mut self, vc: DataVc, packet: &[u8], now: Instant) -> Result<()> {
+        let generator = match vc {
+            DataVc::Realtime => &mut self.generators[0],
+            DataVc::Payload => &mut self.generators[1],
+        };
         none(generator.step(GeneratorInput::SubmitPacket(packet), now, &mut [])?)
     }
 

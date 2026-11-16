@@ -8,8 +8,8 @@ use cfe::evs::{self, EventType};
 use cfe::sb::{MsgId, Pipe, Qos, Timeout, transmit_msg};
 use link_lab_core::{DownlinkSink, Instant, Level, Link, LinkConfig, UplinkSink, packet_apid};
 use step_lab_core::msg::{
-    CmdPacketMsg, DoneMsg, LinkLevel, RecordMsg, StartMsg, TlmPacketMsg, UnitMsg, WakeRxMsg,
-    WakeTxMsg,
+    CmdPacketMsg, DoneMsg, LinkLevel, MAX_UNIT_LEN, RecordMsg, StartMsg, TlmPacketMsg, UnitMsg,
+    WakeRxMsg, WakeTxMsg,
 };
 
 /// Event ID for `link_lab` start-up event.
@@ -21,7 +21,7 @@ const MAX_PENDING_TLM: usize = 16;
 #[derive(Clone, Copy)]
 struct PendingTlm {
     len: u16,
-    data: [u8; 512],
+    data: [u8; MAX_UNIT_LEN],
 }
 
 /// Prepares a Software Bus message header by setting its message ID and total size.
@@ -197,6 +197,8 @@ impl DownlinkSink for LinkDownlinkSink {
 struct LinkUplinkSink<'a> {
     pipe: &'a mut Pipe,
     now: Instant,
+    pending_tlm: &'a mut [Option<PendingTlm>; MAX_PENDING_TLM],
+    pending_count: &'a mut usize,
 }
 
 impl UplinkSink for LinkUplinkSink<'_> {
@@ -209,14 +211,15 @@ impl UplinkSink for LinkUplinkSink<'_> {
             match mid.as_u32() {
                 cfe_sys::NODE_CMD_PACKET_DONE_MID => break,
                 cfe_sys::NODE_TLM_PACKET_MID => {
-                    if let Some(tlm) = TlmPacketMsg::from_bytes(buf.as_bytes()) {
-                        let pkt = tlm.packet_bytes();
-                        let apid = packet_apid(pkt).unwrap_or(0);
-                        send_record_packet_out(apid, pkt);
-                        send_unit(pkt);
-                    }
+                    handle_tlm_packet(buf.as_bytes(), self.pending_tlm, self.pending_count);
                 }
-                _ => {}
+                _ => {
+                    let _ = evs::send_event(
+                        22,
+                        EventType::Error,
+                        "LINK_LAB: Unexpected MID during command packet exchange",
+                    );
+                }
             }
         }
     }
@@ -227,11 +230,22 @@ impl UplinkSink for LinkUplinkSink<'_> {
 }
 
 /// Handles `WAKE_RX` turn from `step_lab`.
-fn handle_wake_rx(link: &mut Link, pipe: &mut Pipe, wake_rx: Option<&WakeRxMsg>) {
+fn handle_wake_rx(
+    link: &mut Link,
+    pipe: &mut Pipe,
+    wake_rx: Option<&WakeRxMsg>,
+    pending_tlm: &mut [Option<PendingTlm>; MAX_PENDING_TLM],
+    pending_count: &mut usize,
+) {
     if let Some(wake_rx) = wake_rx {
         let now = Instant::from_micros(wake_rx.now);
         let unit = wake_rx.unit_bytes();
-        let mut rx_sink = LinkUplinkSink { pipe, now };
+        let mut rx_sink = LinkUplinkSink {
+            pipe,
+            now,
+            pending_tlm,
+            pending_count,
+        };
         link.accept_unit(now, unit, &mut rx_sink);
     }
     send_done(None);
@@ -245,12 +259,20 @@ fn handle_tlm_packet(
 ) {
     if let Some(tlm) = TlmPacketMsg::from_bytes(bytes) {
         let pkt = tlm.packet_bytes();
+        if pkt.len() > MAX_UNIT_LEN {
+            let _ = evs::send_event(
+                19,
+                EventType::Critical,
+                "LINK_LAB: Telemetry packet exceeds MAX_UNIT_LEN",
+            );
+            return;
+        }
         if *pending_count < MAX_PENDING_TLM {
             let mut p = PendingTlm {
                 len: tlm.packet_len,
-                data: [0; 512],
+                data: [0; MAX_UNIT_LEN],
             };
-            let copy_len = pkt.len().min(512);
+            let copy_len = pkt.len().min(MAX_UNIT_LEN);
             if let Some(src) = pkt.get(..copy_len)
                 && let Some(dest) = p.data.get_mut(..copy_len)
             {
@@ -275,7 +297,7 @@ fn handle_tlm_packet(
 fn handle_wake_tx(
     link: &mut Link,
     pipe: &mut Pipe,
-    wake_tx: Option<WakeTxMsg>,
+    wake_tx: Option<&WakeTxMsg>,
     pending_tlm: &mut [Option<PendingTlm>; MAX_PENDING_TLM],
     pending_count: &mut usize,
 ) {
@@ -299,13 +321,27 @@ fn handle_wake_tx(
             let Ok(mid) = extra_buf.msg_id() else {
                 continue;
             };
-            if mid.as_u32() == cfe_sys::NODE_TLM_PACKET_MID
-                && let Some(tlm) = TlmPacketMsg::from_bytes(extra_buf.as_bytes())
-            {
-                let pkt = tlm.packet_bytes();
-                let apid = packet_apid(pkt).unwrap_or(0);
-                send_record_packet_out(apid, pkt);
-                link.accept_packet(now, pkt, &mut tx_sink);
+            if mid.as_u32() == cfe_sys::NODE_TLM_PACKET_MID {
+                if let Some(tlm) = TlmPacketMsg::from_bytes(extra_buf.as_bytes()) {
+                    let pkt = tlm.packet_bytes();
+                    if pkt.len() > MAX_UNIT_LEN {
+                        let _ = evs::send_event(
+                            19,
+                            EventType::Critical,
+                            "LINK_LAB: Telemetry packet exceeds MAX_UNIT_LEN",
+                        );
+                    } else {
+                        let apid = packet_apid(pkt).unwrap_or(0);
+                        send_record_packet_out(apid, pkt);
+                        link.accept_packet(now, pkt, &mut tx_sink);
+                    }
+                }
+            } else {
+                let _ = evs::send_event(
+                    21,
+                    EventType::Error,
+                    "LINK_LAB: Unexpected MID in pipe during WAKE_TX drain",
+                );
             }
         }
 
@@ -351,24 +387,17 @@ fn subscribe_turns(pipe: &Pipe) -> Result<(), ()> {
     Ok(())
 }
 
-/// Application entry point exported to cFE.
-#[expect(unsafe_code, reason = "cFS entry point must be extern \"C\"")]
-#[unsafe(no_mangle)]
-pub extern "C" fn LINK_LAB_AppMain() {
-    // 1. Register with EVS.
+/// Initializes `link_lab`: registers with EVS, creates pipe, subscribes, and sends start-up event.
+fn init_app() -> Result<Pipe, ()> {
     if evs::register().is_err() {
-        es::exit_app(RunStatus::AppError);
-        return;
+        return Err(());
     }
 
-    // 2. Create Software Bus input pipe.
-    let Ok(mut pipe) = Pipe::create(32, "LINK_LAB_PIPE") else {
+    let Ok(pipe) = Pipe::create(32, "LINK_LAB_PIPE") else {
         let _ = evs::send_event(2, EventType::Critical, "LINK_LAB: Failed to create SB pipe");
-        es::exit_app(RunStatus::AppError);
-        return;
+        return Err(());
     };
 
-    // 3. Subscribe to scenario turns.
     if subscribe_turns(&pipe).is_err() {
         let _ = evs::send_event(
             3,
@@ -376,23 +405,35 @@ pub extern "C" fn LINK_LAB_AppMain() {
             "LINK_LAB: Failed to subscribe to turns",
         );
         let _ = pipe.delete();
-        es::exit_app(RunStatus::AppError);
-        return;
+        return Err(());
     }
 
-    // 4. Send start-up event.
     let _ = evs::send_event(
         LINK_LAB_STARTUP_EID,
         EventType::Information,
         "LINK_LAB App Initialized. Version 0.1.0",
     );
 
-    // 5. Initialize link state and pending buffer.
+    Ok(pipe)
+}
+
+/// Application entry point exported to cFE.
+#[expect(unsafe_code, reason = "cFS entry point must be extern \"C\"")]
+#[unsafe(no_mangle)]
+pub extern "C" fn LINK_LAB_AppMain() {
+    let Ok(mut pipe) = init_app() else {
+        es::exit_app(RunStatus::AppError);
+        return;
+    };
+
     let mut link: Option<Link> = None;
+    #[expect(
+        clippy::large_stack_arrays,
+        reason = "cFS app task stack is sized to 64 KiB in cpu1_cfe_es_startup.scr; 16.5 KiB fits safely"
+    )]
     let mut pending_tlm = [const { None }; MAX_PENDING_TLM];
     let mut pending_count = 0usize;
 
-    // 6. Run ES loop, pending on the pipe.
     let mut run_status = RunStatus::AppRun;
     while es::run_loop(&mut run_status) {
         let Ok(buf) = pipe.receive_buffer(Timeout::PendForever) else {
@@ -412,14 +453,28 @@ pub extern "C" fn LINK_LAB_AppMain() {
                         LinkLevel::Frames => Level::Frames,
                         LinkLevel::Cop1 => Level::Cop1,
                     });
-                link = Link::new(level, &LinkConfig::default()).ok();
+                link = Link::new(level, &LinkConfig::default())
+                    .inspect_err(|_| {
+                        let _ = evs::send_event(
+                            20,
+                            EventType::Critical,
+                            "LINK_LAB: Failed to initialize Link",
+                        );
+                    })
+                    .ok();
                 pending_count = 0;
                 send_done(None);
             }
             cfe_sys::NODE_WAKE_RX_MID => {
                 let wake_rx = WakeRxMsg::from_bytes(buf.as_bytes());
                 if let Some(link) = link.as_mut() {
-                    handle_wake_rx(link, &mut pipe, wake_rx.as_ref());
+                    handle_wake_rx(
+                        link,
+                        &mut pipe,
+                        wake_rx.as_ref(),
+                        &mut pending_tlm,
+                        &mut pending_count,
+                    );
                 } else {
                     send_done(None);
                 }
@@ -433,7 +488,7 @@ pub extern "C" fn LINK_LAB_AppMain() {
                     handle_wake_tx(
                         link,
                         &mut pipe,
-                        wake_tx,
+                        wake_tx.as_ref(),
                         &mut pending_tlm,
                         &mut pending_count,
                     );
@@ -441,7 +496,13 @@ pub extern "C" fn LINK_LAB_AppMain() {
                     send_done(None);
                 }
             }
-            _ => {}
+            _ => {
+                let _ = evs::send_event(
+                    23,
+                    EventType::Error,
+                    "LINK_LAB: Unexpected MID received on main pipe",
+                );
+            }
         }
     }
 

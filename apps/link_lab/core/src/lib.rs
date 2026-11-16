@@ -13,7 +13,7 @@ pub mod uplink;
 
 use aldis::core::{ErrorKind, Result};
 use aldis::spp::SpacePacket;
-pub use config::LinkConfig;
+pub use config::{DataVc, LinkConfig};
 pub use downlink::{DATA_VCS, DownlinkState, TM_DATA_FIELD_LEN, TM_FRAME_LEN, TM_QUEUE_LEN};
 pub use event::{
     APP_DOWNLINK_REFUSED, APP_FARM1_STATE, APP_FARM1_UNLOCK, APP_FRAME_DISCARDED,
@@ -80,6 +80,8 @@ pub struct Link {
     up_fdu_buf: [u8; TC_FRAME_AREA_LEN],
     up_reassembly_area: [u8; TC_REASSEMBLY_AREA_LEN],
 }
+
+const _: () = assert!(core::mem::size_of::<Link>() <= 8192);
 
 impl Link {
     /// Creates a new data link engine at the specified `level` using `config`.
@@ -164,7 +166,7 @@ impl Link {
                 if let Err(e) = self.downlink.submit(vc, packet, now) {
                     sink.event(
                         APP_DOWNLINK_REFUSED,
-                        &[u64::from(e.kind().code()), u64::from(vc)],
+                        &[u64::from(e.kind().code()), u64::from(vc.vcid())],
                     );
                 }
             }
