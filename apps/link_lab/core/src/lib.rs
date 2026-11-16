@@ -26,6 +26,14 @@ pub use uplink::{
     TC_REASSEMBLY_AREA_LEN, UplinkBuffers, UplinkState,
 };
 
+/// Extracts the 11-bit APID from a valid Space Packet byte slice.
+#[must_use]
+pub fn packet_apid(packet: &[u8]) -> Option<u16> {
+    SpacePacket::decode_exact(packet)
+        .ok()
+        .map(|p| p.apid().get())
+}
+
 /// Data link level of operation (§4.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {

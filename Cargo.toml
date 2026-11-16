@@ -9,6 +9,7 @@ members = [
     "apps/link_lab/core",
     "apps/step_lab",
     "apps/step_lab/core",
+    "apps/scn_lab",
 ]
 
 [workspace.package]
@@ -24,8 +25,10 @@ cfe-msg = { path = "crates/cfe-msg" }
 cfe-sys = { path = "crates/cfe-sys" }
 cfe = { path = "crates/cfe" }
 step-lab-core = { path = "apps/step_lab/core" }
+link-lab-core = { path = "apps/link_lab/core" }
 aldis = { git = "https://github.com/kscharpf/aldis.git", rev = "4852ee687ab64b22041dfb556c33ef0dc8666e83", default-features = false, features = ["core", "spp", "epp", "tm", "tc", "link", "cop1", "time", "spp-time"] }
 refapp-scenario = { git = "https://github.com/kscharpf/aldis.git", rev = "4852ee687ab64b22041dfb556c33ef0dc8666e83" }
+refapp-flight = { git = "https://github.com/kscharpf/aldis.git", rev = "4852ee687ab64b22041dfb556c33ef0dc8666e83" }
 
 [workspace.lints.rust]
 unsafe_code = "warn"

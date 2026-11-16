@@ -40,5 +40,6 @@ check_app() {
 
 check_app "$cf_dir/link_lab.so" "LINK_LAB_AppMain"
 check_app "$cf_dir/step_lab.so" "STEP_LAB_AppMain"
+check_app "$cf_dir/scn_lab.so" "SCN_LAB_AppMain"
 
 exit "$status"

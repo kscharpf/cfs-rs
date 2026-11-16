@@ -7,10 +7,12 @@ use cfe::es::{self, RunStatus};
 use cfe::evs::{self, EventType};
 use cfe::osal::TcpStream;
 use cfe::sb::{MsgId, Pipe, Qos, Timeout, check_pipe_depth, transmit_msg};
-use step_lab_core::msg::{DoneMsg, LinkLevel, StartMsg, WakeRxMsg, WakeTxMsg};
+use step_lab_core::msg::{
+    DoneMsg, LinkLevel, RecordMsg, StartMsg, UnitMsg, WakeAppsMsg, WakeRxMsg, WakeTxMsg,
+};
 use step_lab_core::proto::{
-    self, CodecError, Message, Outputs, PROTOCOL_VERSION, Role, UnitsIter, decode_body,
-    encode_frame,
+    self, CodecError, EventArgs, Message, NodeOutput, Outputs, PROTOCOL_VERSION, Role, UnitsIter,
+    decode_body, encode_frame,
 };
 
 /// Event ID for `step_lab` start-up event.
@@ -19,12 +21,200 @@ pub const STEP_LAB_STARTUP_EID: u16 = 1;
 /// Frame buffer capacity for socket communication.
 const FRAME_BUF_LEN: usize = 4096;
 
+/// Maximum number of outputs captured per step.
+const MAX_OUTPUTS: usize = 32;
+
+/// Buffer capacity for payload data in a single step.
+const MAX_PAYLOAD_BYTES: usize = 8192;
+
+/// Maximum number of stored event arguments in a single step.
+const MAX_STORED_ARGS: usize = 64;
+
 /// Harness port as `u16`, derived from node headers.
 const HARNESS_PORT: u16 = {
     let [b0, b1, b2, b3] = cfe_sys::NODE_HARNESS_PORT.to_le_bytes();
     assert!(b2 == 0 && b3 == 0, "NODE_HARNESS_PORT must fit in u16");
     u16::from_le_bytes([b0, b1])
 };
+
+#[derive(Debug, Clone, Copy)]
+enum StoredOutput {
+    Unit {
+        offset: usize,
+        len: usize,
+    },
+    PacketOut {
+        apid: u16,
+        offset: usize,
+        len: usize,
+    },
+    PacketIn {
+        apid: u16,
+        offset: usize,
+        len: usize,
+    },
+    Event {
+        code: u16,
+        args_offset: usize,
+        args_len: usize,
+    },
+}
+
+struct StepCollector {
+    outputs: [Option<StoredOutput>; MAX_OUTPUTS],
+    output_count: usize,
+    payload_buf: [u8; MAX_PAYLOAD_BYTES],
+    payload_len: usize,
+    args_buf: [u64; MAX_STORED_ARGS],
+    args_len: usize,
+}
+
+impl StepCollector {
+    const fn new() -> Self {
+        Self {
+            outputs: [None; MAX_OUTPUTS],
+            output_count: 0,
+            payload_buf: [0; MAX_PAYLOAD_BYTES],
+            payload_len: 0,
+            args_buf: [0; MAX_STORED_ARGS],
+            args_len: 0,
+        }
+    }
+
+    fn push_unit(&mut self, unit: &[u8]) -> bool {
+        if self.output_count >= MAX_OUTPUTS {
+            return false;
+        }
+        let end = match self.payload_len.checked_add(unit.len()) {
+            Some(e) if e <= MAX_PAYLOAD_BYTES => e,
+            _ => return false,
+        };
+        let offset = self.payload_len;
+        if let Some(dest) = self.payload_buf.get_mut(offset..end) {
+            dest.copy_from_slice(unit);
+            self.payload_len = end;
+            if let Some(slot) = self.outputs.get_mut(self.output_count) {
+                *slot = Some(StoredOutput::Unit {
+                    offset,
+                    len: unit.len(),
+                });
+                self.output_count = self.output_count.saturating_add(1);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn push_record(&mut self, record: &RecordMsg) -> bool {
+        if self.output_count >= MAX_OUTPUTS {
+            return false;
+        }
+        match record.to_node_output() {
+            Some(NodeOutput::Event(code, EventArgs::Slice(args))) => {
+                let end = match self.args_len.checked_add(args.len()) {
+                    Some(e) if e <= MAX_STORED_ARGS => e,
+                    _ => return false,
+                };
+                let args_offset = self.args_len;
+                if let Some(dest) = self.args_buf.get_mut(args_offset..end) {
+                    dest.copy_from_slice(args);
+                    self.args_len = end;
+                    if let Some(slot) = self.outputs.get_mut(self.output_count) {
+                        *slot = Some(StoredOutput::Event {
+                            code,
+                            args_offset,
+                            args_len: args.len(),
+                        });
+                        self.output_count = self.output_count.saturating_add(1);
+                        return true;
+                    }
+                }
+            }
+            Some(NodeOutput::PacketOut(apid, data)) => {
+                let end = match self.payload_len.checked_add(data.len()) {
+                    Some(e) if e <= MAX_PAYLOAD_BYTES => e,
+                    _ => return false,
+                };
+                let offset = self.payload_len;
+                if let Some(dest) = self.payload_buf.get_mut(offset..end) {
+                    dest.copy_from_slice(data);
+                    self.payload_len = end;
+                    if let Some(slot) = self.outputs.get_mut(self.output_count) {
+                        *slot = Some(StoredOutput::PacketOut {
+                            apid,
+                            offset,
+                            len: data.len(),
+                        });
+                        self.output_count = self.output_count.saturating_add(1);
+                        return true;
+                    }
+                }
+            }
+            Some(NodeOutput::PacketIn(apid, data)) => {
+                let end = match self.payload_len.checked_add(data.len()) {
+                    Some(e) if e <= MAX_PAYLOAD_BYTES => e,
+                    _ => return false,
+                };
+                let offset = self.payload_len;
+                if let Some(dest) = self.payload_buf.get_mut(offset..end) {
+                    dest.copy_from_slice(data);
+                    self.payload_len = end;
+                    if let Some(slot) = self.outputs.get_mut(self.output_count) {
+                        *slot = Some(StoredOutput::PacketIn {
+                            apid,
+                            offset,
+                            len: data.len(),
+                        });
+                        self.output_count = self.output_count.saturating_add(1);
+                        return true;
+                    }
+                }
+            }
+            _ => return false,
+        }
+        false
+    }
+
+    fn build_outputs<'a>(&'a self, dest: &mut [NodeOutput<'a>; MAX_OUTPUTS]) -> usize {
+        let mut count = 0;
+        for i in 0..self.output_count {
+            let Some(Some(item)) = self.outputs.get(i) else {
+                break;
+            };
+            let out = match *item {
+                StoredOutput::Unit { offset, len } => {
+                    let end = offset.saturating_add(len);
+                    let bytes = self.payload_buf.get(offset..end).unwrap_or(&[]);
+                    NodeOutput::Unit(bytes)
+                }
+                StoredOutput::PacketOut { apid, offset, len } => {
+                    let end = offset.saturating_add(len);
+                    let bytes = self.payload_buf.get(offset..end).unwrap_or(&[]);
+                    NodeOutput::PacketOut(apid, bytes)
+                }
+                StoredOutput::PacketIn { apid, offset, len } => {
+                    let end = offset.saturating_add(len);
+                    let bytes = self.payload_buf.get(offset..end).unwrap_or(&[]);
+                    NodeOutput::PacketIn(apid, bytes)
+                }
+                StoredOutput::Event {
+                    code,
+                    args_offset,
+                    args_len,
+                } => {
+                    let end = args_offset.saturating_add(args_len);
+                    let args = self.args_buf.get(args_offset..end).unwrap_or(&[]);
+                    NodeOutput::Event(code, EventArgs::Slice(args))
+                }
+            };
+            if let Some(slot) = dest.get_mut(count) {
+                *slot = out;
+                count = count.saturating_add(1);
+            }
+        }
+        count
+    }
+}
 
 /// Reads one framed message from the TCP stream.
 fn read_msg_frame<'a>(
@@ -58,6 +248,40 @@ fn write_msg_frame(
     stream
         .write_all(slice)
         .map_err(|_| CodecError::UnexpectedEof)
+}
+
+/// Waits on the input pipe until a `DONE` message arrives, collecting outputs.
+fn wait_collect_turn(
+    pipe: &mut Pipe,
+    collector: &mut StepCollector,
+    earliest_deadline: &mut Option<u64>,
+) {
+    while let Ok(buf) = pipe.receive_buffer(Timeout::PendForever) {
+        let Ok(mid) = buf.msg_id() else {
+            continue;
+        };
+        match mid.as_u32() {
+            cfe_sys::NODE_RECORD_MID => {
+                if let Some(record) = RecordMsg::from_bytes(buf.as_bytes()) {
+                    let _ = collector.push_record(&record);
+                }
+            }
+            cfe_sys::NODE_UNIT_MID => {
+                if let Some(unit_msg) = UnitMsg::from_bytes(buf.as_bytes()) {
+                    let _ = collector.push_unit(unit_msg.unit_bytes());
+                }
+            }
+            cfe_sys::NODE_DONE_MID => {
+                if let Some(done) = DoneMsg::from_bytes(buf.as_bytes())
+                    && let Some(d) = done.deadline()
+                {
+                    *earliest_deadline = Some(earliest_deadline.map_or(d, |prev| prev.min(d)));
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Waits on the input pipe until a `DONE` message arrives, updating `earliest_deadline`.
@@ -138,7 +362,13 @@ fn perform_handshake(
     Ok(LinkLevel::from_case_id(case_id))
 }
 
-/// Handles a single STEP from the harness.
+/// Prepares a Software Bus message header by setting its message ID and total size.
+fn prepare_msg(msg: &mut cfe_sys::CFE_MSG_Message_t, msg_id: u32, size: usize) -> Result<(), ()> {
+    cfe::msg::set_msg_id(msg, MsgId::from_u32(msg_id)).map_err(|_| ())?;
+    cfe::msg::set_size(msg, size).map_err(|_| ())
+}
+
+/// Handles a single STEP from the harness according to docs/design/link-lab.md §4.5.
 fn handle_step(
     stream: &mut TcpStream,
     pipe: &mut Pipe,
@@ -148,8 +378,9 @@ fn handle_step(
     tx_buf: &mut [u8; FRAME_BUF_LEN],
 ) -> Result<(), ()> {
     let mut earliest_deadline = None;
+    let mut collector = StepCollector::new();
 
-    // Process delivered units
+    // 1. For each delivered unit: WAKE_RX to link_lab -> collect until DONE.
     for unit in units {
         let Some(mut wake_rx) = WakeRxMsg::new(now, unit) else {
             let _ = evs::send_event(
@@ -159,9 +390,9 @@ fn handle_step(
             );
             return Err(());
         };
-        if cfe::msg::init(
+        if prepare_msg(
             wake_rx.msg_mut(),
-            MsgId::from_u32(cfe_sys::NODE_WAKE_RX_MID),
+            cfe_sys::NODE_WAKE_RX_MID,
             core::mem::size_of::<WakeRxMsg>(),
         )
         .is_err()
@@ -181,14 +412,40 @@ fn handle_step(
             );
             return Err(());
         }
-        wait_for_done(pipe, &mut earliest_deadline);
+        wait_collect_turn(pipe, &mut collector, &mut earliest_deadline);
     }
 
-    // Process transmit slot
+    // 2. WAKE_APPS to scn_lab -> wait for scn_lab's DONE.
+    let mut wake_apps = WakeAppsMsg::new(now);
+    if prepare_msg(
+        wake_apps.msg_mut(),
+        cfe_sys::NODE_WAKE_APPS_MID,
+        core::mem::size_of::<WakeAppsMsg>(),
+    )
+    .is_err()
+    {
+        let _ = evs::send_event(
+            17,
+            EventType::Critical,
+            "STEP_LAB: Failed to init WakeAppsMsg",
+        );
+        return Err(());
+    }
+    if transmit_msg(wake_apps.msg(), true).is_err() {
+        let _ = evs::send_event(
+            18,
+            EventType::Critical,
+            "STEP_LAB: Failed to transmit WakeAppsMsg",
+        );
+        return Err(());
+    }
+    wait_collect_turn(pipe, &mut collector, &mut earliest_deadline);
+
+    // 3. WAKE_TX to link_lab -> collect until DONE.
     let mut wake_tx = WakeTxMsg::new(now, tx_slot);
-    if cfe::msg::init(
+    if prepare_msg(
         wake_tx.msg_mut(),
-        MsgId::from_u32(cfe_sys::NODE_WAKE_TX_MID),
+        cfe_sys::NODE_WAKE_TX_MID,
         core::mem::size_of::<WakeTxMsg>(),
     )
     .is_err()
@@ -208,11 +465,13 @@ fn handle_step(
         );
         return Err(());
     }
-    wait_for_done(pipe, &mut earliest_deadline);
+    wait_collect_turn(pipe, &mut collector, &mut earliest_deadline);
 
-    // Reply STEP_RESULT
+    // 4. Reply STEP_RESULT with all outputs in arrival order and earliest next_deadline.
+    let mut output_storage = [NodeOutput::Unit(&[]); MAX_OUTPUTS];
+    let count = collector.build_outputs(&mut output_storage);
     let result_msg = Message::StepResult {
-        outputs: Outputs::Slice(&[]),
+        outputs: Outputs::Slice(output_storage.get(..count).unwrap_or(&[])),
         next_deadline: earliest_deadline,
     };
     write_msg_frame(stream, &result_msg, tx_buf).map_err(|_| ())
@@ -223,11 +482,11 @@ fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
     let mut rx_buf = [0u8; FRAME_BUF_LEN];
     let mut tx_buf = [0u8; FRAME_BUF_LEN];
 
-    // Send START to link_lab with configured LinkLevel
+    // Send START to all apps with configured LinkLevel
     let mut start_msg = StartMsg::new(level);
-    if cfe::msg::init(
+    if prepare_msg(
         start_msg.msg_mut(),
-        MsgId::from_u32(cfe_sys::NODE_START_MID),
+        cfe_sys::NODE_START_MID,
         core::mem::size_of::<StartMsg>(),
     )
     .is_err()
@@ -247,7 +506,9 @@ fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
         let _ = pipe.delete();
         return;
     }
+    // Wait for DONE from both link_lab and scn_lab
     let mut unused_deadline = None;
+    wait_for_done(&mut pipe, &mut unused_deadline);
     wait_for_done(&mut pipe, &mut unused_deadline);
 
     let mut run_status = RunStatus::AppRun;
@@ -293,7 +554,7 @@ pub extern "C" fn STEP_LAB_AppMain() {
     }
 
     // 2. Perform pipe-depth check (link-lab.md §9).
-    if check_pipe_depth(16, MsgId::from_u32(cfe_sys::NODE_TEST_MID)).is_err() {
+    if check_pipe_depth(32, MsgId::from_u32(cfe_sys::NODE_TEST_MID)).is_err() {
         let _ = evs::send_event(
             2,
             EventType::Critical,
@@ -304,20 +565,26 @@ pub extern "C" fn STEP_LAB_AppMain() {
     }
 
     // 3. Create Software Bus input pipe.
-    let Ok(pipe) = Pipe::create(16, "STEP_LAB_PIPE") else {
+    let Ok(pipe) = Pipe::create(32, "STEP_LAB_PIPE") else {
         let _ = evs::send_event(3, EventType::Critical, "STEP_LAB: Failed to create SB pipe");
         es::exit_app(RunStatus::AppError);
         return;
     };
 
     if pipe
-        .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_DONE_MID), Qos::DEFAULT, 16)
+        .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_DONE_MID), Qos::DEFAULT, 32)
         .is_err()
+        || pipe
+            .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_RECORD_MID), Qos::DEFAULT, 32)
+            .is_err()
+        || pipe
+            .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_UNIT_MID), Qos::DEFAULT, 32)
+            .is_err()
     {
         let _ = evs::send_event(
-            3,
+            8,
             EventType::Critical,
-            "STEP_LAB: Failed to subscribe to DONE",
+            "STEP_LAB: Failed to subscribe to node messages",
         );
         let _ = pipe.delete();
         es::exit_app(RunStatus::AppError);

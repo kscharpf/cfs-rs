@@ -118,6 +118,7 @@ version = "0.0.0"
 dependencies = [
  "cfe",
  "cfe-sys",
+ "link-lab-core",
  "step-lab-core",
 ]
 
@@ -155,11 +156,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "refapp-flight"
+version = "0.1.0"
+source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
+dependencies = [
+ "aldis",
+ "refapp-scenario",
+]
+
+[[package]]
 name = "refapp-scenario"
 version = "0.1.0"
 source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
 dependencies = [
  "aldis",
+]
+
+[[package]]
+name = "scn-lab"
+version = "0.0.0"
+dependencies = [
+ "cfe",
+ "cfe-sys",
+ "refapp-flight",
+ "refapp-scenario",
+ "step-lab-core",
 ]
 
 [[package]]

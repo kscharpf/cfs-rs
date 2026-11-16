@@ -1,0 +1,6 @@
+{
+    global:
+        SCN_LAB_AppMain;
+    local:
+        *;
+};
