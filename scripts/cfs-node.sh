@@ -91,39 +91,48 @@ if [ ! -d "$aldis_dir/.git" ]; then
 fi
 (cd "$aldis_dir" && git checkout "$aldis_rev")
 
-# 6. Run a0-empty via refapp-harness against core-cpu1 (twice per build)
-run_a0() {
+# 6. Run test cases via refapp-harness against core-cpu1 (twice per build)
+cases="a0-empty a1-nominal a1-immediate a1-rejects a1-downlink-faults"
+
+run_case() {
     build_type="$1"
     run_num="$2"
+    case_name="$3"
     staging="$root/build/$build_type/usr/local/cpu1"
-    out_dir="$root/build/runs-$build_type-run$run_num"
-    echo "=== Running a0-empty against $build_type (run $run_num) ==="
+    out_dir="$root/build/runs-$build_type-run$run_num-$case_name"
+    echo "=== Running $case_name against $build_type (run $run_num) ==="
     cargo run --manifest-path "$aldis_dir/refapp/Cargo.toml" -p refapp-harness -- \
-        run-node a0-empty --out "$out_dir" cfs "$staging" 5010
+        run-node "$case_name" --out "$out_dir" cfs "$staging" 5010
 
     # Verify byte-for-byte equality with golden trace
-    if ! cmp -s "$out_dir/a0-empty.jsonl" "$aldis_dir/refapp/golden/a0-empty.jsonl"; then
-        echo "FAIL: $out_dir/a0-empty.jsonl does not match golden trace" >&2
-        diff -u "$aldis_dir/refapp/golden/a0-empty.jsonl" "$out_dir/a0-empty.jsonl" >&2 || true
+    if ! cmp -s "$out_dir/$case_name.jsonl" "$aldis_dir/refapp/golden/$case_name.jsonl"; then
+        echo "FAIL: $out_dir/$case_name.jsonl does not match golden trace" >&2
+        diff -u "$aldis_dir/refapp/golden/$case_name.jsonl" "$out_dir/$case_name.jsonl" >&2 || true
         exit 1
     fi
 
     # Verify start-up EVS events in the node's console log
-    grep -q "LINK_LAB App Initialized. Version 0.1.0" "$out_dir/a0-empty.node.log" || {
-        echo "FAIL: LINK_LAB start-up event not found in $out_dir/a0-empty.node.log" >&2
+    grep -q "LINK_LAB App Initialized. Version 0.1.0" "$out_dir/$case_name.node.log" || {
+        echo "FAIL: LINK_LAB start-up event not found in $out_dir/$case_name.node.log" >&2
         exit 1
     }
-    grep -q "STEP_LAB App Initialized. Version 0.1.0" "$out_dir/a0-empty.node.log" || {
-        echo "FAIL: STEP_LAB start-up event not found in $out_dir/a0-empty.node.log" >&2
+    grep -q "STEP_LAB App Initialized. Version 0.1.0" "$out_dir/$case_name.node.log" || {
+        echo "FAIL: STEP_LAB start-up event not found in $out_dir/$case_name.node.log" >&2
+        exit 1
+    }
+    grep -q "SCN_LAB App Initialized. Version 0.1.0" "$out_dir/$case_name.node.log" || {
+        echo "FAIL: SCN_LAB start-up event not found in $out_dir/$case_name.node.log" >&2
         exit 1
     }
 
-    echo "$build_type (run $run_num): a0-empty passed and matched golden trace byte-for-byte"
+    echo "$build_type (run $run_num): $case_name passed and matched golden trace byte-for-byte"
 }
 
-run_a0 "node-stock" 1
-run_a0 "node-stock" 2
-run_a0 "node-rs" 1
-run_a0 "node-rs" 2
+for case_name in $cases; do
+    run_case "node-stock" 1 "$case_name"
+    run_case "node-stock" 2 "$case_name"
+    run_case "node-rs" 1 "$case_name"
+    run_case "node-rs" 2 "$case_name"
+done
 
 echo "=== node checks: ALL PASSED ==="

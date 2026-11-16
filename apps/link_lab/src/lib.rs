@@ -6,17 +6,36 @@
 use cfe::es::{self, RunStatus};
 use cfe::evs::{self, EventType};
 use cfe::sb::{MsgId, Pipe, Qos, Timeout, transmit_msg};
-use step_lab_core::msg::DoneMsg;
+use link_lab_core::{DownlinkSink, Instant, Level, Link, LinkConfig, UplinkSink, packet_apid};
+use step_lab_core::msg::{
+    CmdPacketMsg, DoneMsg, LinkLevel, RecordMsg, StartMsg, TlmPacketMsg, UnitMsg, WakeRxMsg,
+    WakeTxMsg,
+};
 
 /// Event ID for `link_lab` start-up event.
 pub const LINK_LAB_STARTUP_EID: u16 = 1;
 
+/// Maximum number of pending telemetry packets to buffer during a step.
+const MAX_PENDING_TLM: usize = 16;
+
+#[derive(Clone, Copy)]
+struct PendingTlm {
+    len: u16,
+    data: [u8; 512],
+}
+
+/// Prepares a Software Bus message header by setting its message ID and total size.
+fn prepare_msg(msg: &mut cfe_sys::CFE_MSG_Message_t, msg_id: u32, size: usize) -> Result<(), ()> {
+    cfe::msg::set_msg_id(msg, MsgId::from_u32(msg_id)).map_err(|_| ())?;
+    cfe::msg::set_size(msg, size).map_err(|_| ())
+}
+
 /// Sends a `DONE` message to `step_lab` signaling turn completion.
 fn send_done(next_deadline: Option<u64>) {
     let mut done = DoneMsg::new(next_deadline);
-    if cfe::msg::init(
+    if prepare_msg(
         done.msg_mut(),
-        MsgId::from_u32(cfe_sys::NODE_DONE_MID),
+        cfe_sys::NODE_DONE_MID,
         core::mem::size_of::<DoneMsg>(),
     )
     .is_err()
@@ -33,6 +52,305 @@ fn send_done(next_deadline: Option<u64>) {
     }
 }
 
+/// Sends a `CMD_PACKET` message to `scn_lab`.
+fn send_cmd_packet(now: u64, packet: &[u8]) {
+    let Some(mut msg) = CmdPacketMsg::new(now, packet) else {
+        let _ = evs::send_event(
+            6,
+            EventType::Critical,
+            "LINK_LAB: Packet too long for CmdPacketMsg",
+        );
+        return;
+    };
+    if prepare_msg(
+        msg.msg_mut(),
+        cfe_sys::NODE_CMD_PACKET_MID,
+        core::mem::size_of::<CmdPacketMsg>(),
+    )
+    .is_err()
+    {
+        let _ = evs::send_event(
+            7,
+            EventType::Critical,
+            "LINK_LAB: Failed to init CMD_PACKET msg",
+        );
+        return;
+    }
+    if transmit_msg(msg.msg(), true).is_err() {
+        let _ = evs::send_event(
+            8,
+            EventType::Critical,
+            "LINK_LAB: Failed to transmit CMD_PACKET msg",
+        );
+    }
+}
+
+/// Sends a `UNIT` message to `step_lab`.
+fn send_unit(unit: &[u8]) {
+    let Some(mut msg) = UnitMsg::new(unit) else {
+        let _ = evs::send_event(
+            9,
+            EventType::Critical,
+            "LINK_LAB: Unit too long for UnitMsg",
+        );
+        return;
+    };
+    if prepare_msg(
+        msg.msg_mut(),
+        cfe_sys::NODE_UNIT_MID,
+        core::mem::size_of::<UnitMsg>(),
+    )
+    .is_err()
+    {
+        let _ = evs::send_event(10, EventType::Critical, "LINK_LAB: Failed to init UNIT msg");
+        return;
+    }
+    if transmit_msg(msg.msg(), true).is_err() {
+        let _ = evs::send_event(
+            11,
+            EventType::Critical,
+            "LINK_LAB: Failed to transmit UNIT msg",
+        );
+    }
+}
+
+/// Sends a `RECORD` event message to `step_lab`.
+fn send_record_event(code: u16, args: &[u64]) {
+    let Some(mut msg) = RecordMsg::new_event(code, args) else {
+        let _ = evs::send_event(
+            12,
+            EventType::Critical,
+            "LINK_LAB: Too many args for RecordMsg",
+        );
+        return;
+    };
+    if prepare_msg(
+        msg.msg_mut(),
+        cfe_sys::NODE_RECORD_MID,
+        core::mem::size_of::<RecordMsg>(),
+    )
+    .is_err()
+    {
+        let _ = evs::send_event(
+            13,
+            EventType::Critical,
+            "LINK_LAB: Failed to init RECORD msg",
+        );
+        return;
+    }
+    if transmit_msg(msg.msg(), true).is_err() {
+        let _ = evs::send_event(
+            14,
+            EventType::Critical,
+            "LINK_LAB: Failed to transmit RECORD msg",
+        );
+    }
+}
+
+/// Sends a `RECORD` `packet_out` message to `step_lab`.
+fn send_record_packet_out(apid: u16, packet: &[u8]) {
+    let Some(mut msg) = RecordMsg::new_packet_out(apid, packet) else {
+        let _ = evs::send_event(
+            15,
+            EventType::Critical,
+            "LINK_LAB: Packet too long for RecordMsg",
+        );
+        return;
+    };
+    if prepare_msg(
+        msg.msg_mut(),
+        cfe_sys::NODE_RECORD_MID,
+        core::mem::size_of::<RecordMsg>(),
+    )
+    .is_err()
+    {
+        let _ = evs::send_event(
+            16,
+            EventType::Critical,
+            "LINK_LAB: Failed to init RECORD msg",
+        );
+        return;
+    }
+    if transmit_msg(msg.msg(), true).is_err() {
+        let _ = evs::send_event(
+            17,
+            EventType::Critical,
+            "LINK_LAB: Failed to transmit RECORD msg",
+        );
+    }
+}
+
+/// Downlink sink emitting units and events to `step_lab`.
+struct LinkDownlinkSink;
+
+impl DownlinkSink for LinkDownlinkSink {
+    fn unit(&mut self, unit: &[u8]) {
+        send_unit(unit);
+    }
+
+    fn event(&mut self, code: u16, args: &[u64]) {
+        send_record_event(code, args);
+    }
+}
+
+/// Uplink sink exchanging command packets with `scn_lab`.
+struct LinkUplinkSink<'a> {
+    pipe: &'a mut Pipe,
+    now: Instant,
+}
+
+impl UplinkSink for LinkUplinkSink<'_> {
+    fn command_packet(&mut self, packet: &[u8]) {
+        send_cmd_packet(self.now.as_micros(), packet);
+        while let Ok(buf) = self.pipe.receive_buffer(Timeout::PendForever) {
+            let Ok(mid) = buf.msg_id() else {
+                continue;
+            };
+            match mid.as_u32() {
+                cfe_sys::NODE_CMD_PACKET_DONE_MID => break,
+                cfe_sys::NODE_TLM_PACKET_MID => {
+                    if let Some(tlm) = TlmPacketMsg::from_bytes(buf.as_bytes()) {
+                        let pkt = tlm.packet_bytes();
+                        let apid = packet_apid(pkt).unwrap_or(0);
+                        send_record_packet_out(apid, pkt);
+                        send_unit(pkt);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn event(&mut self, code: u16, args: &[u64]) {
+        send_record_event(code, args);
+    }
+}
+
+/// Handles `WAKE_RX` turn from `step_lab`.
+fn handle_wake_rx(link: &mut Link, pipe: &mut Pipe, wake_rx: Option<&WakeRxMsg>) {
+    if let Some(wake_rx) = wake_rx {
+        let now = Instant::from_micros(wake_rx.now);
+        let unit = wake_rx.unit_bytes();
+        let mut rx_sink = LinkUplinkSink { pipe, now };
+        link.accept_unit(now, unit, &mut rx_sink);
+    }
+    send_done(None);
+}
+
+/// Handles incoming `TLM_PACKET` from `scn_lab`, buffering it for `WAKE_TX`.
+fn handle_tlm_packet(
+    bytes: &[u8],
+    pending_tlm: &mut [Option<PendingTlm>; MAX_PENDING_TLM],
+    pending_count: &mut usize,
+) {
+    if let Some(tlm) = TlmPacketMsg::from_bytes(bytes) {
+        let pkt = tlm.packet_bytes();
+        if *pending_count < MAX_PENDING_TLM {
+            let mut p = PendingTlm {
+                len: tlm.packet_len,
+                data: [0; 512],
+            };
+            let copy_len = pkt.len().min(512);
+            if let Some(src) = pkt.get(..copy_len)
+                && let Some(dest) = p.data.get_mut(..copy_len)
+            {
+                dest.copy_from_slice(src);
+                p.len = u16::try_from(copy_len).unwrap_or(0);
+                if let Some(slot) = pending_tlm.get_mut(*pending_count) {
+                    *slot = Some(p);
+                    *pending_count = pending_count.saturating_add(1);
+                }
+            }
+        } else {
+            let _ = evs::send_event(
+                18,
+                EventType::Critical,
+                "LINK_LAB: pending_tlm queue overflow",
+            );
+        }
+    }
+}
+
+/// Handles `WAKE_TX` turn from `step_lab`.
+fn handle_wake_tx(
+    link: &mut Link,
+    pipe: &mut Pipe,
+    wake_tx: Option<WakeTxMsg>,
+    pending_tlm: &mut [Option<PendingTlm>; MAX_PENDING_TLM],
+    pending_count: &mut usize,
+) {
+    if let Some(wake_tx) = wake_tx {
+        let now = Instant::from_micros(wake_tx.now);
+        let mut tx_sink = LinkDownlinkSink;
+
+        // 1. Drain pending TLM packets buffered before WAKE_TX
+        for i in 0..*pending_count {
+            if let Some(Some(p)) = pending_tlm.get_mut(i) {
+                let pkt = p.data.get(..usize::from(p.len)).unwrap_or(&[]);
+                let apid = packet_apid(pkt).unwrap_or(0);
+                send_record_packet_out(apid, pkt);
+                link.accept_packet(now, pkt, &mut tx_sink);
+            }
+        }
+        *pending_count = 0;
+
+        // 2. Also drain any extra TLM packets in pipe
+        while let Ok(extra_buf) = pipe.receive_buffer(Timeout::Poll) {
+            let Ok(mid) = extra_buf.msg_id() else {
+                continue;
+            };
+            if mid.as_u32() == cfe_sys::NODE_TLM_PACKET_MID
+                && let Some(tlm) = TlmPacketMsg::from_bytes(extra_buf.as_bytes())
+            {
+                let pkt = tlm.packet_bytes();
+                let apid = packet_apid(pkt).unwrap_or(0);
+                send_record_packet_out(apid, pkt);
+                link.accept_packet(now, pkt, &mut tx_sink);
+            }
+        }
+
+        // 3. Transmit slot
+        link.slot(now, wake_tx.is_tx_slot(), &mut tx_sink);
+
+        // 4. Send DONE with next deadline
+        let next_d = link.next_deadline(now).map(Instant::as_micros);
+        send_done(next_d);
+    } else {
+        send_done(None);
+    }
+}
+
+/// Subscribes the input pipe to all relevant Software Bus messages.
+fn subscribe_turns(pipe: &Pipe) -> Result<(), ()> {
+    if pipe
+        .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_START_MID), Qos::DEFAULT, 4)
+        .is_err()
+        || pipe
+            .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_WAKE_RX_MID), Qos::DEFAULT, 32)
+            .is_err()
+        || pipe
+            .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_WAKE_TX_MID), Qos::DEFAULT, 4)
+            .is_err()
+        || pipe
+            .subscribe_ex(
+                MsgId::from_u32(cfe_sys::NODE_CMD_PACKET_DONE_MID),
+                Qos::DEFAULT,
+                4,
+            )
+            .is_err()
+        || pipe
+            .subscribe_ex(
+                MsgId::from_u32(cfe_sys::NODE_TLM_PACKET_MID),
+                Qos::DEFAULT,
+                32,
+            )
+            .is_err()
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
 /// Application entry point exported to cFE.
 #[expect(unsafe_code, reason = "cFS entry point must be extern \"C\"")]
 #[unsafe(no_mangle)]
@@ -44,23 +362,14 @@ pub extern "C" fn LINK_LAB_AppMain() {
     }
 
     // 2. Create Software Bus input pipe.
-    let Ok(mut pipe) = Pipe::create(16, "LINK_LAB_PIPE") else {
+    let Ok(mut pipe) = Pipe::create(32, "LINK_LAB_PIPE") else {
         let _ = evs::send_event(2, EventType::Critical, "LINK_LAB: Failed to create SB pipe");
         es::exit_app(RunStatus::AppError);
         return;
     };
 
     // 3. Subscribe to scenario turns.
-    if pipe
-        .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_START_MID), Qos::DEFAULT, 4)
-        .is_err()
-        || pipe
-            .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_WAKE_RX_MID), Qos::DEFAULT, 16)
-            .is_err()
-        || pipe
-            .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_WAKE_TX_MID), Qos::DEFAULT, 4)
-            .is_err()
-    {
+    if subscribe_turns(&pipe).is_err() {
         let _ = evs::send_event(
             3,
             EventType::Critical,
@@ -78,7 +387,12 @@ pub extern "C" fn LINK_LAB_AppMain() {
         "LINK_LAB App Initialized. Version 0.1.0",
     );
 
-    // 5. Run ES loop, pending on the pipe.
+    // 5. Initialize link state and pending buffer.
+    let mut link: Option<Link> = None;
+    let mut pending_tlm = [const { None }; MAX_PENDING_TLM];
+    let mut pending_count = 0usize;
+
+    // 6. Run ES loop, pending on the pipe.
     let mut run_status = RunStatus::AppRun;
     while es::run_loop(&mut run_status) {
         let Ok(buf) = pipe.receive_buffer(Timeout::PendForever) else {
@@ -90,8 +404,42 @@ pub extern "C" fn LINK_LAB_AppMain() {
         };
 
         match mid.as_u32() {
-            cfe_sys::NODE_START_MID | cfe_sys::NODE_WAKE_RX_MID | cfe_sys::NODE_WAKE_TX_MID => {
+            cfe_sys::NODE_START_MID => {
+                let level = StartMsg::from_bytes(buf.as_bytes())
+                    .and_then(|m| m.link_level())
+                    .map_or(Level::Packets, |lvl| match lvl {
+                        LinkLevel::Packets => Level::Packets,
+                        LinkLevel::Frames => Level::Frames,
+                        LinkLevel::Cop1 => Level::Cop1,
+                    });
+                link = Link::new(level, &LinkConfig::default()).ok();
+                pending_count = 0;
                 send_done(None);
+            }
+            cfe_sys::NODE_WAKE_RX_MID => {
+                let wake_rx = WakeRxMsg::from_bytes(buf.as_bytes());
+                if let Some(link) = link.as_mut() {
+                    handle_wake_rx(link, &mut pipe, wake_rx.as_ref());
+                } else {
+                    send_done(None);
+                }
+            }
+            cfe_sys::NODE_TLM_PACKET_MID => {
+                handle_tlm_packet(buf.as_bytes(), &mut pending_tlm, &mut pending_count);
+            }
+            cfe_sys::NODE_WAKE_TX_MID => {
+                let wake_tx = WakeTxMsg::from_bytes(buf.as_bytes());
+                if let Some(link) = link.as_mut() {
+                    handle_wake_tx(
+                        link,
+                        &mut pipe,
+                        wake_tx,
+                        &mut pending_tlm,
+                        &mut pending_count,
+                    );
+                } else {
+                    send_done(None);
+                }
             }
             _ => {}
         }

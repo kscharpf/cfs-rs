@@ -15,6 +15,7 @@ doctest = false
 [dependencies]
 cfe = { workspace = true }
 cfe-sys = { workspace = true }
+link-lab-core = { workspace = true }
 step-lab-core = { workspace = true }
 
 [lints]
