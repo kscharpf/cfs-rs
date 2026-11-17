@@ -22,11 +22,11 @@ add_custom_target(link_lab_rs_build
 add_cfe_app(link_lab fsw/src/link_lab_glue.c)
 add_dependencies(link_lab link_lab_rs_build)
 target_link_libraries(link_lab
-    -Wl,--whole-archive
     "${CFS_RS_LIB}"
-    -Wl,--no-whole-archive
 )
 target_link_options(link_lab PRIVATE
+    "-Wl,--undefined=LINK_LAB_AppMain"
+    "-Wl,--gc-sections"
     "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/link_lab.sym"
 )
 set_property(TARGET link_lab APPEND PROPERTY LINK_DEPENDS "${CFS_RS_LIB}" "${CMAKE_CURRENT_SOURCE_DIR}/link_lab.sym")

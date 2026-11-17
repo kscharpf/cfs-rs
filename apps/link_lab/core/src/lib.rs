@@ -23,7 +23,7 @@ pub use event::{
 pub use refapp_scenario::Instant;
 pub use uplink::{
     TC_ASSEMBLY_LEN, TC_FRAME_AREA_LEN, TC_MAX_FRAME_LEN, TC_MAX_PACKET_LEN,
-    TC_REASSEMBLY_AREA_LEN, UplinkBuffers, UplinkState,
+    TC_REASSEMBLY_AREA_LEN, UplinkBuffers, UplinkMode, UplinkState,
 };
 
 /// Extracts the 11-bit APID from a valid Space Packet byte slice.
@@ -89,11 +89,15 @@ impl Link {
     /// # Errors
     /// Returns `ErrorKind::InvalidConfig` if managed parameters fail engine validation.
     pub fn new(level: Level, config: &LinkConfig) -> Result<Self> {
+        let uplink_mode = match level {
+            Level::Packets | Level::Frames => UplinkMode::Frames,
+            Level::Cop1 => UplinkMode::Cop1,
+        };
         Ok(Self {
             level,
             config: *config,
             downlink: DownlinkState::new(config)?,
-            uplink: UplinkState::new(config)?,
+            uplink: UplinkState::new(config, uplink_mode)?,
             slot_field_buf: [0_u8; TM_DATA_FIELD_LEN],
             slot_frame_buf: [0_u8; TM_FRAME_LEN],
             up_frame_area: [0_u8; TC_FRAME_AREA_LEN],
@@ -131,8 +135,7 @@ impl Link {
                     fdu_buf: &mut self.up_fdu_buf,
                     reassembly_area: &mut self.up_reassembly_area,
                 };
-                self.uplink
-                    .accept(now, unit, self.level == Level::Cop1, &mut buffers, sink);
+                self.uplink.accept(now, unit, &mut buffers, sink);
             }
         }
     }

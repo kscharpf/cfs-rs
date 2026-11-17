@@ -1,6 +1,6 @@
 # link_lab — design and work plan
 
-**Status:** accepted (L1–L12 accepted as recommended by the maintainer).
+**Status:** complete (WP-0–WP-8 exited; L1–L12 accepted as recommended by the maintainer).
 **Scope:** `link_lab`, a cFS application written in Rust that carries Space Packets over CCSDS TM and TC frames with COP-1, using [Aldis](https://github.com/kscharpf/aldis); and the smallest cFS flight node around it that can be checked against the Aldis reference-application golden traces.
 
 ## Summary
@@ -326,9 +326,21 @@ Level `Cop1`. Most of the work is already in WP-4.
 
 ### WP-8 Review and exit (S)
 
-Panic-freedom and heap checks on the app libraries; `apps/link_lab/README.md` for an integrator; the Aldis API feedback issues listed; the §8 options decided or deferred.
+**Exited.** All work packages WP-0 through WP-8 are complete:
+
+- **Panic-freedom and heap checks:** `apps/*/CMakeLists.txt` links each app staticlib with `-Wl,--undefined=<ENTRY>` and `-Wl,--gc-sections` (replacing `--whole-archive`), and `scripts/check-app-symbols.sh` verifies on both `node-stock` and `node-rs` that `link_lab.so`, `step_lab.so`, and `scn_lab.so` export only their entry point and contain zero heap symbols (`malloc`, `calloc`, `realloc`, `free`, `__rust_alloc*`, `alloc::`) and zero panic/unwind symbols (`core::panicking`, `rust_begin_unwind`, `__rust_start_panic`, `panic_fmt`).
+- **Integrator documentation:** [`apps/link_lab/README.md`](../../apps/link_lab/README.md) documents crate boundaries, build/verification targets, mission integration (`node_defs/targets.cmake`, `node_defs/node_msgids.h`, 64 KiB stack & measured stack frames, pipe depth 32 / `fs.mqueue.msg_max`), and the §4.4 Software Bus interface.
+- **Aldis API feedback & WP-4–WP-7 observations:**
+  - [`kscharpf/aldis#588`](https://github.com/kscharpf/aldis/issues/588) (A-1): out-of-process node protocol over TCP and external `core-cpu1` launcher — implemented and consumed at pinned rev `4852ee68`.
+  - [`kscharpf/aldis#589`](https://github.com/kscharpf/aldis/issues/589) (A-2): release tag containing `refapp/` at A3 and golden traces — pending tag; workspace pins rev `4852ee68`.
+  - [`kscharpf/aldis#590`](https://github.com/kscharpf/aldis/issues/590) (A-3): `FlightNode` packet-level phase (`handle_delivered`) made public — implemented and consumed by `scn_lab` at rev `4852ee68`.
+  - [`kscharpf/aldis#591`](https://github.com/kscharpf/aldis/issues/591) (A-4): `SpacePacketHeader` decode made public — open; non-blocking because packets arrive whole and `SpacePacket::decode_exact` suffices.
+  - `aldis-link` requires the `epp` feature alongside `spp` (`Cargo.toml` enables `epp` in addition to the L11 feature list).
+- **Post-v1 options:** All five §8 options are deferred to [`kscharpf/cfs-rs#27`](https://github.com/kscharpf/cfs-rs/issues/27).
 
 ## 8. After the first version
+
+All five post-v1 options are deferred to [`https://github.com/kscharpf/cfs-rs/issues/27`](https://github.com/kscharpf/cfs-rs/issues/27):
 
 | Option | Value |
 |---|---|

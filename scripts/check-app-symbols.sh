@@ -1,5 +1,8 @@
 #!/bin/sh
-# Verifies that app shared libraries export only their designated entry point.
+# Verifies that app shared libraries:
+# 1. Export only their designated entry point.
+# 2. Contain no heap allocation symbols.
+# 3. Contain no panic/unwind symbols.
 set -eu
 
 cf_dir="${1:?usage: check-app-symbols.sh <path-to-cf-dir>}"
@@ -9,6 +12,7 @@ status=0
 check_app() {
     app_so="$1"
     expected_sym="$2"
+    base="$(basename "$app_so")"
 
     if [ ! -f "$app_so" ]; then
         echo "FAIL: missing $app_so" >&2
@@ -16,26 +20,43 @@ check_app() {
         return
     fi
 
-    # In ELF, nm -D --defined-only output format is: <addr> <type> <name>
+    # 1. Export visibility: In ELF, nm -D --defined-only output format is: <addr> <type> <name>
     syms="$(nm -D --defined-only "$app_so" | awk '{ print $3 }')"
 
-    # Check that expected_sym is present
     if ! printf '%s\n' "$syms" | grep -qx "$expected_sym"; then
-        echo "FAIL: $(basename "$app_so") does not export $expected_sym" >&2
+        echo "FAIL: $base does not export $expected_sym" >&2
         status=1
         return
     fi
 
-    # Check that NO other symbols are exported
     other_syms="$(printf '%s\n' "$syms" | grep -v "^${expected_sym}$" || true)"
     if [ -n "$other_syms" ]; then
-        echo "FAIL: $(basename "$app_so") exports unexpected symbols:" >&2
+        echo "FAIL: $base exports unexpected symbols:" >&2
         printf '%s\n' "$other_syms" >&2
         status=1
         return
     fi
 
-    echo "app symbols ok: $(basename "$app_so") exports only $expected_sym"
+    # 2. Heap-freedom: check defined and undefined symbols for C/Rust allocators
+    all_demangled="$(nm -C "$app_so")"
+    heap_syms="$(printf '%s\n' "$all_demangled" | grep -E '(^|[[:space:]])(malloc|calloc|realloc|free)(@.*)?$|__rust_alloc|__rust_dealloc|__rust_realloc|__rust_alloc_zeroed|alloc::' || true)"
+    if [ -n "$heap_syms" ]; then
+        echo "FAIL: $base contains heap allocation symbols:" >&2
+        printf '%s\n' "$heap_syms" >&2
+        status=1
+        return
+    fi
+
+    # 3. Panic-freedom: check for Rust panic/unwind symbols
+    panic_syms="$(printf '%s\n' "$all_demangled" | grep -E 'core::panicking|rust_begin_unwind|__rust_start_panic|panic_fmt' || true)"
+    if [ -n "$panic_syms" ]; then
+        echo "FAIL: $base contains panic/unwind symbols:" >&2
+        printf '%s\n' "$panic_syms" >&2
+        status=1
+        return
+    fi
+
+    echo "app symbols ok: $base exports only $expected_sym, heap-free, panic-free"
 }
 
 check_app "$cf_dir/link_lab.so" "LINK_LAB_AppMain"

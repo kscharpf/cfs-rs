@@ -386,7 +386,15 @@ fn perform_handshake(
         return Err(());
     }
 
-    Ok(LinkLevel::from_case_id(case_id))
+    let Some(level) = LinkLevel::from_case_id(case_id) else {
+        let _ = evs::send_event(
+            24,
+            EventType::Critical,
+            "STEP_LAB: Unsupported case_id prefix in HELLO",
+        );
+        return Err(());
+    };
+    Ok(level)
 }
 
 /// Prepares a Software Bus message header by setting its message ID and total size.

@@ -447,22 +447,30 @@ fn app_main() {
 
         match mid.as_u32() {
             cfe_sys::NODE_START_MID => {
-                let level = StartMsg::from_bytes(buf.as_bytes())
-                    .and_then(|m| m.link_level())
-                    .map_or(Level::Packets, |lvl| match lvl {
+                if let Some(lvl) = StartMsg::from_bytes(buf.as_bytes()).and_then(|m| m.link_level())
+                {
+                    let level = match lvl {
                         LinkLevel::Packets => Level::Packets,
                         LinkLevel::Frames => Level::Frames,
                         LinkLevel::Cop1 => Level::Cop1,
-                    });
-                link = Link::new(level, &LinkConfig::default())
-                    .inspect_err(|_| {
-                        let _ = evs::send_event(
-                            20,
-                            EventType::Critical,
-                            "LINK_LAB: Failed to initialize Link",
-                        );
-                    })
-                    .ok();
+                    };
+                    link = Link::new(level, &LinkConfig::default())
+                        .inspect_err(|_| {
+                            let _ = evs::send_event(
+                                20,
+                                EventType::Critical,
+                                "LINK_LAB: Failed to initialize Link",
+                            );
+                        })
+                        .ok();
+                } else {
+                    link = None;
+                    let _ = evs::send_event(
+                        24,
+                        EventType::Critical,
+                        "LINK_LAB: Invalid or malformed StartMsg",
+                    );
+                }
                 pending_count = 0;
                 send_done(None);
             }

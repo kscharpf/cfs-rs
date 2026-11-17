@@ -28,25 +28,15 @@ impl LinkLevel {
         }
     }
 
-    /// Determines the link level from the ASCII case ID prefix.
+    /// Determines the link level from the ASCII case ID prefix, or `None` if unknown.
     #[must_use]
-    pub const fn from_case_id(case_id: &str) -> Self {
+    pub const fn from_case_id(case_id: &str) -> Option<Self> {
         let bytes = case_id.as_bytes();
-        let Some(&first) = bytes.first() else {
-            return Self::Packets;
-        };
-        let second = match bytes {
-            [_, b, ..] => *b,
-            _ => return Self::Packets,
-        };
-        if first == b'a' {
-            match second {
-                b'2' => Self::Frames,
-                b'3' => Self::Cop1,
-                _ => Self::Packets,
-            }
-        } else {
-            Self::Packets
+        match bytes {
+            [b'a', b'0' | b'1', b'-', ..] | [b'a', b'0' | b'1'] => Some(Self::Packets),
+            [b'a', b'2', b'-', ..] | [b'a', b'2'] => Some(Self::Frames),
+            [b'a', b'3', b'-', ..] | [b'a', b'3'] => Some(Self::Cop1),
+            _ => None,
         }
     }
 }

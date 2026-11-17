@@ -217,10 +217,21 @@ fn test_strict_codec_errors() {
 fn test_msg_struct_sizes_and_helpers() {
     use step_lab_core::msg::{DoneMsg, LinkLevel, MAX_UNIT_LEN, StartMsg, WakeRxMsg, WakeTxMsg};
 
-    assert_eq!(LinkLevel::from_case_id("a1-nominal"), LinkLevel::Packets);
-    assert_eq!(LinkLevel::from_case_id("a2-nominal"), LinkLevel::Frames);
-    assert_eq!(LinkLevel::from_case_id("a3-nominal"), LinkLevel::Cop1);
-    assert_eq!(LinkLevel::from_case_id("a0-empty"), LinkLevel::Packets);
+    assert_eq!(
+        LinkLevel::from_case_id("a1-nominal"),
+        Some(LinkLevel::Packets)
+    );
+    assert_eq!(
+        LinkLevel::from_case_id("a2-nominal"),
+        Some(LinkLevel::Frames)
+    );
+    assert_eq!(LinkLevel::from_case_id("a3-nominal"), Some(LinkLevel::Cop1));
+    assert_eq!(
+        LinkLevel::from_case_id("a0-empty"),
+        Some(LinkLevel::Packets)
+    );
+    assert_eq!(LinkLevel::from_case_id("a4-nominal"), None);
+    assert_eq!(LinkLevel::from_case_id("unknown"), None);
 
     let start = StartMsg::new(LinkLevel::Packets);
     assert_eq!(start.level, 0);
