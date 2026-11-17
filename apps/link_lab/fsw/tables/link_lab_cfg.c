@@ -24,10 +24,16 @@ typedef struct
     uint8                route_count;
     uint8                reserved[4];
     LINK_LAB_ApidRoute_t routes[8];
+    uint16               rx_port;
+    uint16               tx_port;
+    uint8                ground_ipv4[4];
+    uint8                mode;
+    uint8                default_vc;
+    uint8                reserved2[6];
 } LINK_LAB_CfgTbl_t;
 
 CompileTimeAssert(sizeof(LINK_LAB_ApidRoute_t) == 4, LinkLabApidRouteSize);
-CompileTimeAssert(sizeof(LINK_LAB_CfgTbl_t) == 72, LinkLabCfgTblSize);
+CompileTimeAssert(sizeof(LINK_LAB_CfgTbl_t) == 88, LinkLabCfgTblSize);
 
 LINK_LAB_CfgTbl_t LINK_LAB_CfgTbl = {
     125000ULL,  /* frame_slot_us */
@@ -53,6 +59,12 @@ LINK_LAB_CfgTbl_t LINK_LAB_CfgTbl = {
         {0U, 0U, 0U},
         {0U, 0U, 0U},
     },
+    1234U,               /* rx_port */
+    2234U,               /* tx_port */
+    {127U, 0U, 0U, 1U},  /* ground_ipv4 */
+    0U,                  /* mode (0 = Lockstep) */
+    0xFFU,               /* default_vc (0xFF = None) */
+    {0U, 0U, 0U, 0U, 0U, 0U},
 };
 
 CFE_TBL_FILEDEF(LINK_LAB_CfgTbl, LINK_LAB.LinkCfg, link_lab LinkConfig table, link_lab_cfg.tbl)

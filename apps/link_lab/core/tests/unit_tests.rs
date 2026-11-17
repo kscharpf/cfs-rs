@@ -27,7 +27,7 @@ use aldis::tm::{TmFrame, TmPhysicalChannelConfig};
 use link_lab_core::{
     APP_DOWNLINK_REFUSED, APP_FARM1_STATE, APP_FARM1_UNLOCK, APP_FRAME_DISCARDED,
     APP_FRAME_REJECTED, APP_PACKET_REJECTED, APP_SEQUENCE_VIOLATION, APP_UNKNOWN_MAP, ApidRoute,
-    DataVc, DownlinkSink, DownlinkState, Level, Link, LinkConfig, MAX_APID_ROUTES,
+    DataVc, DownlinkSink, DownlinkState, Level, Link, LinkConfig, LinkMode, MAX_APID_ROUTES,
     TC_FRAME_AREA_LEN, TC_REASSEMBLY_AREA_LEN, TM_FRAME_LEN, UplinkBuffers, UplinkMode, UplinkSink,
     UplinkState,
 };
@@ -523,6 +523,33 @@ fn test_link_config_from_table_bytes_round_trip_and_routing() {
         LinkConfig::from_table_bytes(&custom_bytes).expect("valid custom table bytes");
     assert_eq!(decoded_custom.vc_for_apid(0x0123), Some(DataVc::Payload));
     assert_eq!(decoded_custom.vc_for_apid(apid::HOUSEKEEPING), None);
+
+    // NativeRealtime mode falls back to default_vc when APID is not in apid_routes,
+    // while Lockstep ignores default_vc even if set.
+    let mut lockstep_with_default = scenario_cfg;
+    lockstep_with_default.default_vc = Some(DataVc::Realtime);
+    assert_eq!(lockstep_with_default.vc_for_apid(0x0008), None);
+
+    let mut realtime = scenario_cfg;
+    realtime.mode = LinkMode::NativeRealtime;
+    realtime.default_vc = Some(DataVc::Realtime);
+    realtime.rx_port = 11234;
+    realtime.tx_port = 12234;
+    realtime.ground_ipv4 = [10, 0, 0, 2];
+    let rt_bytes = realtime.to_table_bytes();
+    let decoded_rt = LinkConfig::from_table_bytes(&rt_bytes).expect("valid realtime table bytes");
+    assert_eq!(decoded_rt, realtime);
+    assert_eq!(decoded_rt.vc_for_apid(0x0000), Some(DataVc::Realtime));
+    assert_eq!(decoded_rt.vc_for_apid(0x0008), Some(DataVc::Realtime));
+    assert_eq!(decoded_rt.vc_for_apid(apid::PAYLOAD), Some(DataVc::Payload));
+
+    // NativeRealtime with default_vc = None refuses unmapped APIDs.
+    let mut rt_no_default = realtime;
+    rt_no_default.default_vc = None;
+    let rt_no_def_bytes = rt_no_default.to_table_bytes();
+    let decoded_rt_no_def = LinkConfig::from_table_bytes(&rt_no_def_bytes)
+        .expect("valid realtime table without default");
+    assert_eq!(decoded_rt_no_def.vc_for_apid(0x0008), None);
 }
 
 #[test]
@@ -607,6 +634,22 @@ fn test_link_config_from_table_bytes_validation_errors() {
     assert_invalid(|b| b[42] = 7);
     assert_invalid(|b| b[43] = 1);
     assert_invalid(|b| b[44..46].copy_from_slice(&apid::HOUSEKEEPING.to_ne_bytes()));
+
+    // NativeRealtime / UDP config validation: invalid mode, invalid default_vc, non-zero reserved2,
+    // and zero rx_port/tx_port in NativeRealtime mode.
+    assert_invalid(|b| b[80] = 2);
+    assert_invalid(|b| b[81] = 2);
+    assert_invalid(|b| b[81] = 7);
+    assert_invalid(|b| b[82] = 1);
+    assert_invalid(|b| b[87] = 1);
+    assert_invalid(|b| {
+        b[80] = 1;
+        b[72..74].copy_from_slice(&0_u16.to_ne_bytes());
+    });
+    assert_invalid(|b| {
+        b[80] = 1;
+        b[74..76].copy_from_slice(&0_u16.to_ne_bytes());
+    });
 }
 
 #[test]

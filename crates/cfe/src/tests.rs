@@ -19,14 +19,14 @@ extern crate std;
 use crate::es::{self, RunStatus};
 use crate::evs::{self, EventType};
 use crate::msg;
-use crate::osal::TcpStream;
+use crate::osal::{TcpStream, UdpSocket, local_time_us};
 use crate::sb::{self, MsgId, Pipe, PipeId, Qos, Timeout};
 use crate::status::Status;
 use crate::tbl::{self, Table, TableOptions};
 use core::num::NonZeroUsize;
 use std::collections::HashSet;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU16, AtomicU32, Ordering};
 
 static RUN_LOOP_CALLS: AtomicU32 = AtomicU32::new(0);
 static WAIT_SYNC_MS: AtomicU32 = AtomicU32::new(0);
@@ -37,12 +37,23 @@ static LAST_EVENT_TYPE: AtomicU16 = AtomicU16::new(0);
 static PIPE_CREATE_CALLS: AtomicU32 = AtomicU32::new(0);
 static SUBSCRIBED_MID: AtomicU32 = AtomicU32::new(0);
 static SUBSCRIBED_LIMIT: AtomicU16 = AtomicU16::new(0);
+static SOCKET_TEST_LOCK: Mutex<()> = Mutex::new(());
 static OS_SOCKET_OPEN_CALLS: AtomicU32 = AtomicU32::new(0);
 static OS_SOCKET_CONNECT_CALLS: AtomicU32 = AtomicU32::new(0);
+static OS_SOCKET_BIND_CALLS: AtomicU32 = AtomicU32::new(0);
 static OS_SOCKET_SEND_CALLS: AtomicU32 = AtomicU32::new(0);
+static OS_SOCKET_SENDTO_CALLS: AtomicU32 = AtomicU32::new(0);
 static OS_SOCKET_RECV_CALLS: AtomicU32 = AtomicU32::new(0);
+static OS_SOCKET_RECVFROM_CALLS: AtomicU32 = AtomicU32::new(0);
 static OS_CLOSE_CALLS: AtomicU32 = AtomicU32::new(0);
 static SIMULATE_SOCKET_FAIL: AtomicBool = AtomicBool::new(false);
+static SIMULATE_BIND_FAIL: AtomicBool = AtomicBool::new(false);
+static UDP_RECVFROM_MODE: AtomicI32 = AtomicI32::new(0);
+static UDP_SENDTO_FAIL: AtomicBool = AtomicBool::new(false);
+static LAST_UDP_PORT: AtomicU16 = AtomicU16::new(0);
+static LAST_UDP_HOST: Mutex<([u8; 64], usize)> = Mutex::new(([0; 64], 0));
+static LOCAL_TIME_TICKS: AtomicI64 = AtomicI64::new(12_345_670);
+static SIMULATE_TIME_FAIL: AtomicBool = AtomicBool::new(false);
 static SIMULATE_RECEIVE_NULL_BUFFER: AtomicBool = AtomicBool::new(false);
 static SIMULATE_RECEIVE_ERROR: AtomicBool = AtomicBool::new(false);
 static SIMULATE_ALLOC_FAIL: AtomicBool = AtomicBool::new(false);
@@ -394,17 +405,102 @@ pub unsafe extern "C" fn OS_SocketAddrInit(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn OS_SocketAddrFromString(
-    _Addr: *mut cfe_sys::OS_SockAddr_t,
-    _string: *const core::ffi::c_char,
+    Addr: *mut cfe_sys::OS_SockAddr_t,
+    string: *const core::ffi::c_char,
 ) -> i32 {
+    if !string.is_null() {
+        // SAFETY: string is checked non-null and NUL-terminated by caller.
+        let bytes = unsafe { std::ffi::CStr::from_ptr(string) }.to_bytes();
+        let len = bytes.len().min(64);
+        if let Ok(mut guard) = LAST_UDP_HOST.lock() {
+            guard.0[..len].copy_from_slice(&bytes[..len]);
+            guard.1 = len;
+        }
+    }
+    let _ = Addr;
     0
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn OS_SocketAddrSetPort(
     _Addr: *mut cfe_sys::OS_SockAddr_t,
-    _PortNum: u16,
+    PortNum: u16,
 ) -> i32 {
+    LAST_UDP_PORT.store(PortNum, Ordering::SeqCst);
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn OS_SocketBind(
+    _sock_id: cfe_sys::osal_id_t,
+    _Addr: *const cfe_sys::OS_SockAddr_t,
+) -> i32 {
+    OS_SOCKET_BIND_CALLS.fetch_add(1, Ordering::SeqCst);
+    if SIMULATE_BIND_FAIL.load(Ordering::SeqCst) {
+        cfe_sys::OS_ERROR
+    } else {
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn OS_SocketRecvFrom(
+    _sock_id: cfe_sys::osal_id_t,
+    buffer: *mut core::ffi::c_void,
+    buflen: usize,
+    _RemoteAddr: *mut cfe_sys::OS_SockAddr_t,
+    _timeout: i32,
+) -> i32 {
+    OS_SOCKET_RECVFROM_CALLS.fetch_add(1, Ordering::SeqCst);
+    if buffer.is_null() || buflen == 0 {
+        return cfe_sys::OS_ERR_INVALID_SIZE;
+    }
+    match UDP_RECVFROM_MODE.load(Ordering::SeqCst) {
+        1 => cfe_sys::OS_ERROR_TIMEOUT,
+        2 => cfe_sys::OS_QUEUE_EMPTY,
+        3 => cfe_sys::OS_ERROR,
+        _ => {
+            let n = buflen.min(3);
+            let dest = buffer.cast::<u8>();
+            for i in 0..n {
+                let val = 0xA0_u8.saturating_add(u8::try_from(i).unwrap_or(0));
+                // SAFETY: buffer is non-null and holds at least buflen >= n bytes.
+                unsafe { *dest.add(i) = val };
+            }
+            i32::try_from(n).unwrap_or(0)
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn OS_SocketSendTo(
+    _sock_id: cfe_sys::osal_id_t,
+    buffer: *const core::ffi::c_void,
+    buflen: usize,
+    RemoteAddr: *const cfe_sys::OS_SockAddr_t,
+) -> i32 {
+    OS_SOCKET_SENDTO_CALLS.fetch_add(1, Ordering::SeqCst);
+    if buffer.is_null() || RemoteAddr.is_null() {
+        return cfe_sys::OS_INVALID_POINTER;
+    }
+    if UDP_SENDTO_FAIL.load(Ordering::SeqCst) {
+        return cfe_sys::OS_ERROR;
+    }
+    i32::try_from(buflen).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn OS_GetLocalTime(time_struct: *mut cfe_sys::OS_time_t) -> i32 {
+    if time_struct.is_null() {
+        return cfe_sys::OS_INVALID_POINTER;
+    }
+    if SIMULATE_TIME_FAIL.load(Ordering::SeqCst) {
+        return cfe_sys::OS_ERROR;
+    }
+    // SAFETY: time_struct is checked non-null.
+    unsafe {
+        (*time_struct).ticks = LOCAL_TIME_TICKS.load(Ordering::SeqCst);
+    }
     0
 }
 
@@ -767,6 +863,12 @@ fn test_msg_wrappers() {
 
 #[test]
 fn test_osal_tcp_stream() {
+    let _guard = SOCKET_TEST_LOCK.lock().unwrap();
+    OS_SOCKET_OPEN_CALLS.store(0, Ordering::SeqCst);
+    OS_SOCKET_CONNECT_CALLS.store(0, Ordering::SeqCst);
+    OS_SOCKET_SEND_CALLS.store(0, Ordering::SeqCst);
+    OS_CLOSE_CALLS.store(0, Ordering::SeqCst);
+
     let mut stream = TcpStream::connect("127.0.0.1", 1234).unwrap();
     assert_eq!(OS_SOCKET_OPEN_CALLS.load(Ordering::SeqCst), 1);
     assert_eq!(OS_SOCKET_CONNECT_CALLS.load(Ordering::SeqCst), 1);
@@ -820,6 +922,121 @@ fn test_osal_tcp_stream() {
     SIMULATE_SOCKET_FAIL.store(true, Ordering::SeqCst);
     assert!(TcpStream::connect("127.0.0.1", 1234).is_err());
     SIMULATE_SOCKET_FAIL.store(false, Ordering::SeqCst);
+}
+
+#[test]
+fn test_osal_udp_socket_and_local_time() {
+    let _guard = SOCKET_TEST_LOCK.lock().unwrap();
+    OS_SOCKET_OPEN_CALLS.store(0, Ordering::SeqCst);
+    OS_SOCKET_BIND_CALLS.store(0, Ordering::SeqCst);
+    OS_SOCKET_SENDTO_CALLS.store(0, Ordering::SeqCst);
+    OS_SOCKET_RECVFROM_CALLS.store(0, Ordering::SeqCst);
+    OS_CLOSE_CALLS.store(0, Ordering::SeqCst);
+    SIMULATE_SOCKET_FAIL.store(false, Ordering::SeqCst);
+    SIMULATE_BIND_FAIL.store(false, Ordering::SeqCst);
+    UDP_RECVFROM_MODE.store(0, Ordering::SeqCst);
+    UDP_SENDTO_FAIL.store(false, Ordering::SeqCst);
+
+    {
+        let sock = UdpSocket::bind("0.0.0.0", 1234).unwrap();
+        assert_eq!(OS_SOCKET_OPEN_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(OS_SOCKET_BIND_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(LAST_UDP_PORT.load(Ordering::SeqCst), 1234);
+        {
+            let guard = LAST_UDP_HOST.lock().unwrap();
+            assert_eq!(&guard.0[..guard.1], b"0.0.0.0");
+        }
+
+        // Receive datagram
+        let mut buf = [0u8; 16];
+        assert_eq!(
+            sock.recv_from(&mut buf, cfe_sys::OS_CHECK.cast_signed()),
+            Ok(Some(3))
+        );
+        assert_eq!(&buf[..3], &[0xA0, 0xA1, 0xA2]);
+
+        // Non-blocking OS_CHECK timeout / empty queue returns Ok(None)
+        UDP_RECVFROM_MODE.store(1, Ordering::SeqCst);
+        assert_eq!(
+            sock.recv_from(&mut buf, cfe_sys::OS_CHECK.cast_signed()),
+            Ok(None)
+        );
+        UDP_RECVFROM_MODE.store(2, Ordering::SeqCst);
+        assert_eq!(
+            sock.recv_from(&mut buf, cfe_sys::OS_CHECK.cast_signed()),
+            Ok(None)
+        );
+
+        // Hard recv error returns Err(Status)
+        UDP_RECVFROM_MODE.store(3, Ordering::SeqCst);
+        assert_eq!(
+            sock.recv_from(&mut buf, cfe_sys::OS_CHECK.cast_signed()),
+            Err(Status::from_raw(cfe_sys::OS_ERROR))
+        );
+        UDP_RECVFROM_MODE.store(0, Ordering::SeqCst);
+
+        // send_to and send_to_ipv4
+        assert_eq!(sock.send_to(&[1, 2, 3, 4], "127.0.0.1", 2234), Ok(4));
+        assert_eq!(LAST_UDP_PORT.load(Ordering::SeqCst), 2234);
+        {
+            let guard = LAST_UDP_HOST.lock().unwrap();
+            assert_eq!(&guard.0[..guard.1], b"127.0.0.1");
+        }
+
+        assert_eq!(
+            sock.send_to_ipv4(&[5, 6, 7], [192, 168, 10, 42], 3234),
+            Ok(3)
+        );
+        assert_eq!(LAST_UDP_PORT.load(Ordering::SeqCst), 3234);
+        {
+            let guard = LAST_UDP_HOST.lock().unwrap();
+            assert_eq!(&guard.0[..guard.1], b"192.168.10.42");
+        }
+        assert_eq!(OS_SOCKET_SENDTO_CALLS.load(Ordering::SeqCst), 2);
+
+        // send_to failure
+        UDP_SENDTO_FAIL.store(true, Ordering::SeqCst);
+        assert_eq!(
+            sock.send_to_ipv4(&[1], [127, 0, 0, 1], 2234),
+            Err(Status::from_raw(cfe_sys::OS_ERROR))
+        );
+        UDP_SENDTO_FAIL.store(false, Ordering::SeqCst);
+    }
+    // Drop closed the socket
+    assert_eq!(OS_CLOSE_CALLS.load(Ordering::SeqCst), 1);
+
+    // Explicit close does not double-close on Drop
+    let sock2 = UdpSocket::bind("0.0.0.0", 1235).unwrap();
+    assert!(sock2.close().is_ok());
+    assert_eq!(OS_CLOSE_CALLS.load(Ordering::SeqCst), 2);
+
+    // Bind failure closes opened socket
+    SIMULATE_BIND_FAIL.store(true, Ordering::SeqCst);
+    assert_eq!(
+        UdpSocket::bind("0.0.0.0", 1234).unwrap_err(),
+        Status::from_raw(cfe_sys::OS_ERROR)
+    );
+    assert_eq!(OS_CLOSE_CALLS.load(Ordering::SeqCst), 3);
+    SIMULATE_BIND_FAIL.store(false, Ordering::SeqCst);
+
+    // Invalid host rejects early without leaking socket
+    assert_eq!(
+        UdpSocket::bind("", 1234).unwrap_err(),
+        Status::from_raw(cfe_sys::OS_ERR_BAD_ADDRESS)
+    );
+    assert_eq!(OS_CLOSE_CALLS.load(Ordering::SeqCst), 4);
+
+    // local_time_us() success, failure, and negative ticks
+    LOCAL_TIME_TICKS.store(12_345_670, Ordering::SeqCst);
+    SIMULATE_TIME_FAIL.store(false, Ordering::SeqCst);
+    assert_eq!(local_time_us(), Ok(1_234_567));
+
+    LOCAL_TIME_TICKS.store(-10, Ordering::SeqCst);
+    assert_eq!(local_time_us(), Err(Status::from_raw(cfe_sys::OS_ERROR)));
+
+    SIMULATE_TIME_FAIL.store(true, Ordering::SeqCst);
+    assert_eq!(local_time_us(), Err(Status::from_raw(cfe_sys::OS_ERROR)));
+    SIMULATE_TIME_FAIL.store(false, Ordering::SeqCst);
 }
 
 static TBL_TEST_LOCK: Mutex<()> = Mutex::new(());

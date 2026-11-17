@@ -5,9 +5,13 @@
 
 use cfe::es::{self, RunStatus};
 use cfe::evs::{self, EventType};
+use cfe::osal::{self, UdpSocket};
 use cfe::sb::{MsgId, Pipe, Qos, Timeout, transmit_msg};
 use cfe::tbl::{Table, TableOptions};
-use link_lab_core::{DownlinkSink, Instant, Level, Link, LinkConfig, UplinkSink, packet_apid};
+use link_lab_core::{
+    DownlinkSink, Instant, Level, Link, LinkConfig, LinkMode, TC_FRAME_AREA_LEN, UplinkSink,
+    packet_apid,
+};
 use step_lab_core::msg::{
     CmdPacketMsg, DoneMsg, LinkLevel, MAX_UNIT_LEN, RecordMsg, StartMsg, TlmPacketMsg, UnitMsg,
     WakeRxMsg, WakeTxMsg,
@@ -397,6 +401,29 @@ fn subscribe_turns(pipe: &Pipe) -> Result<(), ()> {
     Ok(())
 }
 
+/// Subscribes the input pipe to native cFE telemetry MIDs and `NODE_WAKE_TX_MID` for `NativeRealtime` mode.
+fn subscribe_realtime(pipe: &Pipe) -> Result<(), ()> {
+    let mids = [
+        (cfe_sys::NODE_WAKE_TX_MID, 4_u16),
+        (cfe_sys::CFE_EVS_LONG_EVENT_MSG_MID, 16),
+        (cfe_sys::CFE_EVS_SHORT_EVENT_MSG_MID, 16),
+        (cfe_sys::CFE_ES_HK_TLM_MID, 8),
+        (cfe_sys::CFE_EVS_HK_TLM_MID, 8),
+        (cfe_sys::CFE_SB_HK_TLM_MID, 8),
+        (cfe_sys::CFE_TIME_HK_TLM_MID, 8),
+        (cfe_sys::CFE_TBL_HK_TLM_MID, 8),
+    ];
+    for (mid, limit) in mids {
+        if pipe
+            .subscribe_ex(MsgId::from_u32(mid), Qos::DEFAULT, limit)
+            .is_err()
+        {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
 /// Reads and decodes [`LinkConfig`] from the registered cFE table.
 fn read_link_config(table: &mut Table) -> Result<LinkConfig, ()> {
     let Ok(parsed) = table.read_bytes(LinkConfig::from_table_bytes) else {
@@ -418,7 +445,7 @@ fn read_link_config(table: &mut Table) -> Result<LinkConfig, ()> {
     Ok(config)
 }
 
-/// Initializes `link_lab`: registers with EVS, creates pipe, subscribes, loads `LinkCfg`, and sends start-up event.
+/// Initializes `link_lab`: registers with EVS, creates pipe, loads `LinkCfg`, subscribes, and sends start-up event.
 fn init_app() -> Result<(Pipe, Table, LinkConfig), ()> {
     if evs::register().is_err() {
         return Err(());
@@ -428,16 +455,6 @@ fn init_app() -> Result<(Pipe, Table, LinkConfig), ()> {
         let _ = evs::send_event(2, EventType::Critical, "LINK_LAB: Failed to create SB pipe");
         return Err(());
     };
-
-    if subscribe_turns(&pipe).is_err() {
-        let _ = evs::send_event(
-            3,
-            EventType::Critical,
-            "LINK_LAB: Failed to subscribe to turns",
-        );
-        let _ = pipe.delete();
-        return Err(());
-    }
 
     let Some(table_size) = core::num::NonZeroUsize::new(LinkConfig::TABLE_SIZE) else {
         let _ = pipe.delete();
@@ -460,6 +477,7 @@ fn init_app() -> Result<(Pipe, Table, LinkConfig), ()> {
             EventType::Critical,
             "LINK_LAB: Failed to load /cf/link_lab_cfg.tbl",
         );
+        let _ = table.unregister();
         let _ = pipe.delete();
         return Err(());
     }
@@ -470,14 +488,31 @@ fn init_app() -> Result<(Pipe, Table, LinkConfig), ()> {
             EventType::Critical,
             "LINK_LAB: Failed to manage LinkCfg table",
         );
+        let _ = table.unregister();
         let _ = pipe.delete();
         return Err(());
     }
 
     let Ok(config) = read_link_config(&mut table) else {
+        let _ = table.unregister();
         let _ = pipe.delete();
         return Err(());
     };
+
+    let sub_result = match config.mode {
+        LinkMode::Lockstep => subscribe_turns(&pipe),
+        LinkMode::NativeRealtime => subscribe_realtime(&pipe),
+    };
+    if sub_result.is_err() {
+        let _ = evs::send_event(
+            3,
+            EventType::Critical,
+            "LINK_LAB: Failed to subscribe to pipe MIDs",
+        );
+        let _ = table.unregister();
+        let _ = pipe.delete();
+        return Err(());
+    }
 
     let _ = evs::send_event(
         LINK_LAB_STARTUP_EID,
@@ -540,13 +575,9 @@ fn handle_start(
     send_done(None);
 }
 
-/// Runs the `link_lab` initialization, Software Bus dispatch loop, and teardown.
-fn app_main() {
-    let Ok((mut pipe, mut table, mut config)) = init_app() else {
-        es::exit_app(RunStatus::AppError);
-        return;
-    };
-
+/// Runs the lockstep `step_lab` dispatch loop (`a0`–`a3`).
+#[inline(never)]
+fn run_lockstep(pipe: &mut Pipe, table: &mut Table, config: &mut LinkConfig) -> RunStatus {
     let mut link: Option<Link> = None;
     #[expect(
         clippy::large_stack_arrays,
@@ -567,20 +598,14 @@ fn app_main() {
 
         match mid.as_u32() {
             cfe_sys::NODE_START_MID => {
-                handle_start(
-                    &mut table,
-                    &mut config,
-                    buf.as_bytes(),
-                    &mut link,
-                    &mut pending_count,
-                );
+                handle_start(table, config, buf.as_bytes(), &mut link, &mut pending_count);
             }
             cfe_sys::NODE_WAKE_RX_MID => {
                 let wake_rx = WakeRxMsg::from_bytes(buf.as_bytes());
                 if let Some(link) = link.as_mut() {
                     handle_wake_rx(
                         link,
-                        &mut pipe,
+                        pipe,
                         wake_rx.as_ref(),
                         &mut pending_tlm,
                         &mut pending_count,
@@ -597,7 +622,7 @@ fn app_main() {
                 if let Some(link) = link.as_mut() {
                     handle_wake_tx(
                         link,
-                        &mut pipe,
+                        pipe,
                         wake_tx.as_ref(),
                         &mut pending_tlm,
                         &mut pending_count,
@@ -615,6 +640,115 @@ fn app_main() {
             }
         }
     }
+    run_status
+}
+
+struct RealtimeUplinkSink;
+
+impl UplinkSink for RealtimeUplinkSink {
+    fn command_packet(&mut self, packet: &[u8]) {
+        let Ok(mut msg_buf) = cfe::sb::allocate_message_buffer(packet.len()) else {
+            return;
+        };
+        let Some(dest) = msg_buf.as_bytes_mut().get_mut(..packet.len()) else {
+            return;
+        };
+        dest.copy_from_slice(packet);
+        let _ = cfe::sb::transmit_buffer(msg_buf, false);
+    }
+}
+
+struct RealtimeDownlinkSink<'a> {
+    udp: &'a UdpSocket,
+    ground_ipv4: [u8; 4],
+    tx_port: u16,
+}
+
+impl DownlinkSink for RealtimeDownlinkSink<'_> {
+    fn unit(&mut self, unit: &[u8]) {
+        let _ = self.udp.send_to_ipv4(unit, self.ground_ipv4, self.tx_port);
+    }
+}
+
+/// Runs the native real-time UDP TM/TC dispatch loop.
+#[inline(never)]
+fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig) -> RunStatus {
+    let Ok(udp) = UdpSocket::bind("0.0.0.0", config.rx_port) else {
+        let _ = evs::send_event(
+            30,
+            EventType::Critical,
+            "LINK_LAB: Failed to bind UDP rx_port",
+        );
+        return RunStatus::AppError;
+    };
+
+    let Ok(mut link) = Link::new(Level::Frames, config) else {
+        let _ = evs::send_event(
+            20,
+            EventType::Critical,
+            "LINK_LAB: Failed to initialize Link",
+        );
+        return RunStatus::AppError;
+    };
+
+    let mut down_sink = RealtimeDownlinkSink {
+        udp: &udp,
+        ground_ipv4: config.ground_ipv4,
+        tx_port: config.tx_port,
+    };
+    let mut up_sink = RealtimeUplinkSink;
+    let mut rx_buf = [0u8; TC_FRAME_AREA_LEN];
+
+    let mut run_status = RunStatus::AppRun;
+    while es::run_loop(&mut run_status) {
+        let Ok(buf) = pipe.receive_buffer(Timeout::PendForever) else {
+            continue;
+        };
+        let Ok(mid) = buf.msg_id() else {
+            continue;
+        };
+        let now = Instant::from_micros(osal::local_time_us().unwrap_or(0));
+
+        match mid.as_u32() {
+            cfe_sys::NODE_WAKE_TX_MID => {
+                for _ in 0..64 {
+                    match udp.recv_from(&mut rx_buf, cfe_sys::OS_CHECK.cast_signed()) {
+                        Ok(Some(n)) => {
+                            if let Some(frame) = rx_buf.get(..n) {
+                                link.accept_unit(now, frame, &mut up_sink);
+                            }
+                        }
+                        Ok(None) | Err(_) => break,
+                    }
+                }
+                link.slot(now, true, &mut down_sink);
+            }
+            cfe_sys::CFE_EVS_LONG_EVENT_MSG_MID
+            | cfe_sys::CFE_EVS_SHORT_EVENT_MSG_MID
+            | cfe_sys::CFE_ES_HK_TLM_MID
+            | cfe_sys::CFE_EVS_HK_TLM_MID
+            | cfe_sys::CFE_SB_HK_TLM_MID
+            | cfe_sys::CFE_TIME_HK_TLM_MID
+            | cfe_sys::CFE_TBL_HK_TLM_MID => {
+                link.accept_packet(now, buf.as_bytes(), &mut down_sink);
+            }
+            _ => {}
+        }
+    }
+    run_status
+}
+
+/// Runs the `link_lab` initialization, Software Bus dispatch loop, and teardown.
+fn app_main() {
+    let Ok((mut pipe, mut table, mut config)) = init_app() else {
+        es::exit_app(RunStatus::AppError);
+        return;
+    };
+
+    let run_status = match config.mode {
+        LinkMode::Lockstep => run_lockstep(&mut pipe, &mut table, &mut config),
+        LinkMode::NativeRealtime => run_native_realtime(&mut pipe, &config),
+    };
 
     let _ = table.unregister();
     let _ = pipe.delete();

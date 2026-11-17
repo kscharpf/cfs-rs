@@ -1,18 +1,102 @@
-//! OSAL wrappers, including `TcpStream` and task delay.
+//! OSAL wrappers, including `TcpStream`, `UdpSocket`, `local_time_us`, and task delay.
 
 use crate::status::Status;
-
-/// A TCP stream connected via OSAL stream sockets.
-#[derive(Debug)]
-pub struct TcpStream {
-    id: cfe_sys::osal_id_t,
-}
 
 #[expect(
     clippy::as_conversions,
     reason = "OS_SOCKADDR_MAX_LEN is a C bindgen u32 constant used as buffer size"
 )]
 const OS_SOCKADDR_MAX_LEN: usize = cfe_sys::OS_SOCKADDR_MAX_LEN as usize;
+
+/// Initializes an OSAL IPv4 socket address from a dotted-decimal `host` and `port`.
+fn make_inet_addr(host: &str, port: u16) -> Result<cfe_sys::OS_SockAddr_t, Status> {
+    if host.is_empty() || host.len() >= 64 || host.as_bytes().contains(&0) {
+        return Err(Status::from_raw(cfe_sys::OS_ERR_BAD_ADDRESS));
+    }
+
+    let mut addr = cfe_sys::OS_SockAddr_t {
+        ActualLength: 0,
+        AddrData: cfe_sys::OS_SockAddrData_t {
+            Buffer: [0; OS_SOCKADDR_MAX_LEN],
+        },
+    };
+
+    // SAFETY: addr is a valid out-pointer.
+    let init_status = unsafe {
+        cfe_sys::OS_SocketAddrInit(
+            &raw mut addr,
+            cfe_sys::OS_SocketDomain_t_OS_SocketDomain_INET,
+        )
+    };
+    if init_status != cfe_sys::OS_SUCCESS.cast_signed() {
+        return Err(Status::from_raw(init_status));
+    }
+
+    let mut host_buf = [0u8; 64];
+    let len = host.len();
+    if let (Some(dest), Some(src)) = (host_buf.get_mut(..len), host.as_bytes().get(..len)) {
+        dest.copy_from_slice(src);
+    }
+
+    // SAFETY: addr and null-terminated host_buf are valid.
+    let addr_status =
+        unsafe { cfe_sys::OS_SocketAddrFromString(&raw mut addr, host_buf.as_ptr().cast()) };
+    if addr_status != cfe_sys::OS_SUCCESS.cast_signed() {
+        return Err(Status::from_raw(addr_status));
+    }
+
+    // SAFETY: addr is valid.
+    let port_status = unsafe { cfe_sys::OS_SocketAddrSetPort(&raw mut addr, port) };
+    if port_status != cfe_sys::OS_SUCCESS.cast_signed() {
+        return Err(Status::from_raw(port_status));
+    }
+
+    Ok(addr)
+}
+
+fn write_u8_ascii(mut val: u8, buf: &mut [u8], pos: &mut usize) {
+    let hundreds = val / 100;
+    val %= 100;
+    let tens = val / 10;
+    let ones = val % 10;
+    if hundreds > 0 {
+        if let Some(slot) = buf.get_mut(*pos) {
+            *slot = b'0'.saturating_add(hundreds);
+        }
+        *pos = pos.saturating_add(1);
+    }
+    if hundreds > 0 || tens > 0 {
+        if let Some(slot) = buf.get_mut(*pos) {
+            *slot = b'0'.saturating_add(tens);
+        }
+        *pos = pos.saturating_add(1);
+    }
+    if let Some(slot) = buf.get_mut(*pos) {
+        *slot = b'0'.saturating_add(ones);
+    }
+    *pos = pos.saturating_add(1);
+}
+
+/// Formats an IPv4 address `[a, b, c, d]` as dotted-decimal ASCII into `buf` and returns its byte length.
+fn format_ipv4(ip: [u8; 4], buf: &mut [u8; 16]) -> usize {
+    let mut pos = 0usize;
+    for (idx, octet) in ip.iter().enumerate() {
+        if idx > 0 {
+            if let Some(slot) = buf.get_mut(pos) {
+                *slot = b'.';
+            }
+            pos = pos.saturating_add(1);
+        }
+        write_u8_ascii(*octet, buf, &mut pos);
+    }
+    pos
+}
+
+/// A TCP stream connected via OSAL stream sockets.
+#[derive(Debug)]
+pub struct TcpStream {
+    id: cfe_sys::osal_id_t,
+}
 
 impl TcpStream {
     /// Connects to a remote IPv4 host and port via OSAL.
@@ -34,49 +118,14 @@ impl TcpStream {
             return Err(Status::from_raw(status));
         }
 
-        let mut addr = cfe_sys::OS_SockAddr_t {
-            ActualLength: 0,
-            AddrData: cfe_sys::OS_SockAddrData_t {
-                Buffer: [0; OS_SOCKADDR_MAX_LEN],
-            },
+        let addr = match make_inet_addr(host, port) {
+            Ok(addr) => addr,
+            Err(err) => {
+                // SAFETY: close socket on error.
+                unsafe { cfe_sys::OS_close(sock_id) };
+                return Err(err);
+            }
         };
-
-        // SAFETY: addr is a valid out-pointer.
-        let init_status = unsafe {
-            cfe_sys::OS_SocketAddrInit(
-                &raw mut addr,
-                cfe_sys::OS_SocketDomain_t_OS_SocketDomain_INET,
-            )
-        };
-        if init_status != cfe_sys::OS_SUCCESS.cast_signed() {
-            // SAFETY: close socket on error.
-            unsafe { cfe_sys::OS_close(sock_id) };
-            return Err(Status::from_raw(init_status));
-        }
-
-        // Copy host to null-terminated stack buffer.
-        let mut host_buf = [0u8; 64];
-        let len = host.len().min(63);
-        if let (Some(dest), Some(src)) = (host_buf.get_mut(..len), host.as_bytes().get(..len)) {
-            dest.copy_from_slice(src);
-        }
-
-        // SAFETY: addr and host_buf are valid.
-        let addr_status =
-            unsafe { cfe_sys::OS_SocketAddrFromString(&raw mut addr, host_buf.as_ptr().cast()) };
-        if addr_status != cfe_sys::OS_SUCCESS.cast_signed() {
-            // SAFETY: close socket on error.
-            unsafe { cfe_sys::OS_close(sock_id) };
-            return Err(Status::from_raw(addr_status));
-        }
-
-        // SAFETY: addr is valid.
-        let port_status = unsafe { cfe_sys::OS_SocketAddrSetPort(&raw mut addr, port) };
-        if port_status != cfe_sys::OS_SUCCESS.cast_signed() {
-            // SAFETY: close socket on error.
-            unsafe { cfe_sys::OS_close(sock_id) };
-            return Err(Status::from_raw(port_status));
-        }
 
         // Connect with timeout: 5000 ms.
         // SAFETY: sock_id and addr are valid.
@@ -186,6 +235,154 @@ impl Drop for TcpStream {
             }
         }
     }
+}
+
+/// A UDP datagram socket bound via OSAL datagram sockets.
+#[derive(Debug)]
+pub struct UdpSocket {
+    id: cfe_sys::osal_id_t,
+}
+
+impl UdpSocket {
+    /// Opens an IPv4 datagram socket and binds it to `host:port`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` if socket creation, address parsing, or binding fails.
+    pub fn bind(host: &str, port: u16) -> Result<Self, Status> {
+        let mut sock_id: cfe_sys::osal_id_t = cfe_sys::OS_OBJECT_ID_UNDEFINED;
+        // SAFETY: CFE/OSAL opens an INET DATAGRAM socket into sock_id.
+        let status = unsafe {
+            cfe_sys::OS_SocketOpen(
+                &raw mut sock_id,
+                cfe_sys::OS_SocketDomain_t_OS_SocketDomain_INET,
+                cfe_sys::OS_SocketType_t_OS_SocketType_DATAGRAM,
+            )
+        };
+        if status != cfe_sys::OS_SUCCESS.cast_signed() {
+            return Err(Status::from_raw(status));
+        }
+
+        let addr = match make_inet_addr(host, port) {
+            Ok(addr) => addr,
+            Err(err) => {
+                // SAFETY: close socket on error.
+                unsafe { cfe_sys::OS_close(sock_id) };
+                return Err(err);
+            }
+        };
+
+        // SAFETY: sock_id and addr are valid.
+        let bind_status = unsafe { cfe_sys::OS_SocketBind(sock_id, &raw const addr) };
+        if bind_status != cfe_sys::OS_SUCCESS.cast_signed() {
+            // SAFETY: close socket on error.
+            unsafe { cfe_sys::OS_close(sock_id) };
+            return Err(Status::from_raw(bind_status));
+        }
+
+        Ok(Self { id: sock_id })
+    }
+
+    /// Receives a datagram into `buf`, waiting up to `timeout_ms` milliseconds
+    /// (`OS_CHECK` = `0` for non-blocking poll, `OS_PEND` = `-1` to wait forever).
+    ///
+    /// Returns `Ok(None)` if no datagram is available (`OS_ERROR_TIMEOUT` or `OS_QUEUE_EMPTY`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` if OSAL socket receive fails with another error.
+    pub fn recv_from(&self, buf: &mut [u8], timeout_ms: i32) -> Result<Option<usize>, Status> {
+        // SAFETY: buf is a valid buffer of length buf.len(); RemoteAddr may be NULL per OSAL API.
+        let nbytes = unsafe {
+            cfe_sys::OS_SocketRecvFrom(
+                self.id,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                core::ptr::null_mut(),
+                timeout_ms,
+            )
+        };
+        if nbytes == cfe_sys::OS_ERROR_TIMEOUT || nbytes == cfe_sys::OS_QUEUE_EMPTY {
+            return Ok(None);
+        }
+        usize::try_from(nbytes)
+            .map(Some)
+            .map_err(|_| Status::from_raw(nbytes))
+    }
+
+    /// Sends a datagram to `host:port`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` if address resolution or OSAL `OS_SocketSendTo` fails.
+    pub fn send_to(&self, buf: &[u8], host: &str, port: u16) -> Result<usize, Status> {
+        let addr = make_inet_addr(host, port)?;
+        // SAFETY: self.id, buf, and addr are valid.
+        let nbytes = unsafe {
+            cfe_sys::OS_SocketSendTo(self.id, buf.as_ptr().cast(), buf.len(), &raw const addr)
+        };
+        usize::try_from(nbytes).map_err(|_| Status::from_raw(nbytes))
+    }
+
+    /// Sends a datagram to an IPv4 address `[a, b, c, d]` and `port` without heap allocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` if OSAL `OS_SocketSendTo` fails.
+    pub fn send_to_ipv4(&self, buf: &[u8], ip: [u8; 4], port: u16) -> Result<usize, Status> {
+        let mut ip_buf = [0u8; 16];
+        let len = format_ipv4(ip, &mut ip_buf);
+        let ip_slice = ip_buf
+            .get(..len)
+            .ok_or_else(|| Status::from_raw(cfe_sys::OS_ERR_BAD_ADDRESS))?;
+        let host = core::str::from_utf8(ip_slice)
+            .map_err(|_| Status::from_raw(cfe_sys::OS_ERR_BAD_ADDRESS))?;
+        self.send_to(buf, host, port)
+    }
+
+    /// Closes the socket explicitly.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` if OSAL close fails.
+    pub fn close(mut self) -> Result<(), Status> {
+        let id = self.id;
+        self.id = cfe_sys::OS_OBJECT_ID_UNDEFINED;
+        // SAFETY: close valid socket id.
+        let status = unsafe { cfe_sys::OS_close(id) };
+        Status::from_raw(status).result()
+    }
+}
+
+impl Drop for UdpSocket {
+    fn drop(&mut self) {
+        if self.id != cfe_sys::OS_OBJECT_ID_UNDEFINED {
+            // SAFETY: Clean up open socket resource if not already closed.
+            unsafe {
+                cfe_sys::OS_close(self.id);
+            }
+        }
+    }
+}
+
+/// Returns the OSAL local clock in microseconds.
+///
+/// # Errors
+///
+/// Returns `Err(Status)` if `OS_GetLocalTime` fails or returns a negative timestamp.
+pub fn local_time_us() -> Result<u64, Status> {
+    let mut time = cfe_sys::OS_time_t { ticks: 0 };
+    // SAFETY: time is a valid out-pointer for OS_GetLocalTime.
+    let status = unsafe { cfe_sys::OS_GetLocalTime(&raw mut time) };
+    if status != cfe_sys::OS_SUCCESS.cast_signed() {
+        return Err(Status::from_raw(status));
+    }
+    let ticks_per_usec = i64::from(cfe_sys::OS_TIME_TICKS_PER_USEC);
+    let micros = time
+        .ticks
+        .checked_div(ticks_per_usec)
+        .ok_or_else(|| Status::from_raw(cfe_sys::OS_ERROR))?;
+    u64::try_from(micros).map_err(|_| Status::from_raw(cfe_sys::OS_ERROR))
 }
 
 /// Delays the calling task for the specified duration in milliseconds.

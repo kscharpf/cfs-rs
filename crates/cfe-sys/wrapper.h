@@ -1,4 +1,5 @@
 #include "cfe.h"
+#include "cfe_msgids.h"
 #include "osapi-sockets.h"
 #include "osapi-queue.h"
 #include "osapi-file.h"
