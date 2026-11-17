@@ -1,0 +1,264 @@
+//! Table Services (TBL) safe wrappers.
+
+use core::ffi::c_void;
+
+use crate::status::Status;
+
+/// Maximum length of a raw table name including the null terminator.
+#[expect(
+    clippy::as_conversions,
+    reason = "CFE_MISSION_TBL_MAX_NAME_LENGTH is a C bindgen u32 constant used as buffer size"
+)]
+pub const MAX_TABLE_NAME_LEN: usize = cfe_sys::CFE_MISSION_TBL_MAX_NAME_LENGTH as usize;
+
+/// Maximum length of a table file path including the null terminator.
+#[expect(
+    clippy::as_conversions,
+    reason = "CFE_MISSION_MAX_PATH_LEN is a C bindgen u32 constant used as buffer size"
+)]
+pub const MAX_PATH_LEN: usize = cfe_sys::CFE_MISSION_MAX_PATH_LEN as usize;
+
+/// Default table registration options (`CFE_TBL_OPT_DEFAULT`).
+pub const OPT_DEFAULT: u16 = 0;
+
+/// Single-buffer table option (`CFE_TBL_OPT_SNGL_BUFFER`).
+pub const OPT_SNGL_BUFFER: u16 = 0;
+
+/// Double-buffer table option (`CFE_TBL_OPT_DBL_BUFFER`).
+pub const OPT_DBL_BUFFER: u16 = 1;
+
+/// Load/dump table option (`CFE_TBL_OPT_LOAD_DUMP`).
+pub const OPT_LOAD_DUMP: u16 = 0;
+
+/// Dump-only table option (`CFE_TBL_OPT_DUMP_ONLY`).
+pub const OPT_DUMP_ONLY: u16 = 2;
+
+/// User-defined address table option (`CFE_TBL_OPT_USR_DEF_ADDR`).
+pub const OPT_USR_DEF_ADDR: u16 = 6;
+
+/// Critical table option (`CFE_TBL_OPT_CRITICAL`).
+pub const OPT_CRITICAL: u16 = 8;
+
+/// Sentinel invalid table handle (`CFE_TBL_BAD_TABLE_HANDLE`).
+const BAD_TABLE_HANDLE: cfe_sys::CFE_TBL_Handle_t = -1;
+
+#[expect(
+    clippy::as_conversions,
+    reason = "From is not const in stable Rust (RFC 143874)"
+)]
+const _: () = {
+    assert!((OPT_DEFAULT as u32) == cfe_sys::CFE_TBL_OPT_DEFAULT);
+    assert!((OPT_SNGL_BUFFER as u32) == cfe_sys::CFE_TBL_OPT_SNGL_BUFFER);
+    assert!((OPT_DBL_BUFFER as u32) == cfe_sys::CFE_TBL_OPT_DBL_BUFFER);
+    assert!((OPT_LOAD_DUMP as u32) == cfe_sys::CFE_TBL_OPT_LOAD_DUMP);
+    assert!((OPT_DUMP_ONLY as u32) == cfe_sys::CFE_TBL_OPT_DUMP_ONLY);
+    assert!((OPT_USR_DEF_ADDR as u32) == cfe_sys::CFE_TBL_OPT_USR_DEF_ADDR);
+    assert!((OPT_CRITICAL as u32) == cfe_sys::CFE_TBL_OPT_CRITICAL);
+    assert!((BAD_TABLE_HANDLE as i32) == cfe_sys::CFE_TBL_BAD_TABLE_HANDLE);
+};
+
+/// Scope guard ensuring `CFE_TBL_ReleaseAddress` is called before `read_bytes` returns.
+struct ReleaseGuard {
+    handle: cfe_sys::CFE_TBL_Handle_t,
+}
+
+impl Drop for ReleaseGuard {
+    fn drop(&mut self) {
+        // SAFETY: self.handle is a valid registered table handle whose address was obtained via CFE_TBL_GetAddress.
+        unsafe {
+            let _ = cfe_sys::CFE_TBL_ReleaseAddress(self.handle);
+        }
+    }
+}
+
+/// A registered cFE Table Services (TBL) table handle.
+///
+/// Automatically unregisters the table via `CFE_TBL_Unregister` when dropped,
+/// unless [`Table::unregister`] is called explicitly.
+#[derive(Debug)]
+pub struct Table {
+    handle: cfe_sys::CFE_TBL_Handle_t,
+    size: usize,
+}
+
+impl Table {
+    /// Registers a table with cFE Table Services.
+    ///
+    /// `name` is the raw table name (without the `AppName.` prefix); it must be
+    /// non-empty, shorter than [`MAX_TABLE_NAME_LEN`] bytes, and free of interior
+    /// null bytes. `size` must be non-zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` with `CFE_TBL_ERR_INVALID_NAME` or `CFE_TBL_ERR_INVALID_SIZE`
+    /// if the arguments are invalid, or the status returned by `CFE_TBL_Register` if
+    /// registration fails.
+    pub fn register(name: &str, size: usize, options: u16) -> Result<Self, Status> {
+        if name.is_empty() || name.len() >= MAX_TABLE_NAME_LEN || name.as_bytes().contains(&0) {
+            return Err(Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_NAME));
+        }
+        if size == 0 {
+            return Err(Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_SIZE));
+        }
+
+        let mut name_buf = [0u8; MAX_TABLE_NAME_LEN];
+        if let Some(dest) = name_buf.get_mut(..name.len()) {
+            dest.copy_from_slice(name.as_bytes());
+        }
+
+        let mut handle = BAD_TABLE_HANDLE;
+        // SAFETY: `handle` is a valid out-pointer and `name_buf` is null-terminated.
+        let raw_status = unsafe {
+            cfe_sys::CFE_TBL_Register(
+                &raw mut handle,
+                name_buf.as_ptr().cast(),
+                size,
+                options,
+                None,
+            )
+        };
+        let status = Status::from_raw(raw_status);
+        if status.as_raw() < 0 || handle == BAD_TABLE_HANDLE {
+            Err(status)
+        } else {
+            Ok(Self { handle, size })
+        }
+    }
+
+    /// Returns the registered size of the table in bytes.
+    #[must_use]
+    pub const fn size(&self) -> usize {
+        self.size
+    }
+
+    /// Returns the underlying cFE table handle.
+    #[must_use]
+    pub const fn handle(&self) -> cfe_sys::CFE_TBL_Handle_t {
+        self.handle
+    }
+
+    /// Loads the table contents from a cFE table image file (`CFE_TBL_SRC_FILE`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` if `path` is empty, contains interior null bytes,
+    /// exceeds [`MAX_PATH_LEN`] - 1 bytes, or if `CFE_TBL_Load` returns a non-success
+    /// status code.
+    pub fn load_from_file(&self, path: &str) -> Result<(), Status> {
+        if path.is_empty() || path.as_bytes().contains(&0) {
+            return Err(Status::from_raw(cfe_sys::CFE_TBL_BAD_ARGUMENT));
+        }
+        if path.len() >= MAX_PATH_LEN {
+            return Err(Status::from_raw(cfe_sys::CFE_TBL_ERR_FILENAME_TOO_LONG));
+        }
+
+        let mut path_buf = [0u8; MAX_PATH_LEN];
+        if let Some(dest) = path_buf.get_mut(..path.len()) {
+            dest.copy_from_slice(path.as_bytes());
+        }
+
+        // SAFETY: `self.handle` is valid and `path_buf` is null-terminated for `CFE_TBL_SRC_FILE`.
+        let raw_status = unsafe {
+            cfe_sys::CFE_TBL_Load(
+                self.handle,
+                cfe_sys::CFE_TBL_SrcEnum_CFE_TBL_SRC_FILE,
+                path_buf.as_ptr().cast(),
+            )
+        };
+        Status::from_raw(raw_status).result()
+    }
+
+    /// Performs standard table management (`CFE_TBL_Manage`).
+    ///
+    /// Returns `Ok(true)` if the table was updated (`CFE_TBL_INFO_UPDATED`) or
+    /// `Ok(false)` if no update occurred (`CFE_SUCCESS`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` if `CFE_TBL_Manage` returns any other status code.
+    pub fn manage(&self) -> Result<bool, Status> {
+        const INFO_UPDATED: i32 = cfe_sys::CFE_TBL_INFO_UPDATED.cast_signed();
+        // SAFETY: `self.handle` is a valid registered table handle.
+        let raw_status = unsafe { cfe_sys::CFE_TBL_Manage(self.handle) };
+        match raw_status {
+            0 => Ok(false),
+            INFO_UPDATED => Ok(true),
+            _ => Err(Status::from_raw(raw_status)),
+        }
+    }
+
+    /// Queries the pending action status of the table (`CFE_TBL_GetStatus`).
+    #[must_use]
+    pub fn get_status(&self) -> Status {
+        // SAFETY: `self.handle` is a valid registered table handle.
+        let raw_status = unsafe { cfe_sys::CFE_TBL_GetStatus(self.handle) };
+        Status::from_raw(raw_status)
+    }
+
+    /// Acquires the current active table buffer, passes its `&[u8]` view of
+    /// `self.size()` bytes to `f`, and always releases the address via
+    /// `CFE_TBL_ReleaseAddress` before returning.
+    ///
+    /// Accepts both `CFE_SUCCESS` and `CFE_TBL_INFO_UPDATED` from `CFE_TBL_GetAddress`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` if `CFE_TBL_GetAddress` returns an error (such as
+    /// `CFE_TBL_ERR_NEVER_LOADED`) or produces a null pointer.
+    pub fn read_bytes(&self, f: impl FnOnce(&[u8])) -> Result<(), Status> {
+        const INFO_UPDATED: i32 = cfe_sys::CFE_TBL_INFO_UPDATED.cast_signed();
+        let mut ptr: *mut c_void = core::ptr::null_mut();
+        // SAFETY: `ptr` is a valid out-pointer and `self.handle` is a valid registered handle.
+        let raw_status = unsafe { cfe_sys::CFE_TBL_GetAddress(&raw mut ptr, self.handle) };
+
+        if raw_status != 0 && raw_status != INFO_UPDATED {
+            if !ptr.is_null() {
+                // SAFETY: `CFE_TBL_GetAddress` returned a non-null pointer that must be released.
+                unsafe {
+                    let _ = cfe_sys::CFE_TBL_ReleaseAddress(self.handle);
+                }
+            }
+            return Err(Status::from_raw(raw_status));
+        }
+
+        if ptr.is_null() {
+            return Err(Status::from_raw(cfe_sys::CFE_TBL_ERR_UNREGISTERED));
+        }
+
+        let _guard = ReleaseGuard {
+            handle: self.handle,
+        };
+
+        // SAFETY: `CFE_TBL_GetAddress` succeeded and locked the active buffer of `self.size` bytes;
+        // `_guard` guarantees `CFE_TBL_ReleaseAddress` runs when leaving this scope, and the slice
+        // reference cannot escape `f`.
+        let slice = unsafe { core::slice::from_raw_parts(ptr.cast::<u8>(), self.size) };
+        f(slice);
+
+        Ok(())
+    }
+
+    /// Explicitly unregisters the table via `CFE_TBL_Unregister`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Status)` if `CFE_TBL_Unregister` fails.
+    pub fn unregister(mut self) -> Result<(), Status> {
+        let handle = self.handle;
+        self.handle = BAD_TABLE_HANDLE;
+        // SAFETY: `handle` is a valid registered table handle.
+        let raw_status = unsafe { cfe_sys::CFE_TBL_Unregister(handle) };
+        Status::from_raw(raw_status).result()
+    }
+}
+
+impl Drop for Table {
+    fn drop(&mut self) {
+        if self.handle != BAD_TABLE_HANDLE {
+            // SAFETY: `self.handle` is a valid registered table handle not yet unregistered.
+            unsafe {
+                let _ = cfe_sys::CFE_TBL_Unregister(self.handle);
+            }
+        }
+    }
+}

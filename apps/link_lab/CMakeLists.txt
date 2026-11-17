@@ -21,6 +21,7 @@ add_custom_target(link_lab_rs_build
 
 add_cfe_app(link_lab fsw/src/link_lab_glue.c)
 add_dependencies(link_lab link_lab_rs_build)
+add_cfe_tables(link_lab fsw/tables/link_lab_cfg.c)
 target_link_libraries(link_lab
     "${CFS_RS_LIB}"
 )

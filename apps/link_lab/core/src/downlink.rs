@@ -1,5 +1,7 @@
 //! Downlink state and frame processing.
 
+use core::num::NonZeroU64;
+
 use aldis::core::crc::write_fecf;
 use aldis::core::engine::Actions;
 use aldis::core::ids::{SpacecraftId, VcId};
@@ -108,36 +110,59 @@ fn make_mux(config: &LinkConfig) -> Result<TmMux> {
     TmMux::new(mux_config)
 }
 
+/// Per-virtual-channel downlink generator and multiplexer hold state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VcChannel {
+    vc: DataVc,
+    generator: TmGenerator,
+    held: bool,
+}
+
+impl VcChannel {
+    fn new(vc: DataVc, deadline_us: u64) -> Result<Self> {
+        let vc_id = match vc {
+            DataVc::Realtime => VcId::<3>::from_const::<{ tm::VCID_REALTIME }>(),
+            DataVc::Payload => VcId::<3>::from_const::<{ tm::VCID_PAYLOAD }>(),
+        };
+        Ok(Self {
+            vc,
+            generator: make_generator(vc_id, deadline_us)?,
+            held: false,
+        })
+    }
+}
+
 /// Downlink state machine at frame level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownlinkState {
-    /// Packet generators for VC 0 and VC 1.
-    generators: [TmGenerator; 2],
-    /// Whether the multiplexer holds a field for the corresponding VC.
-    held: [bool; 2],
+    /// Per-VC packet generators and multiplexer hold flags in serving order.
+    vcs: [VcChannel; 2],
     /// Channel multiplexer.
     mux: TmMux,
+    /// Whether FECF is present on emitted TM frames.
+    tm_fecf: bool,
+    /// Downlink frame slot period in microseconds (`None` if disabled/zero).
+    slot_period_us: Option<NonZeroU64>,
 }
 
 impl DownlinkState {
     /// Initializes downlink state from configuration.
     ///
     /// # Errors
-    /// Returns `ErrorKind::InvalidConfig` if managed parameters fail engine validation.
+    /// Returns `ErrorKind::InvalidConfig` if managed parameters fail engine validation
+    /// (including `tm_frame_length != TM_FRAME_LEN` or `!tm_fecf`).
     pub fn new(config: &LinkConfig) -> Result<Self> {
+        if usize::from(config.tm_frame_length) != TM_FRAME_LEN || !config.tm_fecf {
+            return Err(Error::new(ErrorKind::InvalidConfig));
+        }
         Ok(Self {
-            generators: [
-                make_generator(
-                    VcId::<3>::from_const::<{ tm::VCID_REALTIME }>(),
-                    config.vc_realtime_deadline_us,
-                )?,
-                make_generator(
-                    VcId::<3>::from_const::<{ tm::VCID_PAYLOAD }>(),
-                    config.vc_payload_deadline_us,
-                )?,
+            vcs: [
+                VcChannel::new(DataVc::Realtime, config.vc_realtime_deadline_us)?,
+                VcChannel::new(DataVc::Payload, config.vc_payload_deadline_us)?,
             ],
-            held: [false; 2],
             mux: make_mux(config)?,
+            tm_fecf: config.tm_fecf,
+            slot_period_us: NonZeroU64::new(config.frame_slot_us),
         })
     }
 
@@ -146,26 +171,29 @@ impl DownlinkState {
     /// # Errors
     /// Returns `ErrorKind::WouldBlock` if the generator queue is full.
     pub fn submit(&mut self, vc: DataVc, packet: &[u8], now: Instant) -> Result<()> {
-        let generator = match vc {
-            DataVc::Realtime => &mut self.generators[0],
-            DataVc::Payload => &mut self.generators[1],
+        let [realtime, payload] = &mut self.vcs;
+        let channel = match vc {
+            DataVc::Realtime => realtime,
+            DataVc::Payload => payload,
         };
-        none(generator.step(GeneratorInput::SubmitPacket(packet), now, &mut [])?)
+        none(
+            channel
+                .generator
+                .step(GeneratorInput::SubmitPacket(packet), now, &mut [])?,
+        )
     }
 
     /// Earliest release deadline across generators after `now`.
     #[must_use]
-    pub fn next_deadline(&self, now: Instant, slot_period_us: u64) -> Option<Instant> {
-        if slot_period_us == 0 {
-            return None;
-        }
+    pub fn next_deadline(&self, now: Instant) -> Option<Instant> {
+        let period = self.slot_period_us?.get();
         let next_slot = now
             .as_micros()
-            .checked_div(slot_period_us)
-            .map(|n| Instant::from_micros(n.saturating_add(1).saturating_mul(slot_period_us)));
-        self.generators
+            .checked_div(period)
+            .map(|n| Instant::from_micros(n.saturating_add(1).saturating_mul(period)));
+        self.vcs
             .iter()
-            .filter_map(PacketGenerator::next_deadline)
+            .filter_map(|ch| ch.generator.next_deadline())
             .filter_map(|due| if due > now { Some(due) } else { next_slot })
             .min()
     }
@@ -182,19 +210,14 @@ impl DownlinkState {
         frame_buf: &mut [u8; TM_FRAME_LEN],
         sink: &mut dyn DownlinkSink,
     ) -> Result<()> {
-        for ((generator, held), vc) in self
-            .generators
-            .iter_mut()
-            .zip(self.held.iter_mut())
-            .zip(DATA_VCS)
-        {
-            if generator.next_deadline().is_some_and(|due| due <= now) {
-                none(generator.step(GeneratorInput::Timeout, now, field_buf)?)?;
+        for ch in &mut self.vcs {
+            if ch.generator.next_deadline().is_some_and(|due| due <= now) {
+                none(ch.generator.step(GeneratorInput::Timeout, now, field_buf)?)?;
             }
-            if *held {
+            if ch.held {
                 continue;
             }
-            let actions = generator.step(GeneratorInput::Release, now, field_buf)?;
+            let actions = ch.generator.step(GeneratorInput::Release, now, field_buf)?;
             match actions.get(0) {
                 Some(GeneratorOutput::DataField(data)) => {
                     let octets = data
@@ -203,7 +226,7 @@ impl DownlinkState {
                         .ok_or(Error::new(ErrorKind::InternalError))?;
                     none(self.mux.step(
                         MuxInput::Offer(Offer {
-                            vc,
+                            vc: ch.vc.vcid(),
                             field: octets,
                             meta: TmOffer {
                                 pointer: Some(data.pointer),
@@ -211,7 +234,7 @@ impl DownlinkState {
                         }),
                         &mut [],
                     )?)?;
-                    *held = true;
+                    ch.held = true;
                 }
                 Some(GeneratorOutput::Discarded { .. }) | None => {}
             }
@@ -231,9 +254,9 @@ impl DownlinkState {
         };
 
         if sent.class == FrameClass::Data {
-            for (held, vc) in self.held.iter_mut().zip(DATA_VCS) {
-                if vc == sent.vc {
-                    *held = false;
+            for ch in &mut self.vcs {
+                if ch.vc.vcid() == sent.vc {
+                    ch.held = false;
                 }
             }
         }
@@ -241,7 +264,9 @@ impl DownlinkState {
         let octets = frame_buf
             .get_mut(sent.frame.start()..sent.frame.end())
             .ok_or(Error::new(ErrorKind::InternalError))?;
-        write_fecf(octets)?;
+        if self.tm_fecf {
+            write_fecf(octets)?;
+        }
         sink.unit(octets);
         Ok(())
     }
