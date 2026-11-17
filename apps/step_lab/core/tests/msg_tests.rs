@@ -33,10 +33,25 @@ fn test_start_msg_round_trip() {
     let msg_cop1 = StartMsg::new(LinkLevel::Cop1);
     assert_eq!(msg_cop1.link_level(), Some(LinkLevel::Cop1));
 
-    assert_eq!(LinkLevel::from_case_id("a0-empty"), LinkLevel::Packets);
-    assert_eq!(LinkLevel::from_case_id("a1-nominal"), LinkLevel::Packets);
-    assert_eq!(LinkLevel::from_case_id("a2-nominal"), LinkLevel::Frames);
-    assert_eq!(LinkLevel::from_case_id("a3-nominal"), LinkLevel::Cop1);
+    assert_eq!(
+        LinkLevel::from_case_id("a0-empty"),
+        Some(LinkLevel::Packets)
+    );
+    assert_eq!(
+        LinkLevel::from_case_id("a1-nominal"),
+        Some(LinkLevel::Packets)
+    );
+    assert_eq!(
+        LinkLevel::from_case_id("a2-nominal"),
+        Some(LinkLevel::Frames)
+    );
+    assert_eq!(LinkLevel::from_case_id("a3-nominal"), Some(LinkLevel::Cop1));
+    assert_eq!(LinkLevel::from_case_id(""), None);
+    assert_eq!(LinkLevel::from_case_id("a"), None);
+    assert_eq!(LinkLevel::from_case_id("a4-nominal"), None);
+    assert_eq!(LinkLevel::from_case_id("a10-extra"), None);
+    assert_eq!(LinkLevel::from_case_id("b1-nominal"), None);
+    assert_eq!(LinkLevel::from_case_id("unknown"), None);
 }
 
 #[test]

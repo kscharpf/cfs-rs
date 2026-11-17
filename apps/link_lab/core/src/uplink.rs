@@ -104,9 +104,20 @@ impl DeliveryBuffer {
     }
 }
 
+/// Frame-level uplink operating mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UplinkMode {
+    /// Frame level (`a2-*`): Type-BD frames only; COP-1 state events suppressed.
+    Frames,
+    /// COP-1 level (`a3-*`): Type-AD/Type-BC frames with FARM-1 state and unlock events.
+    Cop1,
+}
+
 /// Uplink receive chain for TC frames.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UplinkState {
+    /// Frame-level operating mode (`Frames` vs `Cop1`).
+    pub mode: UplinkMode,
     /// Codec view of the channel.
     pub table: VcTable<1, 2>,
     /// Uplink virtual channel ID.
@@ -124,11 +135,11 @@ pub struct UplinkState {
 }
 
 impl UplinkState {
-    /// Initializes uplink receive chain from configuration.
+    /// Initializes uplink receive chain from configuration and operating `mode`.
     ///
     /// # Errors
     /// Returns `ErrorKind::InvalidConfig` if managed parameters fail engine validation.
-    pub fn new(config: &LinkConfig) -> Result<Self> {
+    pub fn new(config: &LinkConfig, mode: UplinkMode) -> Result<Self> {
         let bad = Error::new(ErrorKind::InvalidConfig);
         let scid = TcSpacecraftId::new(config.spacecraft_id).ok_or(bad)?;
         let vc = TcVcId::new(tc::VCID).ok_or(bad)?;
@@ -173,6 +184,7 @@ impl UplinkState {
         )?;
         let reassembler = MapReassembler::new(reassembler_config)?;
         Ok(Self {
+            mode,
             table,
             vc,
             receiver,
@@ -194,7 +206,6 @@ impl UplinkState {
         &mut self,
         now: Instant,
         octets: &[u8],
-        cop1: bool,
         buffers: &mut UplinkBuffers<'_>,
         sink: &mut dyn UplinkSink,
     ) {
@@ -245,7 +256,7 @@ impl UplinkState {
         if let Some(event) = discarded {
             sink.event(APP_FRAME_DISCARDED, &[LAYER_FARM1, event_number(event)]);
         }
-        if unlocked && cop1 {
+        if unlocked && self.mode == UplinkMode::Cop1 {
             sink.event(APP_FARM1_UNLOCK, &[]);
             self.purge(sink);
         }
@@ -261,7 +272,9 @@ impl UplinkState {
             );
             self.delivery.release();
         }
-        if let (Some(state), true) = (new_state, cop1) {
+        if let Some(state) = new_state
+            && self.mode == UplinkMode::Cop1
+        {
             sink.event(APP_FARM1_STATE, &[state_number(state)]);
         }
     }
@@ -307,13 +320,12 @@ impl UplinkState {
         sink: &mut dyn UplinkSink,
     ) {
         let filled = header.zip(user_data).and_then(|(hdr, user)| {
-            let len = user.len().saturating_add(1);
+            let len = user.len().checked_add(1)?;
             let dst = fdu_buf.get_mut(..len)?;
-            if let Some(first) = dst.get_mut(0) {
-                *first = hdr.octet();
-            }
-            if let Some(rest) = dst.get_mut(1..) {
-                rest.copy_from_slice(user);
+            let (first, rest) = dst.split_first_mut()?;
+            *first = hdr.octet();
+            for (d, s) in rest.iter_mut().zip(user) {
+                *d = *s;
             }
             Some(len)
         });

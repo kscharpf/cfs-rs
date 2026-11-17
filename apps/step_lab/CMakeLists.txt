@@ -22,11 +22,11 @@ add_custom_target(step_lab_rs_build
 add_cfe_app(step_lab fsw/src/step_lab_glue.c)
 add_dependencies(step_lab step_lab_rs_build)
 target_link_libraries(step_lab
-    -Wl,--whole-archive
     "${CFS_RS_LIB}"
-    -Wl,--no-whole-archive
 )
 target_link_options(step_lab PRIVATE
+    "-Wl,--undefined=STEP_LAB_AppMain"
+    "-Wl,--gc-sections"
     "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/step_lab.sym"
 )
 set_property(TARGET step_lab APPEND PROPERTY LINK_DEPENDS "${CFS_RS_LIB}" "${CMAKE_CURRENT_SOURCE_DIR}/step_lab.sym")

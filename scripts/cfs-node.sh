@@ -1,6 +1,7 @@
 #!/bin/sh
-# Builds core-cpu1 with node_defs on stock and rs MSG, verifies bindings freshness,
-# checks app symbol visibility, and verifies start-up EVS events.
+# Builds core-cpu1 with node_defs on stock and rs MSG, verifies cfe-sys bindings freshness,
+# checks app symbol visibility, heap-freedom, and panic-freedom, and runs all refapp-harness
+# cases (a0–a3) twice per build against the golden traces and start-up EVS events.
 # Runs inside the container (see Makefile).
 set -eu
 
@@ -92,7 +93,12 @@ fi
 (cd "$aldis_dir" && git checkout "$aldis_rev")
 
 # 6. Run test cases via refapp-harness against core-cpu1 (twice per build)
-cases="a0-empty a1-nominal a1-immediate a1-rejects a1-downlink-faults a2-nominal a2-downlink-corrupt a2-downlink-loss a2-uplink-faults a3-nominal a3-uplink-disorder a3-uplink-limit a3-uplink-lockout a3-uplink-loss"
+cases="
+    a0-empty
+    a1-nominal a1-immediate a1-rejects a1-downlink-faults
+    a2-nominal a2-downlink-corrupt a2-downlink-loss a2-uplink-faults
+    a3-nominal a3-uplink-disorder a3-uplink-limit a3-uplink-lockout a3-uplink-loss
+"
 
 run_case() {
     build_type="$1"

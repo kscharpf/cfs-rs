@@ -22,11 +22,11 @@ add_custom_target(scn_lab_rs_build
 add_cfe_app(scn_lab fsw/src/scn_lab_glue.c)
 add_dependencies(scn_lab scn_lab_rs_build)
 target_link_libraries(scn_lab
-    -Wl,--whole-archive
     "${CFS_RS_LIB}"
-    -Wl,--no-whole-archive
 )
 target_link_options(scn_lab PRIVATE
+    "-Wl,--undefined=SCN_LAB_AppMain"
+    "-Wl,--gc-sections"
     "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/scn_lab.sym"
 )
 set_property(TARGET scn_lab APPEND PROPERTY LINK_DEPENDS "${CFS_RS_LIB}" "${CMAKE_CURRENT_SOURCE_DIR}/scn_lab.sym")
