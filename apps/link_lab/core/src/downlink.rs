@@ -50,10 +50,10 @@ const _: () = {
 };
 
 /// Type alias for the packet generator used for TM virtual channels.
-pub type TmGenerator = PacketGenerator<Tm, TM_DATA_FIELD_LEN, TM_QUEUE_LEN>;
+type TmGenerator = PacketGenerator<Tm, TM_DATA_FIELD_LEN, TM_QUEUE_LEN>;
 
 /// Type alias for the TM channel multiplexer.
-pub type TmMux = ChannelMux<Tm, 3, TM_FRAME_LEN>;
+type TmMux = ChannelMux<Tm, 3, TM_FRAME_LEN>;
 
 const fn mux_priority(rank: u8) -> u8 {
     u8::MAX.saturating_sub(rank)
@@ -117,8 +117,6 @@ pub struct DownlinkState {
     held: [bool; 2],
     /// Channel multiplexer.
     mux: TmMux,
-    /// Latest CLCW octets for the OCF slot.
-    ocf: [u8; 4],
 }
 
 impl DownlinkState {
@@ -140,7 +138,6 @@ impl DownlinkState {
             ],
             held: [false; 2],
             mux: make_mux(config)?,
-            ocf: tm::OCF_INITIAL.to_be_bytes(),
         })
     }
 
@@ -185,7 +182,6 @@ impl DownlinkState {
         frame_buf: &mut [u8; TM_FRAME_LEN],
         sink: &mut dyn DownlinkSink,
     ) -> Result<()> {
-        self.ocf = ocf;
         for ((generator, held), vc) in self
             .generators
             .iter_mut()
@@ -224,7 +220,7 @@ impl DownlinkState {
         none(self.mux.step(
             MuxInput::SetOcf {
                 scope: Scope::Mc,
-                ocf: self.ocf,
+                ocf,
             },
             &mut [],
         )?)?;
