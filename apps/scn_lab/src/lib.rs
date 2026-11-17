@@ -152,10 +152,8 @@ impl Output for ScnSink {
     }
 }
 
-/// Application entry point exported to cFE.
-#[expect(unsafe_code, reason = "cFS entry point must be extern \"C\"")]
-#[unsafe(no_mangle)]
-pub extern "C" fn SCN_LAB_AppMain() {
+/// Runs the `scn_lab` initialization, Software Bus dispatch loop, and teardown.
+fn app_main() {
     // 1. Register with EVS.
     if evs::register().is_err() {
         es::exit_app(RunStatus::AppError);
@@ -257,6 +255,13 @@ pub extern "C" fn SCN_LAB_AppMain() {
 
     let _ = pipe.delete();
     es::exit_app(run_status);
+}
+
+/// Application entry point exported to cFE.
+#[expect(unsafe_code, reason = "cFS entry point must be extern \"C\"")]
+#[unsafe(no_mangle)]
+pub extern "C" fn SCN_LAB_AppMain() {
+    app_main();
 }
 
 #[cfg(not(test))]

@@ -2,6 +2,26 @@
 
 use refapp_scenario::generated::{SPACECRAFT_ID, apid, cop1, link, tc, tm};
 
+/// Downlink virtual channel carrying data packets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataVc {
+    /// Real-time virtual channel (VC 0).
+    Realtime,
+    /// Payload virtual channel (VC 1).
+    Payload,
+}
+
+impl DataVc {
+    /// Returns the CCSDS virtual channel identifier (VCID).
+    #[must_use]
+    pub const fn vcid(self) -> u8 {
+        match self {
+            Self::Realtime => tm::VCID_REALTIME,
+            Self::Payload => tm::VCID_PAYLOAD,
+        }
+    }
+}
+
 /// Managed parameters of the link layer (reference-application §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinkConfig {
@@ -48,12 +68,12 @@ impl LinkConfig {
         }
     }
 
-    /// Maps an application process identifier (APID) to a TM Virtual Channel ID (§4.1).
+    /// Maps an application process identifier (APID) to a downlink virtual channel (§4.1).
     #[must_use]
-    pub const fn vc_for_apid(&self, apid: u16) -> Option<u8> {
+    pub const fn vc_for_apid(&self, apid: u16) -> Option<DataVc> {
         match apid {
-            apid::HOUSEKEEPING | apid::EVENTS => Some(tm::VCID_REALTIME),
-            apid::PAYLOAD | apid::DUMP => Some(tm::VCID_PAYLOAD),
+            apid::HOUSEKEEPING | apid::EVENTS => Some(DataVc::Realtime),
+            apid::PAYLOAD | apid::DUMP => Some(DataVc::Payload),
             _ => None,
         }
     }

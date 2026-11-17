@@ -255,20 +255,46 @@ fn wait_collect_turn(
     pipe: &mut Pipe,
     collector: &mut StepCollector,
     earliest_deadline: &mut Option<u64>,
-) {
+) -> Result<(), ()> {
     while let Ok(buf) = pipe.receive_buffer(Timeout::PendForever) {
         let Ok(mid) = buf.msg_id() else {
             continue;
         };
         match mid.as_u32() {
             cfe_sys::NODE_RECORD_MID => {
-                if let Some(record) = RecordMsg::from_bytes(buf.as_bytes()) {
-                    let _ = collector.push_record(&record);
+                let Some(record) = RecordMsg::from_bytes(buf.as_bytes()) else {
+                    let _ = evs::send_event(
+                        22,
+                        EventType::Error,
+                        "STEP_LAB: Malformed RecordMsg received",
+                    );
+                    return Err(());
+                };
+                if !collector.push_record(&record) {
+                    let _ = evs::send_event(
+                        20,
+                        EventType::Critical,
+                        "STEP_LAB: Failed to push record (collector overflow)",
+                    );
+                    return Err(());
                 }
             }
             cfe_sys::NODE_UNIT_MID => {
-                if let Some(unit_msg) = UnitMsg::from_bytes(buf.as_bytes()) {
-                    let _ = collector.push_unit(unit_msg.unit_bytes());
+                let Some(unit_msg) = UnitMsg::from_bytes(buf.as_bytes()) else {
+                    let _ = evs::send_event(
+                        23,
+                        EventType::Error,
+                        "STEP_LAB: Malformed UnitMsg received",
+                    );
+                    return Err(());
+                };
+                if !collector.push_unit(unit_msg.unit_bytes()) {
+                    let _ = evs::send_event(
+                        21,
+                        EventType::Critical,
+                        "STEP_LAB: Failed to push unit (collector overflow)",
+                    );
+                    return Err(());
                 }
             }
             cfe_sys::NODE_DONE_MID => {
@@ -277,11 +303,12 @@ fn wait_collect_turn(
                 {
                     *earliest_deadline = Some(earliest_deadline.map_or(d, |prev| prev.min(d)));
                 }
-                break;
+                return Ok(());
             }
             _ => {}
         }
     }
+    Err(())
 }
 
 /// Waits on the input pipe until a `DONE` message arrives, updating `earliest_deadline`.
@@ -412,7 +439,7 @@ fn handle_step(
             );
             return Err(());
         }
-        wait_collect_turn(pipe, &mut collector, &mut earliest_deadline);
+        wait_collect_turn(pipe, &mut collector, &mut earliest_deadline)?;
     }
 
     // 2. WAKE_APPS to scn_lab -> wait for scn_lab's DONE.
@@ -439,7 +466,7 @@ fn handle_step(
         );
         return Err(());
     }
-    wait_collect_turn(pipe, &mut collector, &mut earliest_deadline);
+    wait_collect_turn(pipe, &mut collector, &mut earliest_deadline)?;
 
     // 3. WAKE_TX to link_lab -> collect until DONE.
     let mut wake_tx = WakeTxMsg::new(now, tx_slot);
@@ -465,7 +492,7 @@ fn handle_step(
         );
         return Err(());
     }
-    wait_collect_turn(pipe, &mut collector, &mut earliest_deadline);
+    wait_collect_turn(pipe, &mut collector, &mut earliest_deadline)?;
 
     // 4. Reply STEP_RESULT with all outputs in arrival order and earliest next_deadline.
     let mut output_storage = [NodeOutput::Unit(&[]); MAX_OUTPUTS];
@@ -543,10 +570,8 @@ fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
     let _ = pipe.delete();
 }
 
-/// Application entry point exported to cFE.
-#[expect(unsafe_code, reason = "cFS entry point must be extern \"C\"")]
-#[unsafe(no_mangle)]
-pub extern "C" fn STEP_LAB_AppMain() {
+/// Runs the `step_lab` initialization, harness handshake, and sequencer loop.
+fn app_main() {
     // 1. Register with EVS.
     if evs::register().is_err() {
         es::exit_app(RunStatus::AppError);
@@ -625,6 +650,13 @@ pub extern "C" fn STEP_LAB_AppMain() {
     run_sequencer(stream, pipe, level);
 
     es::exit_app(RunStatus::AppRun);
+}
+
+/// Application entry point exported to cFE.
+#[expect(unsafe_code, reason = "cFS entry point must be extern \"C\"")]
+#[unsafe(no_mangle)]
+pub extern "C" fn STEP_LAB_AppMain() {
+    app_main();
 }
 
 #[cfg(not(test))]
