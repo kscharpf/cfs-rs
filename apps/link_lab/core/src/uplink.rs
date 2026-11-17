@@ -68,38 +68,38 @@ pub struct UplinkBuffers<'a> {
 
 /// FARM-1 delivery buffer holding accepted FDUs until reassembly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DeliveryBuffer {
+struct DeliveryBuffer {
     held: u8,
 }
 
 impl DeliveryBuffer {
     /// Depth of the buffer (§4.2, COP-032).
-    pub const DEPTH: u8 = cop1::FARM_BUFFER_DEPTH;
+    const DEPTH: u8 = cop1::FARM_BUFFER_DEPTH;
 
     /// Creates an empty delivery buffer.
     #[must_use]
-    pub const fn empty() -> Self {
+    const fn empty() -> Self {
         Self { held: 0 }
     }
 
     /// Whether there is room for another accepted FDU.
     #[must_use]
-    pub const fn has_room(self) -> bool {
+    const fn has_room(self) -> bool {
         self.held < Self::DEPTH
     }
 
     /// Takes one place for an accepted FDU.
-    pub const fn take(&mut self) {
+    const fn take(&mut self) {
         self.held = self.held.saturating_add(1);
     }
 
     /// Releases one place after handing the FDU to the reassembler.
-    pub const fn release(&mut self) {
+    const fn release(&mut self) {
         self.held = self.held.saturating_sub(1);
     }
 
     /// Resets the buffer on Unlock.
-    pub const fn reset(&mut self) {
+    const fn reset(&mut self) {
         self.held = 0;
     }
 }

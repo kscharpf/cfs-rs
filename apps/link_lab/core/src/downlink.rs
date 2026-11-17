@@ -112,13 +112,13 @@ fn make_mux(config: &LinkConfig) -> Result<TmMux> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownlinkState {
     /// Packet generators for VC 0 and VC 1.
-    pub generators: [TmGenerator; 2],
+    generators: [TmGenerator; 2],
     /// Whether the multiplexer holds a field for the corresponding VC.
-    pub held: [bool; 2],
+    held: [bool; 2],
     /// Channel multiplexer.
-    pub mux: TmMux,
+    mux: TmMux,
     /// Latest CLCW octets for the OCF slot.
-    pub ocf: [u8; 4],
+    ocf: [u8; 4],
 }
 
 impl DownlinkState {
@@ -173,17 +173,19 @@ impl DownlinkState {
             .min()
     }
 
-    /// Advances the slot at `now`: collects released fields, sets OCF, and emits one frame.
+    /// Advances the slot at `now`: updates OCF, collects released fields, and emits one frame.
     ///
     /// # Errors
     /// Returns engine errors if releasing fields, setting OCF, or generating frame fails.
     pub fn slot(
         &mut self,
         now: Instant,
+        ocf: [u8; 4],
         field_buf: &mut [u8; TM_DATA_FIELD_LEN],
         frame_buf: &mut [u8; TM_FRAME_LEN],
         sink: &mut dyn DownlinkSink,
     ) -> Result<()> {
+        self.ocf = ocf;
         for ((generator, held), vc) in self
             .generators
             .iter_mut()

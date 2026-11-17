@@ -49,9 +49,6 @@ const _: () = {
 ///
 /// Returns `Err(Status)` if cFE EVS registration fails.
 pub fn register() -> Result<(), Status> {
-    const {
-        assert!(cfe_sys::CFE_EVS_EventFilter_CFE_EVS_EventFilter_BINARY == 0);
-    }
     // SAFETY: NULL filters with count 0 and BINARY scheme (0) is valid and standard in cFS apps.
     let status = unsafe { cfe_sys::CFE_EVS_Register(core::ptr::null(), 0, 0) };
     Status::from_raw(status).result()
