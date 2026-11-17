@@ -374,6 +374,15 @@ fn perform_handshake(
         return Err(());
     }
 
+    let Some(level) = LinkLevel::from_case_id(case_id) else {
+        let _ = evs::send_event(
+            24,
+            EventType::Critical,
+            "STEP_LAB: Unsupported case_id prefix in HELLO",
+        );
+        return Err(());
+    };
+
     if write_msg_frame(
         stream,
         &Message::HelloAck {
@@ -386,14 +395,6 @@ fn perform_handshake(
         return Err(());
     }
 
-    let Some(level) = LinkLevel::from_case_id(case_id) else {
-        let _ = evs::send_event(
-            24,
-            EventType::Critical,
-            "STEP_LAB: Unsupported case_id prefix in HELLO",
-        );
-        return Err(());
-    };
     Ok(level)
 }
 

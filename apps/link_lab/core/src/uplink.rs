@@ -17,8 +17,8 @@ use aldis::link::receiver::{
 };
 use aldis::spp::SpacePacket;
 use aldis::tc::{
-    Clcw, ClcwStatus, MapConfig, PhysicalChannelConfig, Reason, SegmentHeader, SegmentHeaderUse,
-    TcMapId, TcSpacecraftId, TcVcId, VcConfig, VcTable, check_frame,
+    Clcw, ClcwStatus, FrameType, MapConfig, PhysicalChannelConfig, Reason, SegmentHeader,
+    SegmentHeaderUse, TcMapId, TcSpacecraftId, TcVcId, VcConfig, VcTable, check_frame,
 };
 use refapp_scenario::Instant;
 use refapp_scenario::generated::{cop1, tc};
@@ -117,7 +117,7 @@ pub enum UplinkMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UplinkState {
     /// Frame-level operating mode (`Frames` vs `Cop1`).
-    pub mode: UplinkMode,
+    mode: UplinkMode,
     /// Codec view of the channel.
     pub table: VcTable<1, 2>,
     /// Uplink virtual channel ID.
@@ -195,6 +195,12 @@ impl UplinkState {
         })
     }
 
+    /// Reports the configured uplink operating mode.
+    #[must_use]
+    pub const fn mode(&self) -> UplinkMode {
+        self.mode
+    }
+
     /// Reports current CLCW from FARM-1.
     #[must_use]
     pub const fn clcw(&self) -> Clcw {
@@ -232,6 +238,13 @@ impl UplinkState {
                 }
             }
             Err(e) => return self.reject_frame(core_now, false, e.kind(), sink),
+        }
+        if self.mode == UplinkMode::Frames && validated.frame_type() != FrameType::Bd {
+            sink.event(
+                APP_FRAME_REJECTED,
+                &[u64::from(ErrorKind::InvalidField.code())],
+            );
+            return;
         }
         let input = Farm1Input::from_tc(&validated, self.delivery.has_room());
         let (farm, actions) = match self.farm.step(input, core_now, buffers.frame_area) {

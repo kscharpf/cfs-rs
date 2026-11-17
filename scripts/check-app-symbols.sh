@@ -37,9 +37,15 @@ check_app() {
         return
     fi
 
-    # 2. Heap-freedom: check defined and undefined symbols for C/Rust allocators
-    all_demangled="$(nm -C "$app_so")"
-    heap_syms="$(printf '%s\n' "$all_demangled" | grep -E '(^|[[:space:]])(malloc|calloc|realloc|free)(@.*)?$|__rust_alloc|__rust_dealloc|__rust_realloc|__rust_alloc_zeroed|alloc::' || true)"
+    # 2. Heap-freedom: verify .symtab is present and check .symtab + .dynsym for C/Rust allocators
+    if ! readelf -SW "$app_so" | grep -qE '[[:space:]]\.symtab[[:space:]]'; then
+        echo "FAIL: $base has no .symtab (stripped binary cannot be verified)" >&2
+        status=1
+        return
+    fi
+
+    all_demangled="$(printf '%s\n%s\n' "$(nm -C "$app_so")" "$(nm -CD "$app_so")")"
+    heap_syms="$(printf '%s\n' "$all_demangled" | grep -E '(^|[[:space:]])(malloc|calloc|realloc|free)(@.*)?$|__rust_alloc|__rust_dealloc|__rust_realloc|__rust_alloc_zeroed|(^|[^[:alnum:]_:])alloc::' || true)"
     if [ -n "$heap_syms" ]; then
         echo "FAIL: $base contains heap allocation symbols:" >&2
         printf '%s\n' "$heap_syms" >&2
