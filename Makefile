@@ -3,7 +3,7 @@ CONTAINER ?= podman
 IMAGE     ?= cfs-rs-build
 RUN        = $(CONTAINER) run --rm --sysctl fs.mqueue.msg_max=64 -v "$(CURDIR)":/work -v cfs-rs-cargo:/cargo $(IMAGE)
 
-.PHONY: check image stock rs node shell clean
+.PHONY: check image stock rs node realtime shell clean
 
 # Rust only: format, lints, unit tests.
 check:
@@ -25,6 +25,10 @@ rs:
 # Node build with link_lab and step_lab on stock and rs MSG, with checks.
 node:
 	$(RUN) scripts/cfs-node.sh
+
+# Realtime build with sch_lab and link_lab on rs MSG, with UDP ground verification.
+realtime:
+	$(RUN) scripts/cfs-realtime.sh
 
 shell:
 	$(CONTAINER) run --rm -it -v "$(CURDIR)":/work -v cfs-rs-cargo:/cargo $(IMAGE) bash

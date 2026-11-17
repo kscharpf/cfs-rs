@@ -49,6 +49,37 @@ pub struct ApidRoute {
     pub vc: DataVc,
 }
 
+/// Operating mode of `link_lab`.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkMode {
+    /// Lockstep simulation driven by `step_lab` (`a0`–`a3`).
+    Lockstep = 0,
+    /// Native real-time mode over UDP TM/TC frames.
+    NativeRealtime = 1,
+}
+
+impl LinkMode {
+    /// Returns the raw `u8` representation used in `LINK_LAB_CfgTbl_t`.
+    #[must_use]
+    pub const fn to_raw(self) -> u8 {
+        match self {
+            Self::Lockstep => 0,
+            Self::NativeRealtime => 1,
+        }
+    }
+
+    /// Converts a raw `u8` from `LINK_LAB_CfgTbl_t` into [`LinkMode`].
+    #[must_use]
+    pub const fn from_raw(raw: u8) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Lockstep),
+            1 => Some(Self::NativeRealtime),
+            _ => None,
+        }
+    }
+}
+
 /// Managed parameters of the link layer (reference-application §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinkConfig {
@@ -76,6 +107,16 @@ pub struct LinkConfig {
     pub farm_initial_vr: u8,
     /// APID-to-VC routing table (up to [`MAX_APID_ROUTES`] entries).
     pub apid_routes: [Option<ApidRoute>; MAX_APID_ROUTES],
+    /// Link operating mode (`Lockstep` vs `NativeRealtime`).
+    pub mode: LinkMode,
+    /// Fallback VC for unmapped APIDs in `NativeRealtime` mode.
+    pub default_vc: Option<DataVc>,
+    /// UDP receive port for incoming TC frames in `NativeRealtime` mode.
+    pub rx_port: u16,
+    /// UDP destination port for outgoing TM frames in `NativeRealtime` mode.
+    pub tx_port: u16,
+    /// Ground IPv4 address for outgoing TM frames in `NativeRealtime` mode.
+    pub ground_ipv4: [u8; 4],
 }
 
 fn read_u8(bytes: &[u8], offset: usize) -> Result<u8, ErrorKind> {
@@ -108,7 +149,9 @@ fn read_bool(bytes: &[u8], offset: usize) -> Result<bool, ErrorKind> {
 
 impl LinkConfig {
     /// Size in bytes of the cFE `LINK_LAB_CfgTbl_t` binary table image.
-    pub const TABLE_SIZE: usize = 40_usize.saturating_add(MAX_APID_ROUTES.saturating_mul(4));
+    pub const TABLE_SIZE: usize = 40_usize
+        .saturating_add(MAX_APID_ROUTES.saturating_mul(4))
+        .saturating_add(16);
 
     /// Builds configuration from `refapp-scenario` generated constants.
     #[must_use]
@@ -147,12 +190,17 @@ impl LinkConfig {
                 None,
                 None,
             ],
+            mode: LinkMode::Lockstep,
+            default_vc: None,
+            rx_port: 1234,
+            tx_port: 2234,
+            ground_ipv4: [127, 0, 0, 1],
         }
     }
 
     /// Decodes and validates a [`LinkConfig`] from a cFE `LINK_LAB_CfgTbl_t` byte slice.
     ///
-    /// Layout (72 bytes, target-native endianness matching C struct `LINK_LAB_CfgTbl_t`):
+    /// Layout (88 bytes, target-native endianness matching C struct `LINK_LAB_CfgTbl_t`):
     /// - `0..8`: `frame_slot_us` (`u64`)
     /// - `8..16`: `vc_realtime_deadline_us` (`u64`)
     /// - `16..24`: `vc_payload_deadline_us` (`u64`)
@@ -167,6 +215,12 @@ impl LinkConfig {
     /// - `35`: `route_count` (`u8`, `<= MAX_APID_ROUTES`)
     /// - `36..40`: `reserved` (`[u8; 4]`, must be zero)
     /// - `40..72`: `routes` (`8 * { apid: u16, vcid: u8, reserved: u8 }`)
+    /// - `72..74`: `rx_port` (`u16`)
+    /// - `74..76`: `tx_port` (`u16`)
+    /// - `76..80`: `ground_ipv4` (`[u8; 4]`)
+    /// - `80`: `mode` (`u8`, `0` = `Lockstep`, `1` = `NativeRealtime`)
+    /// - `81`: `default_vc` (`u8`, `0` = `Realtime`, `1` = `Payload`, `0xFF` = `None`)
+    /// - `82..88`: `reserved2` (`[u8; 6]`, must be zero)
     ///
     /// # Errors
     ///
@@ -234,6 +288,24 @@ impl LinkConfig {
             idx = idx.saturating_add(1);
         }
 
+        let rx_port = read_u16(bytes, 72)?;
+        let tx_port = read_u16(bytes, 74)?;
+        let ground_ipv4: [u8; 4] = bytes
+            .get(76..80)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(ErrorKind::InvalidConfig)?;
+        let mode = LinkMode::from_raw(read_u8(bytes, 80)?).ok_or(ErrorKind::InvalidConfig)?;
+        let default_vc = match read_u8(bytes, 81)? {
+            0xFF => None,
+            vcid => Some(DataVc::from_vcid(vcid).ok_or(ErrorKind::InvalidConfig)?),
+        };
+        if mode == LinkMode::NativeRealtime && (rx_port == 0 || tx_port == 0) {
+            return Err(ErrorKind::InvalidConfig);
+        }
+        if bytes.get(82..88) != Some(&[0_u8; 6][..]) {
+            return Err(ErrorKind::InvalidConfig);
+        }
+
         Ok(Self {
             spacecraft_id,
             frame_slot_us,
@@ -247,10 +319,15 @@ impl LinkConfig {
             cop1_status_field,
             farm_initial_vr,
             apid_routes,
+            mode,
+            default_vc,
+            rx_port,
+            tx_port,
+            ground_ipv4,
         })
     }
 
-    /// Encodes this [`LinkConfig`] into the 72-byte `LINK_LAB_CfgTbl_t` binary format.
+    /// Encodes this [`LinkConfig`] into the 88-byte `LINK_LAB_CfgTbl_t` binary format.
     #[must_use]
     pub fn to_table_bytes(&self) -> [u8; Self::TABLE_SIZE] {
         let mut out = [0_u8; Self::TABLE_SIZE];
@@ -280,6 +357,17 @@ impl LinkConfig {
             count = count.saturating_add(1);
         }
         write_slice(&mut out, 35, &[count]);
+        write_slice(&mut out, 72, &self.rx_port.to_ne_bytes());
+        write_slice(&mut out, 74, &self.tx_port.to_ne_bytes());
+        write_slice(&mut out, 76, &self.ground_ipv4);
+        write_slice(
+            &mut out,
+            80,
+            &[
+                self.mode.to_raw(),
+                self.default_vc.map_or(0xFF, DataVc::vcid),
+            ],
+        );
         out
     }
 
@@ -290,6 +378,10 @@ impl LinkConfig {
             .iter()
             .flatten()
             .find_map(|route| (route.apid == apid).then_some(route.vc))
+            .or(match self.mode {
+                LinkMode::Lockstep => None,
+                LinkMode::NativeRealtime => self.default_vc,
+            })
     }
 }
 
