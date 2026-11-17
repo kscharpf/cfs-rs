@@ -6,7 +6,7 @@
 use cfe::es::{self, RunStatus};
 use cfe::evs::{self, EventType};
 use cfe::sb::{MsgId, Pipe, Qos, Timeout, transmit_msg};
-use cfe::tbl::{self, Table};
+use cfe::tbl::{Table, TableOptions};
 use link_lab_core::{DownlinkSink, Instant, Level, Link, LinkConfig, UplinkSink, packet_apid};
 use step_lab_core::msg::{
     CmdPacketMsg, DoneMsg, LinkLevel, MAX_UNIT_LEN, RecordMsg, StartMsg, TlmPacketMsg, UnitMsg,
@@ -398,22 +398,16 @@ fn subscribe_turns(pipe: &Pipe) -> Result<(), ()> {
 }
 
 /// Reads and decodes [`LinkConfig`] from the registered cFE table.
-fn read_link_config(table: &Table) -> Result<LinkConfig, ()> {
-    let mut parsed: Option<LinkConfig> = None;
-    if table
-        .read_bytes(|bytes| {
-            parsed = LinkConfig::from_table_bytes(bytes).ok();
-        })
-        .is_err()
-    {
+fn read_link_config(table: &mut Table) -> Result<LinkConfig, ()> {
+    let Ok(parsed) = table.read_bytes(LinkConfig::from_table_bytes) else {
         let _ = evs::send_event(
             28,
             EventType::Critical,
             "LINK_LAB: Failed to read LinkCfg table bytes",
         );
         return Err(());
-    }
-    let Some(config) = parsed else {
+    };
+    let Ok(config) = parsed else {
         let _ = evs::send_event(
             29,
             EventType::Critical,
@@ -445,11 +439,12 @@ fn init_app() -> Result<(Pipe, Table, LinkConfig), ()> {
         return Err(());
     }
 
-    let Ok(table) = Table::register(
-        LINK_CFG_TABLE_NAME,
-        LinkConfig::TABLE_SIZE,
-        tbl::OPT_DEFAULT,
-    ) else {
+    let Some(table_size) = core::num::NonZeroUsize::new(LinkConfig::TABLE_SIZE) else {
+        let _ = pipe.delete();
+        return Err(());
+    };
+    let Ok(mut table) = Table::register(LINK_CFG_TABLE_NAME, table_size, TableOptions::Default)
+    else {
         let _ = evs::send_event(
             25,
             EventType::Critical,
@@ -479,7 +474,7 @@ fn init_app() -> Result<(Pipe, Table, LinkConfig), ()> {
         return Err(());
     }
 
-    let Ok(config) = read_link_config(&table) else {
+    let Ok(config) = read_link_config(&mut table) else {
         let _ = pipe.delete();
         return Err(());
     };
@@ -495,42 +490,44 @@ fn init_app() -> Result<(Pipe, Table, LinkConfig), ()> {
 
 /// Handles `NODE_START` turn: refreshes `LinkCfg` if updated and initializes `Link`.
 fn handle_start(
-    table: &Table,
+    table: &mut Table,
     config: &mut LinkConfig,
     bytes: &[u8],
     link: &mut Option<Link>,
     pending_count: &mut usize,
 ) {
-    match table.manage() {
-        Ok(true) => {
-            if let Ok(updated) = read_link_config(table) {
-                *config = updated;
-            }
-        }
-        Ok(false) => {}
+    let candidate = match table.manage() {
+        Ok(true) => read_link_config(table).ok(),
+        Ok(false) => None,
         Err(_) => {
             let _ = evs::send_event(
                 27,
                 EventType::Error,
                 "LINK_LAB: Failed to manage LinkCfg table",
             );
+            None
         }
-    }
+    };
     if let Some(lvl) = StartMsg::from_bytes(bytes).and_then(|m| m.link_level()) {
         let level = match lvl {
             LinkLevel::Packets => Level::Packets,
             LinkLevel::Frames => Level::Frames,
             LinkLevel::Cop1 => Level::Cop1,
         };
-        *link = Link::new(level, config)
-            .inspect_err(|_| {
-                let _ = evs::send_event(
-                    20,
-                    EventType::Critical,
-                    "LINK_LAB: Failed to initialize Link",
-                );
-            })
-            .ok();
+        let active_config = candidate.as_ref().unwrap_or(config);
+        if let Ok(new_link) = Link::new(level, active_config) {
+            if let Some(updated) = candidate {
+                *config = updated;
+            }
+            *link = Some(new_link);
+        } else {
+            *link = None;
+            let _ = evs::send_event(
+                20,
+                EventType::Critical,
+                "LINK_LAB: Failed to initialize Link",
+            );
+        }
     } else {
         *link = None;
         let _ = evs::send_event(
@@ -545,7 +542,7 @@ fn handle_start(
 
 /// Runs the `link_lab` initialization, Software Bus dispatch loop, and teardown.
 fn app_main() {
-    let Ok((mut pipe, table, mut config)) = init_app() else {
+    let Ok((mut pipe, mut table, mut config)) = init_app() else {
         es::exit_app(RunStatus::AppError);
         return;
     };
@@ -571,7 +568,7 @@ fn app_main() {
         match mid.as_u32() {
             cfe_sys::NODE_START_MID => {
                 handle_start(
-                    &table,
+                    &mut table,
                     &mut config,
                     buf.as_bytes(),
                     &mut link,

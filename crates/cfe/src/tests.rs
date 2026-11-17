@@ -22,7 +22,8 @@ use crate::msg;
 use crate::osal::TcpStream;
 use crate::sb::{self, MsgId, Pipe, PipeId, Qos, Timeout};
 use crate::status::Status;
-use crate::tbl::{self, Table};
+use crate::tbl::{self, Table, TableOptions};
+use core::num::NonZeroUsize;
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, Ordering};
@@ -829,6 +830,7 @@ static TBL_MANAGE_CALLS: AtomicU32 = AtomicU32::new(0);
 static TBL_GETADDR_CALLS: AtomicU32 = AtomicU32::new(0);
 static TBL_RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
 static TBL_SIM_REG_FAIL: AtomicBool = AtomicBool::new(false);
+static TBL_SIM_REG_DUPLICATE: AtomicBool = AtomicBool::new(false);
 static TBL_SIM_UNREG_FAIL: AtomicBool = AtomicBool::new(false);
 static TBL_SIM_LOAD_FAIL: AtomicBool = AtomicBool::new(false);
 static TBL_SIM_MANAGE_STATUS: AtomicI32 = AtomicI32::new(0);
@@ -848,6 +850,7 @@ fn reset_tbl_stubs() {
     TBL_GETADDR_CALLS.store(0, Ordering::SeqCst);
     TBL_RELEASE_CALLS.store(0, Ordering::SeqCst);
     TBL_SIM_REG_FAIL.store(false, Ordering::SeqCst);
+    TBL_SIM_REG_DUPLICATE.store(false, Ordering::SeqCst);
     TBL_SIM_UNREG_FAIL.store(false, Ordering::SeqCst);
     TBL_SIM_LOAD_FAIL.store(false, Ordering::SeqCst);
     TBL_SIM_MANAGE_STATUS.store(0, Ordering::SeqCst);
@@ -881,6 +884,9 @@ pub unsafe extern "C" fn CFE_TBL_Register(
     }
     // SAFETY: TblHandlePtr is checked non-null.
     unsafe { *TblHandlePtr = 7 };
+    if TBL_SIM_REG_DUPLICATE.load(Ordering::SeqCst) {
+        return cfe_sys::CFE_TBL_WARN_DUPLICATE.cast_signed();
+    }
     0
 }
 
@@ -988,9 +994,12 @@ fn test_tbl_lifecycle_load_manage_read_and_drop() {
     let _guard = TBL_TEST_LOCK.lock().unwrap();
     reset_tbl_stubs();
 
+    let size12 = NonZeroUsize::new(12).unwrap();
+    let size8 = NonZeroUsize::new(8).unwrap();
+
     {
-        let table = Table::register("LinkCfg", 12, tbl::OPT_DEFAULT).unwrap();
-        assert_eq!(table.size(), 12);
+        let mut table = Table::register("LinkCfg", size12, TableOptions::Default).unwrap();
+        assert_eq!(table.size(), size12);
         assert_eq!(table.handle(), 7);
         assert_eq!(TBL_REGISTER_CALLS.load(Ordering::SeqCst), 1);
 
@@ -1020,11 +1029,12 @@ fn test_tbl_lifecycle_load_manage_read_and_drop() {
         );
 
         // First read_bytes after load gets CFE_TBL_INFO_UPDATED and still succeeds, calling ReleaseAddress
-        let mut observed = [0u8; 12];
-        table
+        let observed = table
             .read_bytes(|bytes| {
                 assert_eq!(bytes.len(), 12);
-                observed.copy_from_slice(bytes);
+                let mut buf = [0u8; 12];
+                buf.copy_from_slice(bytes);
+                buf
             })
             .unwrap();
         assert_eq!(
@@ -1037,11 +1047,8 @@ fn test_tbl_lifecycle_load_manage_read_and_drop() {
         assert_eq!(TBL_RELEASE_CALLS.load(Ordering::SeqCst), 1);
 
         // Second read_bytes gets CFE_SUCCESS and still calls ReleaseAddress
-        table
-            .read_bytes(|bytes| {
-                assert_eq!(bytes[0], 0x10);
-            })
-            .unwrap();
+        let first = table.read_bytes(|bytes| bytes[0]).unwrap();
+        assert_eq!(first, 0x10);
         assert_eq!(TBL_GETADDR_CALLS.load(Ordering::SeqCst), 2);
         assert_eq!(TBL_RELEASE_CALLS.load(Ordering::SeqCst), 2);
     }
@@ -1049,7 +1056,7 @@ fn test_tbl_lifecycle_load_manage_read_and_drop() {
     assert_eq!(TBL_UNREGISTER_CALLS.load(Ordering::SeqCst), 1);
 
     // Explicit unregister must not double-unregister on Drop
-    let table2 = Table::register("LinkCfg", 8, tbl::OPT_DEFAULT).unwrap();
+    let table2 = Table::register("LinkCfg", size8, TableOptions::Default).unwrap();
     assert!(table2.unregister().is_ok());
     assert_eq!(TBL_UNREGISTER_CALLS.load(Ordering::SeqCst), 2);
 }
@@ -1059,36 +1066,41 @@ fn test_tbl_error_handling() {
     let _guard = TBL_TEST_LOCK.lock().unwrap();
     reset_tbl_stubs();
 
+    let size8 = NonZeroUsize::new(8).unwrap();
+
     // Invalid names
     assert_eq!(
-        Table::register("", 8, tbl::OPT_DEFAULT).unwrap_err(),
+        Table::register("", size8, TableOptions::Default).unwrap_err(),
         Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_NAME)
     );
     assert_eq!(
-        Table::register("BAD\0NAME", 8, tbl::OPT_DEFAULT).unwrap_err(),
+        Table::register("BAD\0NAME", size8, TableOptions::Default).unwrap_err(),
         Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_NAME)
     );
     let long_name = "A".repeat(tbl::MAX_TABLE_NAME_LEN);
     assert_eq!(
-        Table::register(&long_name, 8, tbl::OPT_DEFAULT).unwrap_err(),
+        Table::register(&long_name, size8, TableOptions::Default).unwrap_err(),
         Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_NAME)
     );
 
-    // Zero size
+    // CFE_TBL_WARN_DUPLICATE must return Err without owning or unregistering the aliased handle
+    TBL_SIM_REG_DUPLICATE.store(true, Ordering::SeqCst);
     assert_eq!(
-        Table::register("LinkCfg", 0, tbl::OPT_DEFAULT).unwrap_err(),
-        Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_SIZE)
+        Table::register("LinkCfg", size8, TableOptions::Default).unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_WARN_DUPLICATE.cast_signed())
     );
+    assert_eq!(TBL_UNREGISTER_CALLS.load(Ordering::SeqCst), 0);
+    TBL_SIM_REG_DUPLICATE.store(false, Ordering::SeqCst);
 
     // Registry full from C stub
     TBL_SIM_REG_FAIL.store(true, Ordering::SeqCst);
     assert_eq!(
-        Table::register("LinkCfg", 8, tbl::OPT_DEFAULT).unwrap_err(),
+        Table::register("LinkCfg", size8, TableOptions::Default).unwrap_err(),
         Status::from_raw(cfe_sys::CFE_TBL_ERR_REGISTRY_FULL)
     );
     TBL_SIM_REG_FAIL.store(false, Ordering::SeqCst);
 
-    let table = Table::register("LinkCfg", 8, tbl::OPT_DEFAULT).unwrap();
+    let mut table = Table::register("LinkCfg", size8, TableOptions::Default).unwrap();
 
     // Path validation in load_from_file
     assert_eq!(

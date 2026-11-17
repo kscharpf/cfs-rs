@@ -1,7 +1,12 @@
 //! Link configuration and routing.
 
+use aldis::cop1::farm1::Farm1Window;
 use aldis::core::ErrorKind;
+use aldis::tc::PhysicalChannelConfig;
 use refapp_scenario::generated::{SPACECRAFT_ID, apid, cop1, link, tc, tm};
+
+use crate::downlink::TM_FRAME_LEN;
+use crate::uplink::TC_FRAME_AREA_LEN;
 
 /// Maximum number of APID-to-VC routing entries in [`LinkConfig`].
 pub const MAX_APID_ROUTES: usize = 8;
@@ -104,7 +109,7 @@ fn read_bool(bytes: &[u8], offset: usize) -> Result<bool, ErrorKind> {
 
 impl LinkConfig {
     /// Size in bytes of the cFE `LINK_LAB_CfgTbl_t` binary table image.
-    pub const TABLE_SIZE: usize = 72;
+    pub const TABLE_SIZE: usize = 40_usize.saturating_add(MAX_APID_ROUTES.saturating_mul(4));
 
     /// Builds configuration from `refapp-scenario` generated constants.
     #[must_use]
@@ -153,11 +158,11 @@ impl LinkConfig {
     /// - `8..16`: `vc_realtime_deadline_us` (`u64`)
     /// - `16..24`: `vc_payload_deadline_us` (`u64`)
     /// - `24..26`: `spacecraft_id` (`u16`, 10-bit `<= 0x03FF`)
-    /// - `26..28`: `tm_frame_length` (`u16`, `> 0`)
-    /// - `28..30`: `tc_max_frame_length` (`u16`, `> 0`)
-    /// - `30`: `tm_fecf` (`u8`, `0` or `1`)
+    /// - `26..28`: `tm_frame_length` (`u16`, must equal [`TM_FRAME_LEN`])
+    /// - `28..30`: `tc_max_frame_length` (`u16`, `<= TC_FRAME_AREA_LEN` and valid for TC physical channel)
+    /// - `30`: `tm_fecf` (`u8`, must be `1`)
     /// - `31`: `tc_fecf` (`u8`, `0` or `1`)
-    /// - `32`: `cop1_w` (`u8`, `> 0`)
+    /// - `32`: `cop1_w` (`u8`, even in `2..=254` for `Farm1Window::retransmission_allowed`)
     /// - `33`: `cop1_status_field` (`u8`, `<= 0x07`)
     /// - `34`: `farm_initial_vr` (`u8`)
     /// - `35`: `route_count` (`u8`, `<= MAX_APID_ROUTES`)
@@ -187,14 +192,17 @@ impl LinkConfig {
         let route_count = usize::from(read_u8(bytes, 35)?);
 
         if spacecraft_id > 0x03FF
-            || tm_frame_length == 0
-            || tc_max_frame_length == 0
-            || cop1_w == 0
+            || usize::from(tm_frame_length) != TM_FRAME_LEN
+            || !tm_fecf
+            || usize::from(tc_max_frame_length) > TC_FRAME_AREA_LEN
             || cop1_status_field > 0x07
             || route_count > MAX_APID_ROUTES
         {
             return Err(ErrorKind::InvalidConfig);
         }
+        PhysicalChannelConfig::new(usize::from(tc_max_frame_length), uplink_fecf)
+            .map_err(|e| e.kind())?;
+        Farm1Window::retransmission_allowed(u16::from(cop1_w)).map_err(|e| e.kind())?;
 
         if bytes.get(36..40) != Some(&[0_u8; 4][..]) {
             return Err(ErrorKind::InvalidConfig);

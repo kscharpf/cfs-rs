@@ -144,6 +144,9 @@ impl UplinkState {
         let scid = TcSpacecraftId::new(config.spacecraft_id).ok_or(bad)?;
         let vc = TcVcId::new(tc::VCID).ok_or(bad)?;
         let frame_len = usize::from(config.tc_max_frame_length);
+        if frame_len > TC_FRAME_AREA_LEN {
+            return Err(bad);
+        }
         let map = |id: u8| {
             TcMapId::new(id)
                 .map(|map_id| MapConfig::new(scid, vc, map_id, SecurityLayout::NONE))

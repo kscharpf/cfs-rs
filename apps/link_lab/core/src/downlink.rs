@@ -33,9 +33,6 @@ pub const TM_DATA_FIELD_LEN: usize = 211;
 /// Capacity in octets of a generator's packet queue behind the data field.
 pub const TM_QUEUE_LEN: usize = 512;
 
-/// Virtual channels of data in serving order: real-time (0) then payload (1).
-pub const DATA_VCS: [u8; 2] = [tm::VCID_REALTIME, tm::VCID_PAYLOAD];
-
 #[expect(
     clippy::as_conversions,
     reason = "usize::from is not const in stable Rust (RFC 143874)"

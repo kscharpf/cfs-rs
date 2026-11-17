@@ -1,6 +1,7 @@
 //! Table Services (TBL) safe wrappers.
 
 use core::ffi::c_void;
+use core::num::NonZeroUsize;
 
 use crate::status::Status;
 
@@ -18,26 +19,48 @@ pub const MAX_TABLE_NAME_LEN: usize = cfe_sys::CFE_MISSION_TBL_MAX_NAME_LENGTH a
 )]
 pub const MAX_PATH_LEN: usize = cfe_sys::CFE_MISSION_MAX_PATH_LEN as usize;
 
-/// Default table registration options (`CFE_TBL_OPT_DEFAULT`).
-pub const OPT_DEFAULT: u16 = 0;
+/// Supported table registration options for [`Table::register`].
+///
+/// Excludes `CFE_TBL_OPT_USR_DEF_ADDR` (no user-defined address load API) and
+/// invalid cFE combinations such as double-buffered or critical dump-only tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TableOptions {
+    /// Single-buffered, load/dump, non-critical (`CFE_TBL_OPT_DEFAULT`).
+    #[default]
+    Default,
+    /// Single-buffered, load/dump, critical (`CFE_TBL_OPT_CRITICAL`).
+    Critical,
+    /// Double-buffered, load/dump, non-critical (`CFE_TBL_OPT_DBL_BUFFER`).
+    DoubleBuffered,
+    /// Double-buffered, load/dump, critical (`CFE_TBL_OPT_DBL_BUFFER | CFE_TBL_OPT_CRITICAL`).
+    DoubleBufferedCritical,
+    /// Single-buffered, dump-only, non-critical (`CFE_TBL_OPT_DUMP_ONLY`).
+    DumpOnly,
+}
 
-/// Single-buffer table option (`CFE_TBL_OPT_SNGL_BUFFER`).
-pub const OPT_SNGL_BUFFER: u16 = 0;
-
-/// Double-buffer table option (`CFE_TBL_OPT_DBL_BUFFER`).
-pub const OPT_DBL_BUFFER: u16 = 1;
-
-/// Load/dump table option (`CFE_TBL_OPT_LOAD_DUMP`).
-pub const OPT_LOAD_DUMP: u16 = 0;
-
-/// Dump-only table option (`CFE_TBL_OPT_DUMP_ONLY`).
-pub const OPT_DUMP_ONLY: u16 = 2;
-
-/// User-defined address table option (`CFE_TBL_OPT_USR_DEF_ADDR`).
-pub const OPT_USR_DEF_ADDR: u16 = 6;
-
-/// Critical table option (`CFE_TBL_OPT_CRITICAL`).
-pub const OPT_CRITICAL: u16 = 8;
+impl TableOptions {
+    /// Returns the raw cFE option bitmask (`CFE_TBL_OPT_*`).
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "CFE_TBL_OPT_* constants are 16-bit flags stored as u32 by bindgen"
+    )]
+    #[expect(
+        clippy::as_conversions,
+        reason = "u16::try_from is not const in stable Rust"
+    )]
+    pub const fn to_raw(self) -> u16 {
+        match self {
+            Self::Default => cfe_sys::CFE_TBL_OPT_DEFAULT as u16,
+            Self::Critical => cfe_sys::CFE_TBL_OPT_CRITICAL as u16,
+            Self::DoubleBuffered => cfe_sys::CFE_TBL_OPT_DBL_BUFFER as u16,
+            Self::DoubleBufferedCritical => {
+                (cfe_sys::CFE_TBL_OPT_DBL_BUFFER | cfe_sys::CFE_TBL_OPT_CRITICAL) as u16
+            }
+            Self::DumpOnly => cfe_sys::CFE_TBL_OPT_DUMP_ONLY as u16,
+        }
+    }
+}
 
 /// Sentinel invalid table handle (`CFE_TBL_BAD_TABLE_HANDLE`).
 const BAD_TABLE_HANDLE: cfe_sys::CFE_TBL_Handle_t = -1;
@@ -47,13 +70,14 @@ const BAD_TABLE_HANDLE: cfe_sys::CFE_TBL_Handle_t = -1;
     reason = "From is not const in stable Rust (RFC 143874)"
 )]
 const _: () = {
-    assert!((OPT_DEFAULT as u32) == cfe_sys::CFE_TBL_OPT_DEFAULT);
-    assert!((OPT_SNGL_BUFFER as u32) == cfe_sys::CFE_TBL_OPT_SNGL_BUFFER);
-    assert!((OPT_DBL_BUFFER as u32) == cfe_sys::CFE_TBL_OPT_DBL_BUFFER);
-    assert!((OPT_LOAD_DUMP as u32) == cfe_sys::CFE_TBL_OPT_LOAD_DUMP);
-    assert!((OPT_DUMP_ONLY as u32) == cfe_sys::CFE_TBL_OPT_DUMP_ONLY);
-    assert!((OPT_USR_DEF_ADDR as u32) == cfe_sys::CFE_TBL_OPT_USR_DEF_ADDR);
-    assert!((OPT_CRITICAL as u32) == cfe_sys::CFE_TBL_OPT_CRITICAL);
+    assert!(TableOptions::Default.to_raw() as u32 == cfe_sys::CFE_TBL_OPT_DEFAULT);
+    assert!(TableOptions::Critical.to_raw() as u32 == cfe_sys::CFE_TBL_OPT_CRITICAL);
+    assert!(TableOptions::DoubleBuffered.to_raw() as u32 == cfe_sys::CFE_TBL_OPT_DBL_BUFFER);
+    assert!(
+        TableOptions::DoubleBufferedCritical.to_raw() as u32
+            == (cfe_sys::CFE_TBL_OPT_DBL_BUFFER | cfe_sys::CFE_TBL_OPT_CRITICAL)
+    );
+    assert!(TableOptions::DumpOnly.to_raw() as u32 == cfe_sys::CFE_TBL_OPT_DUMP_ONLY);
     assert!((BAD_TABLE_HANDLE as i32) == cfe_sys::CFE_TBL_BAD_TABLE_HANDLE);
 };
 
@@ -78,7 +102,10 @@ impl Drop for ReleaseGuard {
 #[derive(Debug)]
 pub struct Table {
     handle: cfe_sys::CFE_TBL_Handle_t,
-    size: usize,
+    size: NonZeroUsize,
+    // `CFE_TBL_GetAddress`/`ReleaseAddress` tracks a single lock flag rather than a reference
+    // count, so `Table` must not be shared or moved across threads (`!Send + !Sync`).
+    _marker: core::marker::PhantomData<*const ()>,
 }
 
 impl Table {
@@ -86,19 +113,16 @@ impl Table {
     ///
     /// `name` is the raw table name (without the `AppName.` prefix); it must be
     /// non-empty, shorter than [`MAX_TABLE_NAME_LEN`] bytes, and free of interior
-    /// null bytes. `size` must be non-zero.
+    /// null bytes.
     ///
     /// # Errors
     ///
-    /// Returns `Err(Status)` with `CFE_TBL_ERR_INVALID_NAME` or `CFE_TBL_ERR_INVALID_SIZE`
-    /// if the arguments are invalid, or the status returned by `CFE_TBL_Register` if
-    /// registration fails.
-    pub fn register(name: &str, size: usize, options: u16) -> Result<Self, Status> {
+    /// Returns `Err(Status)` with `CFE_TBL_ERR_INVALID_NAME` if `name` is invalid,
+    /// or the status returned by `CFE_TBL_Register` for any non-`CFE_SUCCESS`
+    /// result (including `CFE_TBL_WARN_DUPLICATE`, which aliases an existing handle).
+    pub fn register(name: &str, size: NonZeroUsize, options: TableOptions) -> Result<Self, Status> {
         if name.is_empty() || name.len() >= MAX_TABLE_NAME_LEN || name.as_bytes().contains(&0) {
             return Err(Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_NAME));
-        }
-        if size == 0 {
-            return Err(Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_SIZE));
         }
 
         let mut name_buf = [0u8; MAX_TABLE_NAME_LEN];
@@ -112,22 +136,26 @@ impl Table {
             cfe_sys::CFE_TBL_Register(
                 &raw mut handle,
                 name_buf.as_ptr().cast(),
-                size,
-                options,
+                size.get(),
+                options.to_raw(),
                 None,
             )
         };
         let status = Status::from_raw(raw_status);
-        if status.as_raw() < 0 || handle == BAD_TABLE_HANDLE {
+        if raw_status != 0 || handle == BAD_TABLE_HANDLE {
             Err(status)
         } else {
-            Ok(Self { handle, size })
+            Ok(Self {
+                handle,
+                size,
+                _marker: core::marker::PhantomData,
+            })
         }
     }
 
     /// Returns the registered size of the table in bytes.
     #[must_use]
-    pub const fn size(&self) -> usize {
+    pub const fn size(&self) -> NonZeroUsize {
         self.size
     }
 
@@ -144,7 +172,7 @@ impl Table {
     /// Returns `Err(Status)` if `path` is empty, contains interior null bytes,
     /// exceeds [`MAX_PATH_LEN`] - 1 bytes, or if `CFE_TBL_Load` returns a non-success
     /// status code.
-    pub fn load_from_file(&self, path: &str) -> Result<(), Status> {
+    pub fn load_from_file(&mut self, path: &str) -> Result<(), Status> {
         if path.is_empty() || path.as_bytes().contains(&0) {
             return Err(Status::from_raw(cfe_sys::CFE_TBL_BAD_ARGUMENT));
         }
@@ -176,7 +204,7 @@ impl Table {
     /// # Errors
     ///
     /// Returns `Err(Status)` if `CFE_TBL_Manage` returns any other status code.
-    pub fn manage(&self) -> Result<bool, Status> {
+    pub fn manage(&mut self) -> Result<bool, Status> {
         const INFO_UPDATED: i32 = cfe_sys::CFE_TBL_INFO_UPDATED.cast_signed();
         // SAFETY: `self.handle` is a valid registered table handle.
         let raw_status = unsafe { cfe_sys::CFE_TBL_Manage(self.handle) };
@@ -196,7 +224,7 @@ impl Table {
     }
 
     /// Acquires the current active table buffer, passes its `&[u8]` view of
-    /// `self.size()` bytes to `f`, and always releases the address via
+    /// `self.size().get()` bytes to `f`, and always releases the address via
     /// `CFE_TBL_ReleaseAddress` before returning.
     ///
     /// Accepts both `CFE_SUCCESS` and `CFE_TBL_INFO_UPDATED` from `CFE_TBL_GetAddress`.
@@ -205,7 +233,7 @@ impl Table {
     ///
     /// Returns `Err(Status)` if `CFE_TBL_GetAddress` returns an error (such as
     /// `CFE_TBL_ERR_NEVER_LOADED`) or produces a null pointer.
-    pub fn read_bytes(&self, f: impl FnOnce(&[u8])) -> Result<(), Status> {
+    pub fn read_bytes<R>(&mut self, f: impl FnOnce(&[u8]) -> R) -> Result<R, Status> {
         const INFO_UPDATED: i32 = cfe_sys::CFE_TBL_INFO_UPDATED.cast_signed();
         let mut ptr: *mut c_void = core::ptr::null_mut();
         // SAFETY: `ptr` is a valid out-pointer and `self.handle` is a valid registered handle.
@@ -230,12 +258,11 @@ impl Table {
         };
 
         // SAFETY: `CFE_TBL_GetAddress` succeeded and locked the active buffer of `self.size` bytes;
-        // `_guard` guarantees `CFE_TBL_ReleaseAddress` runs when leaving this scope, and the slice
-        // reference cannot escape `f`.
-        let slice = unsafe { core::slice::from_raw_parts(ptr.cast::<u8>(), self.size) };
-        f(slice);
-
-        Ok(())
+        // `_guard` guarantees `CFE_TBL_ReleaseAddress` runs when leaving this scope, `self` is
+        // exclusively borrowed (`&mut self`) so `f` cannot reentrantly call `read_bytes`, `manage`,
+        // or `load_from_file`, `Table` is `!Send + !Sync`, and the slice reference cannot escape `f`.
+        let slice = unsafe { core::slice::from_raw_parts(ptr.cast::<u8>(), self.size.get()) };
+        Ok(f(slice))
     }
 
     /// Explicitly unregisters the table via `CFE_TBL_Unregister`.
