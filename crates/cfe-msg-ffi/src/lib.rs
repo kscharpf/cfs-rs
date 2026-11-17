@@ -120,6 +120,15 @@ pub struct CfeSbMsgId {
     value: CfeSbMsgIdAtom,
 }
 
+impl CfeSbMsgId {
+    /// Extracts the low 16-bit CCSDS message ID from `self`.
+    #[must_use]
+    const fn to_msg_id(self) -> MsgId {
+        let [b0, b1, _, _] = self.value.to_le_bytes();
+        MsgId::new(u16::from_le_bytes([b0, b1]))
+    }
+}
+
 /// `CFE_MSG_TelemetrySecondaryHeader_t` of `default_cfe_msg_sechdr.h`.
 #[repr(C)]
 pub struct CfeMsgTelemetrySecondaryHeader {
@@ -779,8 +788,7 @@ pub unsafe extern "C" fn CFE_MSG_SetMsgId(
     if msg_ptr.is_null() || !CFE_SB_IsValidMsgId(msg_id) {
         return CFE_MSG_BAD_ARGUMENT;
     }
-    let [b0, b1, _, _] = msg_id.value.to_le_bytes();
-    let id = MsgId::new(u16::from_le_bytes([b0, b1]));
+    let id = msg_id.to_msg_id();
     // SAFETY: `msg_ptr` is non-null, and the caller guarantees it points to a valid mutable
     // `CFE_MSG_Message_t` for the duration of this call.
     unsafe {
@@ -801,8 +809,7 @@ pub unsafe extern "C" fn CFE_MSG_GetTypeFromMsgId(
     if msg_type.is_null() || !CFE_SB_IsValidMsgId(msg_id) {
         return CFE_MSG_BAD_ARGUMENT;
     }
-    let [b0, b1, _, _] = msg_id.value.to_le_bytes();
-    let id = MsgId::new(u16::from_le_bytes([b0, b1]));
+    let id = msg_id.to_msg_id();
     let ty = match cfe_msg::get_type_from_msg_id(id) {
         PacketType::Telecommand => CFE_MSG_TYPE_CMD,
         PacketType::Telemetry => CFE_MSG_TYPE_TLM,
