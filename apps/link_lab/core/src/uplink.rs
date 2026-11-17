@@ -134,6 +134,37 @@ pub struct UplinkState {
     delivery: DeliveryBuffer,
 }
 
+pub(crate) fn build_tc_vc_table(
+    spacecraft_id: u16,
+    tc_max_frame_length: u16,
+    tc_fecf: bool,
+) -> Result<(PhysicalChannelConfig, TcVcId, VcTable<1, 2>)> {
+    let bad = Error::new(ErrorKind::InvalidConfig);
+    let scid = TcSpacecraftId::new(spacecraft_id).ok_or(bad)?;
+    let vc = TcVcId::new(tc::VCID).ok_or(bad)?;
+    let frame_len = usize::from(tc_max_frame_length);
+    if frame_len > TC_FRAME_AREA_LEN {
+        return Err(bad);
+    }
+    let map = |id: u8| {
+        TcMapId::new(id)
+            .map(|map_id| MapConfig::new(scid, vc, map_id, SecurityLayout::NONE))
+            .ok_or(bad)
+    };
+    let header = if tc::SEGMENT_HEADER {
+        SegmentHeaderUse::Present
+    } else {
+        SegmentHeaderUse::Absent(SecurityLayout::NONE)
+    };
+    let physical = PhysicalChannelConfig::new(frame_len, tc_fecf)?;
+    let table = VcTable::new(
+        physical,
+        &[VcConfig::new(scid, vc, frame_len, header)?],
+        &[map(tc::MAP_COMMANDS)?, map(tc::MAP_TABLE_UPLOAD)?],
+    )?;
+    Ok((physical, vc, table))
+}
+
 impl UplinkState {
     /// Initializes uplink receive chain from configuration and operating `mode`.
     ///
@@ -141,24 +172,10 @@ impl UplinkState {
     /// Returns `ErrorKind::InvalidConfig` if managed parameters fail engine validation.
     pub fn new(config: &LinkConfig, mode: UplinkMode) -> Result<Self> {
         let bad = Error::new(ErrorKind::InvalidConfig);
-        let scid = TcSpacecraftId::new(config.spacecraft_id).ok_or(bad)?;
-        let vc = TcVcId::new(tc::VCID).ok_or(bad)?;
-        let frame_len = usize::from(config.tc_max_frame_length);
-        let map = |id: u8| {
-            TcMapId::new(id)
-                .map(|map_id| MapConfig::new(scid, vc, map_id, SecurityLayout::NONE))
-                .ok_or(bad)
-        };
-        let header = if tc::SEGMENT_HEADER {
-            SegmentHeaderUse::Present
-        } else {
-            SegmentHeaderUse::Absent(SecurityLayout::NONE)
-        };
-        let physical = PhysicalChannelConfig::new(frame_len, config.tc_fecf)?;
-        let table = VcTable::new(
-            physical,
-            &[VcConfig::new(scid, vc, frame_len, header)?],
-            &[map(tc::MAP_COMMANDS)?, map(tc::MAP_TABLE_UPLOAD)?],
+        let (physical, vc, table) = build_tc_vc_table(
+            config.spacecraft_id,
+            config.tc_max_frame_length,
+            config.tc_fecf,
         )?;
         let receiver = FrameReceiver::new(FrameReceiverConfig::new(
             TcChannel::new(physical),

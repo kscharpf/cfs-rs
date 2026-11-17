@@ -1,6 +1,14 @@
 //! Link configuration and routing.
 
+use aldis::cop1::farm1::Farm1Window;
+use aldis::core::ErrorKind;
 use refapp_scenario::generated::{SPACECRAFT_ID, apid, cop1, link, tc, tm};
+
+use crate::downlink::TM_FRAME_LEN;
+use crate::uplink::build_tc_vc_table;
+
+/// Maximum number of APID-to-VC routing entries in [`LinkConfig`].
+pub const MAX_APID_ROUTES: usize = 8;
 
 /// Downlink virtual channel carrying data packets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +28,25 @@ impl DataVc {
             Self::Payload => tm::VCID_PAYLOAD,
         }
     }
+
+    /// Converts a raw CCSDS virtual channel identifier to [`DataVc`].
+    #[must_use]
+    pub const fn from_vcid(vcid: u8) -> Option<Self> {
+        match vcid {
+            tm::VCID_REALTIME => Some(Self::Realtime),
+            tm::VCID_PAYLOAD => Some(Self::Payload),
+            _ => None,
+        }
+    }
+}
+
+/// An APID-to-Virtual-Channel routing entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApidRoute {
+    /// 11-bit CCSDS Application Process Identifier.
+    pub apid: u16,
+    /// Target downlink virtual channel.
+    pub vc: DataVc,
 }
 
 /// Managed parameters of the link layer (reference-application §4).
@@ -47,9 +74,42 @@ pub struct LinkConfig {
     pub cop1_status_field: u8,
     /// Initial V(R) of FARM-1 (§4.2, APP-136).
     pub farm_initial_vr: u8,
+    /// APID-to-VC routing table (up to [`MAX_APID_ROUTES`] entries).
+    pub apid_routes: [Option<ApidRoute>; MAX_APID_ROUTES],
+}
+
+fn read_u8(bytes: &[u8], offset: usize) -> Result<u8, ErrorKind> {
+    bytes.get(offset).copied().ok_or(ErrorKind::InvalidConfig)
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, ErrorKind> {
+    let slice = bytes
+        .get(offset..offset.saturating_add(2))
+        .ok_or(ErrorKind::InvalidConfig)?;
+    let arr: [u8; 2] = slice.try_into().map_err(|_| ErrorKind::InvalidConfig)?;
+    Ok(u16::from_ne_bytes(arr))
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, ErrorKind> {
+    let slice = bytes
+        .get(offset..offset.saturating_add(8))
+        .ok_or(ErrorKind::InvalidConfig)?;
+    let arr: [u8; 8] = slice.try_into().map_err(|_| ErrorKind::InvalidConfig)?;
+    Ok(u64::from_ne_bytes(arr))
+}
+
+fn read_bool(bytes: &[u8], offset: usize) -> Result<bool, ErrorKind> {
+    match read_u8(bytes, offset)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(ErrorKind::InvalidConfig),
+    }
 }
 
 impl LinkConfig {
+    /// Size in bytes of the cFE `LINK_LAB_CfgTbl_t` binary table image.
+    pub const TABLE_SIZE: usize = 40_usize.saturating_add(MAX_APID_ROUTES.saturating_mul(4));
+
     /// Builds configuration from `refapp-scenario` generated constants.
     #[must_use]
     pub const fn from_scenario() -> Self {
@@ -65,17 +125,171 @@ impl LinkConfig {
             cop1_w: cop1::W,
             cop1_status_field: cop1::FARM_STATUS_FIELD,
             farm_initial_vr: cop1::FARM_INITIAL_VR,
+            apid_routes: [
+                Some(ApidRoute {
+                    apid: apid::HOUSEKEEPING,
+                    vc: DataVc::Realtime,
+                }),
+                Some(ApidRoute {
+                    apid: apid::EVENTS,
+                    vc: DataVc::Realtime,
+                }),
+                Some(ApidRoute {
+                    apid: apid::PAYLOAD,
+                    vc: DataVc::Payload,
+                }),
+                Some(ApidRoute {
+                    apid: apid::DUMP,
+                    vc: DataVc::Payload,
+                }),
+                None,
+                None,
+                None,
+                None,
+            ],
         }
+    }
+
+    /// Decodes and validates a [`LinkConfig`] from a cFE `LINK_LAB_CfgTbl_t` byte slice.
+    ///
+    /// Layout (72 bytes, target-native endianness matching C struct `LINK_LAB_CfgTbl_t`):
+    /// - `0..8`: `frame_slot_us` (`u64`)
+    /// - `8..16`: `vc_realtime_deadline_us` (`u64`)
+    /// - `16..24`: `vc_payload_deadline_us` (`u64`)
+    /// - `24..26`: `spacecraft_id` (`u16`, 10-bit `<= 0x03FF`)
+    /// - `26..28`: `tm_frame_length` (`u16`, must equal [`TM_FRAME_LEN`])
+    /// - `28..30`: `tc_max_frame_length` (`u16`, `<= TC_FRAME_AREA_LEN` and valid for TC physical channel)
+    /// - `30`: `tm_fecf` (`u8`, must be `1`)
+    /// - `31`: `tc_fecf` (`u8`, `0` or `1`)
+    /// - `32`: `cop1_w` (`u8`, even in `2..=254` for `Farm1Window::retransmission_allowed`)
+    /// - `33`: `cop1_status_field` (`u8`, `<= 0x07`)
+    /// - `34`: `farm_initial_vr` (`u8`)
+    /// - `35`: `route_count` (`u8`, `<= MAX_APID_ROUTES`)
+    /// - `36..40`: `reserved` (`[u8; 4]`, must be zero)
+    /// - `40..72`: `routes` (`8 * { apid: u16, vcid: u8, reserved: u8 }`)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::InvalidConfig`] if `bytes.len() != Self::TABLE_SIZE` or any
+    /// field fails range, boolean, alignment/reserved, APID, VCID, or uniqueness checks.
+    pub fn from_table_bytes(bytes: &[u8]) -> Result<Self, ErrorKind> {
+        if bytes.len() != Self::TABLE_SIZE {
+            return Err(ErrorKind::InvalidConfig);
+        }
+
+        let frame_slot_us = read_u64(bytes, 0)?;
+        let vc_realtime_deadline_us = read_u64(bytes, 8)?;
+        let vc_payload_deadline_us = read_u64(bytes, 16)?;
+        let spacecraft_id = read_u16(bytes, 24)?;
+        let tm_frame_length = read_u16(bytes, 26)?;
+        let tc_max_frame_length = read_u16(bytes, 28)?;
+        let tm_fecf = read_bool(bytes, 30)?;
+        let uplink_fecf = read_bool(bytes, 31)?;
+        let cop1_w = read_u8(bytes, 32)?;
+        let cop1_status_field = read_u8(bytes, 33)?;
+        let farm_initial_vr = read_u8(bytes, 34)?;
+        let route_count = usize::from(read_u8(bytes, 35)?);
+
+        if spacecraft_id > 0x03FF
+            || usize::from(tm_frame_length) != TM_FRAME_LEN
+            || !tm_fecf
+            || cop1_status_field > 0x07
+            || route_count > MAX_APID_ROUTES
+        {
+            return Err(ErrorKind::InvalidConfig);
+        }
+        build_tc_vc_table(spacecraft_id, tc_max_frame_length, uplink_fecf).map_err(|e| e.kind())?;
+        Farm1Window::retransmission_allowed(u16::from(cop1_w)).map_err(|e| e.kind())?;
+
+        if bytes.get(36..40) != Some(&[0_u8; 4][..]) {
+            return Err(ErrorKind::InvalidConfig);
+        }
+
+        let mut apid_routes: [Option<ApidRoute>; MAX_APID_ROUTES] = [None; MAX_APID_ROUTES];
+        let mut idx = 0usize;
+        while idx < route_count {
+            let offset = 40_usize.saturating_add(idx.saturating_mul(4));
+            let route_apid = read_u16(bytes, offset)?;
+            let vcid = read_u8(bytes, offset.saturating_add(2))?;
+            let route_reserved = read_u8(bytes, offset.saturating_add(3))?;
+
+            if route_apid > 0x07FF || route_reserved != 0 {
+                return Err(ErrorKind::InvalidConfig);
+            }
+            let vc = DataVc::from_vcid(vcid).ok_or(ErrorKind::InvalidConfig)?;
+
+            // Reject duplicate APIDs in the routing table.
+            for existing in apid_routes.iter().take(idx).flatten() {
+                if existing.apid == route_apid {
+                    return Err(ErrorKind::InvalidConfig);
+                }
+            }
+
+            if let Some(slot) = apid_routes.get_mut(idx) {
+                *slot = Some(ApidRoute {
+                    apid: route_apid,
+                    vc,
+                });
+            }
+            idx = idx.saturating_add(1);
+        }
+
+        Ok(Self {
+            spacecraft_id,
+            frame_slot_us,
+            tm_frame_length,
+            tm_fecf,
+            vc_realtime_deadline_us,
+            vc_payload_deadline_us,
+            tc_max_frame_length,
+            tc_fecf: uplink_fecf,
+            cop1_w,
+            cop1_status_field,
+            farm_initial_vr,
+            apid_routes,
+        })
+    }
+
+    /// Encodes this [`LinkConfig`] into the 72-byte `LINK_LAB_CfgTbl_t` binary format.
+    #[must_use]
+    pub fn to_table_bytes(&self) -> [u8; Self::TABLE_SIZE] {
+        let mut out = [0_u8; Self::TABLE_SIZE];
+        let write_slice = |buf: &mut [u8], offset: usize, src: &[u8]| {
+            if let Some(dest) = buf.get_mut(offset..offset.saturating_add(src.len())) {
+                dest.copy_from_slice(src);
+            }
+        };
+
+        write_slice(&mut out, 0, &self.frame_slot_us.to_ne_bytes());
+        write_slice(&mut out, 8, &self.vc_realtime_deadline_us.to_ne_bytes());
+        write_slice(&mut out, 16, &self.vc_payload_deadline_us.to_ne_bytes());
+        write_slice(&mut out, 24, &self.spacecraft_id.to_ne_bytes());
+        write_slice(&mut out, 26, &self.tm_frame_length.to_ne_bytes());
+        write_slice(&mut out, 28, &self.tc_max_frame_length.to_ne_bytes());
+        write_slice(&mut out, 30, &[u8::from(self.tm_fecf)]);
+        write_slice(&mut out, 31, &[u8::from(self.tc_fecf)]);
+        write_slice(&mut out, 32, &[self.cop1_w]);
+        write_slice(&mut out, 33, &[self.cop1_status_field]);
+        write_slice(&mut out, 34, &[self.farm_initial_vr]);
+
+        let mut count = 0_u8;
+        for route in self.apid_routes.iter().flatten() {
+            let offset = 40_usize.saturating_add(usize::from(count).saturating_mul(4));
+            write_slice(&mut out, offset, &route.apid.to_ne_bytes());
+            write_slice(&mut out, offset.saturating_add(2), &[route.vc.vcid(), 0]);
+            count = count.saturating_add(1);
+        }
+        write_slice(&mut out, 35, &[count]);
+        out
     }
 
     /// Maps an application process identifier (APID) to a downlink virtual channel (§4.1).
     #[must_use]
-    pub const fn vc_for_apid(&self, apid: u16) -> Option<DataVc> {
-        match apid {
-            apid::HOUSEKEEPING | apid::EVENTS => Some(DataVc::Realtime),
-            apid::PAYLOAD | apid::DUMP => Some(DataVc::Payload),
-            _ => None,
-        }
+    pub fn vc_for_apid(&self, apid: u16) -> Option<DataVc> {
+        self.apid_routes
+            .iter()
+            .flatten()
+            .find_map(|route| (route.apid == apid).then_some(route.vc))
     }
 }
 

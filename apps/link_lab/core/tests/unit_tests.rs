@@ -26,9 +26,10 @@ use aldis::tc::{
 use aldis::tm::{TmFrame, TmPhysicalChannelConfig};
 use link_lab_core::{
     APP_DOWNLINK_REFUSED, APP_FARM1_STATE, APP_FARM1_UNLOCK, APP_FRAME_DISCARDED,
-    APP_FRAME_REJECTED, APP_PACKET_REJECTED, APP_SEQUENCE_VIOLATION, APP_UNKNOWN_MAP, DownlinkSink,
-    Level, Link, LinkConfig, TC_FRAME_AREA_LEN, TC_REASSEMBLY_AREA_LEN, TM_FRAME_LEN,
-    UplinkBuffers, UplinkMode, UplinkSink, UplinkState,
+    APP_FRAME_REJECTED, APP_PACKET_REJECTED, APP_SEQUENCE_VIOLATION, APP_UNKNOWN_MAP, ApidRoute,
+    DataVc, DownlinkSink, DownlinkState, Level, Link, LinkConfig, MAX_APID_ROUTES,
+    TC_FRAME_AREA_LEN, TC_REASSEMBLY_AREA_LEN, TM_FRAME_LEN, UplinkBuffers, UplinkMode, UplinkSink,
+    UplinkState,
 };
 use refapp_scenario::Instant;
 use refapp_scenario::generated::{SPACECRAFT_ID, apid, tc, tm};
@@ -483,4 +484,185 @@ fn test_round_trip_packet_to_frame_to_packet() {
     let data_field = frame.data_field();
     let packet_in_frame = &data_field[..orig_tm.len()];
     assert_eq!(packet_in_frame, orig_tm.as_slice());
+}
+
+#[test]
+fn test_link_config_from_table_bytes_round_trip_and_routing() {
+    let scenario_cfg = LinkConfig::from_scenario();
+    let bytes = scenario_cfg.to_table_bytes();
+    assert_eq!(bytes.len(), LinkConfig::TABLE_SIZE);
+
+    let decoded = LinkConfig::from_table_bytes(&bytes).expect("valid scenario table bytes");
+    assert_eq!(decoded, scenario_cfg);
+    assert_eq!(
+        decoded.vc_for_apid(apid::HOUSEKEEPING),
+        Some(DataVc::Realtime)
+    );
+    assert_eq!(decoded.vc_for_apid(apid::EVENTS), Some(DataVc::Realtime));
+    assert_eq!(decoded.vc_for_apid(apid::PAYLOAD), Some(DataVc::Payload));
+    assert_eq!(decoded.vc_for_apid(apid::DUMP), Some(DataVc::Payload));
+    assert_eq!(decoded.vc_for_apid(999), None);
+
+    // Custom routing overrides default APID mapping.
+    let mut custom = scenario_cfg;
+    custom.apid_routes = [
+        Some(ApidRoute {
+            apid: 0x0123,
+            vc: DataVc::Payload,
+        }),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ];
+    let custom_bytes = custom.to_table_bytes();
+    let decoded_custom =
+        LinkConfig::from_table_bytes(&custom_bytes).expect("valid custom table bytes");
+    assert_eq!(decoded_custom.vc_for_apid(0x0123), Some(DataVc::Payload));
+    assert_eq!(decoded_custom.vc_for_apid(apid::HOUSEKEEPING), None);
+}
+
+#[test]
+fn test_link_config_from_table_bytes_validation_errors() {
+    let valid = LinkConfig::from_scenario().to_table_bytes();
+
+    // Wrong length (too short / too long)
+    assert_eq!(
+        LinkConfig::from_table_bytes(&valid[..LinkConfig::TABLE_SIZE - 1]),
+        Err(ErrorKind::InvalidConfig)
+    );
+    let mut too_long = valid.to_vec();
+    too_long.push(0);
+    assert_eq!(
+        LinkConfig::from_table_bytes(&too_long),
+        Err(ErrorKind::InvalidConfig)
+    );
+
+    let assert_invalid = |mutate: fn(&mut [u8; LinkConfig::TABLE_SIZE])| {
+        let mut buf = valid;
+        mutate(&mut buf);
+        assert_eq!(
+            LinkConfig::from_table_bytes(&buf),
+            Err(ErrorKind::InvalidConfig)
+        );
+    };
+
+    // Invalid SCID (> 10-bit 0x03FF)
+    assert_invalid(|b| b[24..26].copy_from_slice(&0x0400_u16.to_ne_bytes()));
+
+    // Invalid frame lengths (tm_frame_length != TM_FRAME_LEN; tc_max_frame_length out of bounds)
+    assert_invalid(|b| b[26..28].copy_from_slice(&0_u16.to_ne_bytes()));
+    assert_invalid(|b| {
+        b[26..28].copy_from_slice(
+            &(u16::try_from(TM_FRAME_LEN).expect("fits in u16") - 1).to_ne_bytes(),
+        );
+    });
+    assert_invalid(|b| b[28..30].copy_from_slice(&0_u16.to_ne_bytes()));
+    assert_invalid(|b| b[28..30].copy_from_slice(&8_u16.to_ne_bytes()));
+    assert_invalid(|b| {
+        b[28..30].copy_from_slice(&6_u16.to_ne_bytes());
+        b[31] = 0; // tc_fecf = false requires >= 7 bytes with SegmentHeaderUse::Present
+    });
+    assert_invalid(|b| {
+        b[28..30].copy_from_slice(
+            &(u16::try_from(TC_FRAME_AREA_LEN).expect("fits in u16") + 1).to_ne_bytes(),
+        );
+    });
+
+    // Minimum valid tc_max_frame_length (9 with tc_fecf = true, 7 with tc_fecf = false)
+    // must be accepted by both LinkConfig::from_table_bytes and UplinkState::new.
+    for (min_len, fecf) in [(9_u16, true), (7_u16, false)] {
+        let mut min_buf = valid;
+        min_buf[28..30].copy_from_slice(&min_len.to_ne_bytes());
+        min_buf[31] = u8::from(fecf);
+        let cfg = LinkConfig::from_table_bytes(&min_buf).expect("min tc_max_frame_length accepted");
+        assert!(UplinkState::new(&cfg, UplinkMode::Frames).is_ok());
+    }
+
+    // tm_fecf must be true (1), and booleans must be 0 or 1
+    assert_invalid(|b| b[30] = 0);
+    assert_invalid(|b| b[30] = 2);
+    assert_invalid(|b| b[31] = 0xFF);
+
+    // Invalid COP-1 W (must be even in 2..=254) or status field > 7
+    for bad_w_val in [0_u8, 1, 3, 255] {
+        let mut bad_w = valid;
+        bad_w[32] = bad_w_val;
+        assert_eq!(
+            LinkConfig::from_table_bytes(&bad_w),
+            Err(ErrorKind::InvalidConfig)
+        );
+    }
+    assert_invalid(|b| b[33] = 8);
+
+    // Too many routes (> MAX_APID_ROUTES) & non-zero reserved header bytes
+    assert_invalid(|b| b[35] = u8::try_from(MAX_APID_ROUTES).expect("fits in u8") + 1);
+    assert_invalid(|b| b[36] = 1);
+
+    // Route validation: APID > 0x07FF, invalid VCID, non-zero reserved, duplicate APID
+    assert_invalid(|b| b[40..42].copy_from_slice(&0x0800_u16.to_ne_bytes()));
+    assert_invalid(|b| b[42] = 7);
+    assert_invalid(|b| b[43] = 1);
+    assert_invalid(|b| b[44..46].copy_from_slice(&apid::HOUSEKEEPING.to_ne_bytes()));
+}
+
+#[test]
+fn test_downlink_validation_and_zero_slot_period() {
+    let mut bad_len_cfg = LinkConfig::from_scenario();
+    bad_len_cfg.tm_frame_length = u16::try_from(TM_FRAME_LEN).expect("fits in u16") - 1;
+    assert_eq!(
+        DownlinkState::new(&bad_len_cfg)
+            .expect_err("reject wrong tm_frame_length")
+            .kind(),
+        ErrorKind::InvalidConfig
+    );
+    assert_eq!(
+        Link::new(Level::Frames, &bad_len_cfg)
+            .expect_err("reject wrong tm_frame_length")
+            .kind(),
+        ErrorKind::InvalidConfig
+    );
+
+    let mut bad_fecf_cfg = LinkConfig::from_scenario();
+    bad_fecf_cfg.tm_fecf = false;
+    assert_eq!(
+        DownlinkState::new(&bad_fecf_cfg)
+            .expect_err("reject tm_fecf == false")
+            .kind(),
+        ErrorKind::InvalidConfig
+    );
+    assert_eq!(
+        Link::new(Level::Frames, &bad_fecf_cfg)
+            .expect_err("reject tm_fecf == false")
+            .kind(),
+        ErrorKind::InvalidConfig
+    );
+
+    // Uplink tc_max_frame_length > TC_FRAME_AREA_LEN is rejected
+    let mut bad_tc_len_cfg = LinkConfig::from_scenario();
+    bad_tc_len_cfg.tc_max_frame_length = u16::try_from(TC_FRAME_AREA_LEN).expect("fits in u16") + 1;
+    assert_eq!(
+        UplinkState::new(&bad_tc_len_cfg, UplinkMode::Frames)
+            .expect_err("reject tc_max_frame_length > TC_FRAME_AREA_LEN")
+            .kind(),
+        ErrorKind::InvalidConfig
+    );
+    assert_eq!(
+        Link::new(Level::Frames, &bad_tc_len_cfg)
+            .expect_err("reject tc_max_frame_length > TC_FRAME_AREA_LEN")
+            .kind(),
+        ErrorKind::InvalidConfig
+    );
+
+    // Zero slot period disables next_deadline via NonZeroU64
+    let mut zero_slot_cfg = LinkConfig::from_scenario();
+    zero_slot_cfg.frame_slot_us = 0;
+    let mut link = Link::new(Level::Frames, &zero_slot_cfg).expect("create link with zero slot");
+    let mut down_sink = TestDownlinkSink::default();
+    let pkt = make_space_packet(apid::HOUSEKEEPING, false, 1, &[1, 2, 3]);
+    link.accept_packet(Instant::from_micros(0), &pkt, &mut down_sink);
+    assert_eq!(link.next_deadline(Instant::from_micros(0)), None);
 }

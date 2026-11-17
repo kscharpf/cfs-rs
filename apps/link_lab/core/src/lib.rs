@@ -13,8 +13,8 @@ pub mod uplink;
 
 use aldis::core::{ErrorKind, Result};
 use aldis::spp::SpacePacket;
-pub use config::{DataVc, LinkConfig};
-pub use downlink::{DATA_VCS, DownlinkState, TM_DATA_FIELD_LEN, TM_FRAME_LEN, TM_QUEUE_LEN};
+pub use config::{ApidRoute, DataVc, LinkConfig, MAX_APID_ROUTES};
+pub use downlink::{DownlinkState, TM_DATA_FIELD_LEN, TM_FRAME_LEN, TM_QUEUE_LEN};
 pub use event::{
     APP_DOWNLINK_REFUSED, APP_FARM1_STATE, APP_FARM1_UNLOCK, APP_FRAME_DISCARDED,
     APP_FRAME_REJECTED, APP_PACKET_REJECTED, APP_SDU_TOO_LONG, APP_SEQUENCE_VIOLATION,
@@ -207,9 +207,7 @@ impl Link {
     pub fn next_deadline(&self, now: Instant) -> Option<Instant> {
         match self.level {
             Level::Packets => None,
-            Level::Frames | Level::Cop1 => {
-                self.downlink.next_deadline(now, self.config.frame_slot_us)
-            }
+            Level::Frames | Level::Cop1 => self.downlink.next_deadline(now),
         }
     }
 }

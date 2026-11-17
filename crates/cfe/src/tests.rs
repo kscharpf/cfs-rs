@@ -22,8 +22,11 @@ use crate::msg;
 use crate::osal::TcpStream;
 use crate::sb::{self, MsgId, Pipe, PipeId, Qos, Timeout};
 use crate::status::Status;
+use crate::tbl::{self, Table, TableOptions};
+use core::num::NonZeroUsize;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, Ordering};
 
 static RUN_LOOP_CALLS: AtomicU32 = AtomicU32::new(0);
 static WAIT_SYNC_MS: AtomicU32 = AtomicU32::new(0);
@@ -817,4 +820,395 @@ fn test_osal_tcp_stream() {
     SIMULATE_SOCKET_FAIL.store(true, Ordering::SeqCst);
     assert!(TcpStream::connect("127.0.0.1", 1234).is_err());
     SIMULATE_SOCKET_FAIL.store(false, Ordering::SeqCst);
+}
+
+static TBL_TEST_LOCK: Mutex<()> = Mutex::new(());
+static TBL_REGISTER_CALLS: AtomicU32 = AtomicU32::new(0);
+static TBL_UNREGISTER_CALLS: AtomicU32 = AtomicU32::new(0);
+static TBL_LOAD_CALLS: AtomicU32 = AtomicU32::new(0);
+static TBL_MANAGE_CALLS: AtomicU32 = AtomicU32::new(0);
+static TBL_GETADDR_CALLS: AtomicU32 = AtomicU32::new(0);
+static TBL_RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
+static TBL_SIM_REG_FAIL: AtomicBool = AtomicBool::new(false);
+static TBL_SIM_REG_STATUS: AtomicI32 = AtomicI32::new(0);
+static TBL_SIM_UNREG_FAIL: AtomicBool = AtomicBool::new(false);
+static TBL_SIM_LOAD_FAIL: AtomicBool = AtomicBool::new(false);
+static TBL_SIM_MANAGE_STATUS: AtomicI32 = AtomicI32::new(0);
+static TBL_SIM_NEVER_LOADED: AtomicBool = AtomicBool::new(false);
+static TBL_SIM_GETADDR_NULL: AtomicBool = AtomicBool::new(false);
+static TBL_SIM_UPDATED_ON_GETADDR: AtomicBool = AtomicBool::new(false);
+static TBL_SIM_STATUS: AtomicI32 = AtomicI32::new(0);
+static mut TBL_BACKING_DATA: [u8; 16] = [
+    0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+];
+
+fn reset_tbl_stubs() {
+    TBL_REGISTER_CALLS.store(0, Ordering::SeqCst);
+    TBL_UNREGISTER_CALLS.store(0, Ordering::SeqCst);
+    TBL_LOAD_CALLS.store(0, Ordering::SeqCst);
+    TBL_MANAGE_CALLS.store(0, Ordering::SeqCst);
+    TBL_GETADDR_CALLS.store(0, Ordering::SeqCst);
+    TBL_RELEASE_CALLS.store(0, Ordering::SeqCst);
+    TBL_SIM_REG_FAIL.store(false, Ordering::SeqCst);
+    TBL_SIM_REG_STATUS.store(0, Ordering::SeqCst);
+    TBL_SIM_UNREG_FAIL.store(false, Ordering::SeqCst);
+    TBL_SIM_LOAD_FAIL.store(false, Ordering::SeqCst);
+    TBL_SIM_MANAGE_STATUS.store(0, Ordering::SeqCst);
+    TBL_SIM_NEVER_LOADED.store(false, Ordering::SeqCst);
+    TBL_SIM_GETADDR_NULL.store(false, Ordering::SeqCst);
+    TBL_SIM_UPDATED_ON_GETADDR.store(false, Ordering::SeqCst);
+    TBL_SIM_STATUS.store(0, Ordering::SeqCst);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_TBL_Register(
+    TblHandlePtr: *mut cfe_sys::CFE_TBL_Handle_t,
+    Name: *const core::ffi::c_char,
+    Size: usize,
+    _TblOptionFlags: u16,
+    _TblValidationFuncPtr: cfe_sys::CFE_TBL_CallbackFuncPtr_t,
+) -> cfe_sys::CFE_Status_t {
+    TBL_REGISTER_CALLS.fetch_add(1, Ordering::SeqCst);
+    if TblHandlePtr.is_null() || Name.is_null() {
+        return cfe_sys::CFE_TBL_BAD_ARGUMENT;
+    }
+    if Size == 0 {
+        // SAFETY: TblHandlePtr is checked non-null.
+        unsafe { *TblHandlePtr = -1 };
+        return cfe_sys::CFE_TBL_ERR_INVALID_SIZE;
+    }
+    if TBL_SIM_REG_FAIL.load(Ordering::SeqCst) {
+        // SAFETY: TblHandlePtr is checked non-null.
+        unsafe { *TblHandlePtr = -1 };
+        return cfe_sys::CFE_TBL_ERR_REGISTRY_FULL;
+    }
+    // SAFETY: TblHandlePtr is checked non-null.
+    unsafe { *TblHandlePtr = 7 };
+    TBL_SIM_REG_STATUS.load(Ordering::SeqCst)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_TBL_Unregister(
+    TblHandle: cfe_sys::CFE_TBL_Handle_t,
+) -> cfe_sys::CFE_Status_t {
+    TBL_UNREGISTER_CALLS.fetch_add(1, Ordering::SeqCst);
+    if TblHandle != 7 || TBL_SIM_UNREG_FAIL.load(Ordering::SeqCst) {
+        return cfe_sys::CFE_TBL_ERR_INVALID_HANDLE;
+    }
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_TBL_Load(
+    TblHandle: cfe_sys::CFE_TBL_Handle_t,
+    SrcType: cfe_sys::CFE_TBL_SrcEnum_t,
+    SrcDataPtr: *const core::ffi::c_void,
+) -> cfe_sys::CFE_Status_t {
+    TBL_LOAD_CALLS.fetch_add(1, Ordering::SeqCst);
+    if TblHandle != 7 {
+        return cfe_sys::CFE_TBL_ERR_INVALID_HANDLE;
+    }
+    if SrcDataPtr.is_null() {
+        return cfe_sys::CFE_TBL_BAD_ARGUMENT;
+    }
+    if SrcType != cfe_sys::CFE_TBL_SrcEnum_CFE_TBL_SRC_FILE {
+        return cfe_sys::CFE_TBL_ERR_ILLEGAL_SRC_TYPE;
+    }
+    if TBL_SIM_LOAD_FAIL.load(Ordering::SeqCst) {
+        return cfe_sys::CFE_TBL_ERR_ACCESS;
+    }
+    TBL_SIM_UPDATED_ON_GETADDR.store(true, Ordering::SeqCst);
+    0
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_TBL_Manage(
+    TblHandle: cfe_sys::CFE_TBL_Handle_t,
+) -> cfe_sys::CFE_Status_t {
+    TBL_MANAGE_CALLS.fetch_add(1, Ordering::SeqCst);
+    if TblHandle != 7 {
+        return cfe_sys::CFE_TBL_ERR_INVALID_HANDLE;
+    }
+    TBL_SIM_MANAGE_STATUS.load(Ordering::SeqCst)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_TBL_GetStatus(
+    TblHandle: cfe_sys::CFE_TBL_Handle_t,
+) -> cfe_sys::CFE_Status_t {
+    if TblHandle != 7 {
+        return cfe_sys::CFE_TBL_ERR_INVALID_HANDLE;
+    }
+    TBL_SIM_STATUS.load(Ordering::SeqCst)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_TBL_GetAddress(
+    TblPtr: *mut *mut core::ffi::c_void,
+    TblHandle: cfe_sys::CFE_TBL_Handle_t,
+) -> cfe_sys::CFE_Status_t {
+    TBL_GETADDR_CALLS.fetch_add(1, Ordering::SeqCst);
+    if TblPtr.is_null() {
+        return cfe_sys::CFE_TBL_BAD_ARGUMENT;
+    }
+    if TblHandle != 7 {
+        // SAFETY: TblPtr is checked non-null.
+        unsafe { *TblPtr = core::ptr::null_mut() };
+        return cfe_sys::CFE_TBL_ERR_INVALID_HANDLE;
+    }
+    if TBL_SIM_NEVER_LOADED.load(Ordering::SeqCst) {
+        // SAFETY: TblPtr is checked non-null.
+        unsafe { *TblPtr = core::ptr::null_mut() };
+        return cfe_sys::CFE_TBL_ERR_NEVER_LOADED;
+    }
+    if TBL_SIM_GETADDR_NULL.load(Ordering::SeqCst) {
+        // SAFETY: TblPtr is checked non-null.
+        unsafe { *TblPtr = core::ptr::null_mut() };
+        return 0;
+    }
+    // SAFETY: TblPtr is checked non-null and TBL_BACKING_DATA is valid static storage.
+    unsafe { *TblPtr = core::ptr::addr_of_mut!(TBL_BACKING_DATA).cast() };
+    if TBL_SIM_UPDATED_ON_GETADDR.swap(false, Ordering::SeqCst) {
+        cfe_sys::CFE_TBL_INFO_UPDATED.cast_signed()
+    } else {
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn CFE_TBL_ReleaseAddress(
+    TblHandle: cfe_sys::CFE_TBL_Handle_t,
+) -> cfe_sys::CFE_Status_t {
+    TBL_RELEASE_CALLS.fetch_add(1, Ordering::SeqCst);
+    if TblHandle != 7 {
+        return cfe_sys::CFE_TBL_ERR_INVALID_HANDLE;
+    }
+    0
+}
+
+#[test]
+fn test_tbl_lifecycle_load_manage_read_and_drop() {
+    let _guard = TBL_TEST_LOCK.lock().unwrap();
+    reset_tbl_stubs();
+
+    let size12 = NonZeroUsize::new(12).unwrap();
+    let size8 = NonZeroUsize::new(8).unwrap();
+
+    {
+        let mut table = Table::register("LinkCfg", size12, TableOptions::Default).unwrap();
+        assert_eq!(table.size(), size12);
+        assert_eq!(table.handle(), 7);
+        assert_eq!(TBL_REGISTER_CALLS.load(Ordering::SeqCst), 1);
+
+        // Load from file
+        assert!(table.load_from_file("/cf/link_lab_cfg.tbl").is_ok());
+        assert_eq!(TBL_LOAD_CALLS.load(Ordering::SeqCst), 1);
+
+        // Manage unchanged -> Ok(false)
+        TBL_SIM_MANAGE_STATUS.store(0, Ordering::SeqCst);
+        assert_eq!(table.manage(), Ok(false));
+
+        // Manage updated -> Ok(true)
+        TBL_SIM_MANAGE_STATUS.store(
+            cfe_sys::CFE_TBL_INFO_UPDATED.cast_signed(),
+            Ordering::SeqCst,
+        );
+        assert_eq!(table.manage(), Ok(true));
+
+        // get_status
+        TBL_SIM_STATUS.store(
+            cfe_sys::CFE_TBL_INFO_UPDATE_PENDING.cast_signed(),
+            Ordering::SeqCst,
+        );
+        assert_eq!(
+            table.get_status(),
+            Status::from_raw(cfe_sys::CFE_TBL_INFO_UPDATE_PENDING.cast_signed())
+        );
+
+        // First read_bytes after load gets CFE_TBL_INFO_UPDATED and still succeeds, calling ReleaseAddress
+        let observed = table
+            .read_bytes(|bytes| {
+                assert_eq!(bytes.len(), 12);
+                let mut buf = [0u8; 12];
+                buf.copy_from_slice(bytes);
+                buf
+            })
+            .unwrap();
+        assert_eq!(
+            observed,
+            [
+                0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x01, 0x02, 0x03, 0x04
+            ]
+        );
+        assert_eq!(TBL_GETADDR_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(TBL_RELEASE_CALLS.load(Ordering::SeqCst), 1);
+
+        // Second read_bytes gets CFE_SUCCESS and still calls ReleaseAddress
+        let first = table.read_bytes(|bytes| bytes[0]).unwrap();
+        assert_eq!(first, 0x10);
+        assert_eq!(TBL_GETADDR_CALLS.load(Ordering::SeqCst), 2);
+        assert_eq!(TBL_RELEASE_CALLS.load(Ordering::SeqCst), 2);
+    }
+    // Dropping Table calls CFE_TBL_Unregister automatically
+    assert_eq!(TBL_UNREGISTER_CALLS.load(Ordering::SeqCst), 1);
+
+    // Explicit unregister must not double-unregister on Drop
+    let table2 = Table::register("LinkCfg", size8, TableOptions::Default).unwrap();
+    assert!(table2.unregister().is_ok());
+    assert_eq!(TBL_UNREGISTER_CALLS.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn test_tbl_error_handling() {
+    let _guard = TBL_TEST_LOCK.lock().unwrap();
+    reset_tbl_stubs();
+
+    let size8 = NonZeroUsize::new(8).unwrap();
+
+    // Invalid names
+    assert_eq!(
+        Table::register("", size8, TableOptions::Default).unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_NAME)
+    );
+    assert_eq!(
+        Table::register("BAD\0NAME", size8, TableOptions::Default).unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_NAME)
+    );
+    let long_name = "A".repeat(tbl::MAX_TABLE_NAME_LEN);
+    assert_eq!(
+        Table::register(&long_name, size8, TableOptions::Default).unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_NAME)
+    );
+
+    // CFE_TBL_INFO_RECOVERED_TBL and CFE_TBL_WARN_NOT_CRITICAL succeed and drop unregisters them
+    for (status, opts) in [
+        (
+            cfe_sys::CFE_TBL_INFO_RECOVERED_TBL.cast_signed(),
+            TableOptions::Critical,
+        ),
+        (
+            cfe_sys::CFE_TBL_INFO_RECOVERED_TBL.cast_signed(),
+            TableOptions::DoubleBufferedCritical,
+        ),
+        (
+            cfe_sys::CFE_TBL_WARN_NOT_CRITICAL.cast_signed(),
+            TableOptions::Critical,
+        ),
+    ] {
+        let before_unreg = TBL_UNREGISTER_CALLS.load(Ordering::SeqCst);
+        TBL_SIM_REG_STATUS.store(status, Ordering::SeqCst);
+        {
+            let recovered = Table::register("CritCfg", size8, opts).unwrap();
+            assert_eq!(recovered.handle(), 7);
+            assert_eq!(TBL_UNREGISTER_CALLS.load(Ordering::SeqCst), before_unreg);
+        }
+        assert_eq!(
+            TBL_UNREGISTER_CALLS.load(Ordering::SeqCst),
+            before_unreg + 1
+        );
+    }
+    TBL_SIM_REG_STATUS.store(0, Ordering::SeqCst);
+
+    // CFE_TBL_WARN_DUPLICATE must return Err without owning or unregistering the aliased handle
+    let before_dup_unreg = TBL_UNREGISTER_CALLS.load(Ordering::SeqCst);
+    TBL_SIM_REG_STATUS.store(
+        cfe_sys::CFE_TBL_WARN_DUPLICATE.cast_signed(),
+        Ordering::SeqCst,
+    );
+    assert_eq!(
+        Table::register("LinkCfg", size8, TableOptions::Default).unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_WARN_DUPLICATE.cast_signed())
+    );
+    assert_eq!(
+        TBL_UNREGISTER_CALLS.load(Ordering::SeqCst),
+        before_dup_unreg
+    );
+    TBL_SIM_REG_STATUS.store(0, Ordering::SeqCst);
+
+    // Unexpected non-negative status with a valid handle must unregister the handle and return Err
+    let before_unexpected_unreg = TBL_UNREGISTER_CALLS.load(Ordering::SeqCst);
+    TBL_SIM_REG_STATUS.store(
+        cfe_sys::CFE_TBL_INFO_UPDATED.cast_signed(),
+        Ordering::SeqCst,
+    );
+    assert_eq!(
+        Table::register("LinkCfg", size8, TableOptions::Default).unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_INFO_UPDATED.cast_signed())
+    );
+    assert_eq!(
+        TBL_UNREGISTER_CALLS.load(Ordering::SeqCst),
+        before_unexpected_unreg + 1
+    );
+    TBL_SIM_REG_STATUS.store(0, Ordering::SeqCst);
+
+    // Registry full from C stub
+    TBL_SIM_REG_FAIL.store(true, Ordering::SeqCst);
+    assert_eq!(
+        Table::register("LinkCfg", size8, TableOptions::Default).unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_ERR_REGISTRY_FULL)
+    );
+    TBL_SIM_REG_FAIL.store(false, Ordering::SeqCst);
+
+    let mut table = Table::register("LinkCfg", size8, TableOptions::Default).unwrap();
+
+    // Path validation in load_from_file
+    assert_eq!(
+        table.load_from_file("").unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_BAD_ARGUMENT)
+    );
+    assert_eq!(
+        table.load_from_file("/cf/bad\0.tbl").unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_BAD_ARGUMENT)
+    );
+    let long_path = "a".repeat(tbl::MAX_PATH_LEN);
+    assert_eq!(
+        table.load_from_file(&long_path).unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_ERR_FILENAME_TOO_LONG)
+    );
+
+    // Load failure from C stub
+    TBL_SIM_LOAD_FAIL.store(true, Ordering::SeqCst);
+    assert_eq!(
+        table.load_from_file("/cf/link_lab_cfg.tbl").unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_ERR_ACCESS)
+    );
+    TBL_SIM_LOAD_FAIL.store(false, Ordering::SeqCst);
+
+    // Manage error from C stub
+    TBL_SIM_MANAGE_STATUS.store(cfe_sys::CFE_TBL_ERR_NO_ACCESS, Ordering::SeqCst);
+    assert_eq!(
+        table.manage().unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_ERR_NO_ACCESS)
+    );
+    TBL_SIM_MANAGE_STATUS.store(0, Ordering::SeqCst);
+
+    // Never loaded error in read_bytes
+    TBL_SIM_NEVER_LOADED.store(true, Ordering::SeqCst);
+    assert_eq!(
+        table
+            .read_bytes(|_| panic!("should not be called"))
+            .unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_ERR_NEVER_LOADED)
+    );
+    assert_eq!(TBL_RELEASE_CALLS.load(Ordering::SeqCst), 0);
+    TBL_SIM_NEVER_LOADED.store(false, Ordering::SeqCst);
+
+    // Null pointer even with status 0
+    TBL_SIM_GETADDR_NULL.store(true, Ordering::SeqCst);
+    assert_eq!(
+        table
+            .read_bytes(|_| panic!("should not be called"))
+            .unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_ERR_UNREGISTERED)
+    );
+    assert_eq!(TBL_RELEASE_CALLS.load(Ordering::SeqCst), 0);
+    TBL_SIM_GETADDR_NULL.store(false, Ordering::SeqCst);
+
+    // Unregister failure
+    TBL_SIM_UNREG_FAIL.store(true, Ordering::SeqCst);
+    assert_eq!(
+        table.unregister().unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_HANDLE)
+    );
+    TBL_SIM_UNREG_FAIL.store(false, Ordering::SeqCst);
 }

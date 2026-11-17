@@ -9,6 +9,7 @@ pub mod msg;
 pub mod osal;
 pub mod sb;
 pub mod status;
+pub mod tbl;
 
 #[cfg(test)]
 mod tests;
