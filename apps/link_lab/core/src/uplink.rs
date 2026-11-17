@@ -119,19 +119,19 @@ pub struct UplinkState {
     /// Frame-level operating mode (`Frames` vs `Cop1`).
     mode: UplinkMode,
     /// Codec view of the channel.
-    pub table: VcTable<1, 2>,
+    table: VcTable<1, 2>,
     /// Uplink virtual channel ID.
-    pub vc: TcVcId,
+    vc: TcVcId,
     /// Frame receiver engine.
-    pub receiver: FrameReceiver<Tc, 1>,
+    receiver: FrameReceiver<Tc, 1>,
     /// FARM-1 engine.
-    pub farm: Farm1,
+    farm: Farm1,
     /// Segment reassembler.
-    pub reassembler: MapReassembler<Tc, 2, TC_ASSEMBLY_LEN>,
+    reassembler: MapReassembler<Tc, 2, TC_ASSEMBLY_LEN>,
     /// Reassembler configuration for purge on Unlock.
-    pub reassembler_config: MapReassemblerConfig<Tc, 2>,
+    reassembler_config: MapReassemblerConfig<Tc, 2>,
     /// Delivery buffer.
-    pub delivery: DeliveryBuffer,
+    delivery: DeliveryBuffer,
 }
 
 impl UplinkState {

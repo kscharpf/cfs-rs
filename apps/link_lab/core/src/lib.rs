@@ -188,7 +188,7 @@ impl Link {
         match self.level {
             Level::Packets => {}
             Level::Frames | Level::Cop1 => {
-                self.downlink.ocf = self.uplink.farm.clcw().to_octets();
+                self.downlink.ocf = self.uplink.clcw().to_octets();
                 if let Err(e) = self.downlink.slot(
                     now,
                     &mut self.slot_field_buf,

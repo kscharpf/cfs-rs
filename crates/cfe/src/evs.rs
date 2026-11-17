@@ -29,6 +29,18 @@ impl EventType {
     }
 }
 
+const _: () = {
+    assert!(EventType::Debug.to_raw() == 1);
+    assert!(EventType::Information.to_raw() == 2);
+    assert!(EventType::Error.to_raw() == 3);
+    assert!(EventType::Critical.to_raw() == 4);
+    assert!(cfe_sys::CFE_EVS_EventType_CFE_EVS_EventType_DEBUG == 1);
+    assert!(cfe_sys::CFE_EVS_EventType_CFE_EVS_EventType_INFORMATION == 2);
+    assert!(cfe_sys::CFE_EVS_EventType_CFE_EVS_EventType_ERROR == 3);
+    assert!(cfe_sys::CFE_EVS_EventType_CFE_EVS_EventType_CRITICAL == 4);
+    assert!(cfe_sys::CFE_EVS_EventFilter_CFE_EVS_EventFilter_BINARY == 0);
+};
+
 /// Registers the calling application with EVS.
 ///
 /// Uses the default binary filter scheme with no custom filters.
@@ -37,6 +49,9 @@ impl EventType {
 ///
 /// Returns `Err(Status)` if cFE EVS registration fails.
 pub fn register() -> Result<(), Status> {
+    const {
+        assert!(cfe_sys::CFE_EVS_EventFilter_CFE_EVS_EventFilter_BINARY == 0);
+    }
     // SAFETY: NULL filters with count 0 and BINARY scheme (0) is valid and standard in cFS apps.
     let status = unsafe { cfe_sys::CFE_EVS_Register(core::ptr::null(), 0, 0) };
     Status::from_raw(status).result()

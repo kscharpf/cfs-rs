@@ -89,7 +89,7 @@ pub const COMMAND_HEADER_LEN: usize = PRIMARY_HEADER_LEN + 2;
 pub const TELEMETRY_HEADER_LEN: usize = PRIMARY_HEADER_LEN + 6 + 4;
 
 /// Maximum 7-bit command function code (`CFE_MSG_FC_MASK`).
-pub const MAX_FCN_CODE: u16 = 0x7F;
+pub const MAX_FCN_CODE: u16 = u16::from_le_bytes([FCN_CODE_MASK, 0]);
 
 /// Expected CCSDS Packet Version Number for cFE messages (`CFE_MISSION_CCSDSVER`).
 const CCSDS_VERSION: u16 = 0;
