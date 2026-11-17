@@ -92,7 +92,7 @@ fi
 (cd "$aldis_dir" && git checkout "$aldis_rev")
 
 # 6. Run test cases via refapp-harness against core-cpu1 (twice per build)
-cases="a0-empty a1-nominal a1-immediate a1-rejects a1-downlink-faults a2-nominal a2-downlink-corrupt a2-downlink-loss a2-uplink-faults"
+cases="a0-empty a1-nominal a1-immediate a1-rejects a1-downlink-faults a2-nominal a2-downlink-corrupt a2-downlink-loss a2-uplink-faults a3-nominal a3-uplink-disorder a3-uplink-limit a3-uplink-lockout a3-uplink-loss"
 
 run_case() {
     build_type="$1"
