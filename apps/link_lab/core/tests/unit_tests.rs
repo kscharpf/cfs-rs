@@ -561,12 +561,26 @@ fn test_link_config_from_table_bytes_validation_errors() {
         );
     });
     assert_invalid(|b| b[28..30].copy_from_slice(&0_u16.to_ne_bytes()));
-    assert_invalid(|b| b[28..30].copy_from_slice(&7_u16.to_ne_bytes()));
+    assert_invalid(|b| b[28..30].copy_from_slice(&8_u16.to_ne_bytes()));
+    assert_invalid(|b| {
+        b[28..30].copy_from_slice(&6_u16.to_ne_bytes());
+        b[31] = 0; // tc_fecf = false requires >= 7 bytes with SegmentHeaderUse::Present
+    });
     assert_invalid(|b| {
         b[28..30].copy_from_slice(
             &(u16::try_from(TC_FRAME_AREA_LEN).expect("fits in u16") + 1).to_ne_bytes(),
         );
     });
+
+    // Minimum valid tc_max_frame_length (9 with tc_fecf = true, 7 with tc_fecf = false)
+    // must be accepted by both LinkConfig::from_table_bytes and UplinkState::new.
+    for (min_len, fecf) in [(9_u16, true), (7_u16, false)] {
+        let mut min_buf = valid;
+        min_buf[28..30].copy_from_slice(&min_len.to_ne_bytes());
+        min_buf[31] = u8::from(fecf);
+        let cfg = LinkConfig::from_table_bytes(&min_buf).expect("min tc_max_frame_length accepted");
+        assert!(UplinkState::new(&cfg, UplinkMode::Frames).is_ok());
+    }
 
     // tm_fecf must be true (1), and booleans must be 0 or 1
     assert_invalid(|b| b[30] = 0);

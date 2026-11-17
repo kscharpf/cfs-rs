@@ -830,7 +830,7 @@ static TBL_MANAGE_CALLS: AtomicU32 = AtomicU32::new(0);
 static TBL_GETADDR_CALLS: AtomicU32 = AtomicU32::new(0);
 static TBL_RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
 static TBL_SIM_REG_FAIL: AtomicBool = AtomicBool::new(false);
-static TBL_SIM_REG_DUPLICATE: AtomicBool = AtomicBool::new(false);
+static TBL_SIM_REG_STATUS: AtomicI32 = AtomicI32::new(0);
 static TBL_SIM_UNREG_FAIL: AtomicBool = AtomicBool::new(false);
 static TBL_SIM_LOAD_FAIL: AtomicBool = AtomicBool::new(false);
 static TBL_SIM_MANAGE_STATUS: AtomicI32 = AtomicI32::new(0);
@@ -850,7 +850,7 @@ fn reset_tbl_stubs() {
     TBL_GETADDR_CALLS.store(0, Ordering::SeqCst);
     TBL_RELEASE_CALLS.store(0, Ordering::SeqCst);
     TBL_SIM_REG_FAIL.store(false, Ordering::SeqCst);
-    TBL_SIM_REG_DUPLICATE.store(false, Ordering::SeqCst);
+    TBL_SIM_REG_STATUS.store(0, Ordering::SeqCst);
     TBL_SIM_UNREG_FAIL.store(false, Ordering::SeqCst);
     TBL_SIM_LOAD_FAIL.store(false, Ordering::SeqCst);
     TBL_SIM_MANAGE_STATUS.store(0, Ordering::SeqCst);
@@ -884,10 +884,7 @@ pub unsafe extern "C" fn CFE_TBL_Register(
     }
     // SAFETY: TblHandlePtr is checked non-null.
     unsafe { *TblHandlePtr = 7 };
-    if TBL_SIM_REG_DUPLICATE.load(Ordering::SeqCst) {
-        return cfe_sys::CFE_TBL_WARN_DUPLICATE.cast_signed();
-    }
-    0
+    TBL_SIM_REG_STATUS.load(Ordering::SeqCst)
 }
 
 #[unsafe(no_mangle)]
@@ -1083,14 +1080,66 @@ fn test_tbl_error_handling() {
         Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_NAME)
     );
 
+    // CFE_TBL_INFO_RECOVERED_TBL and CFE_TBL_WARN_NOT_CRITICAL succeed and drop unregisters them
+    for (status, opts) in [
+        (
+            cfe_sys::CFE_TBL_INFO_RECOVERED_TBL.cast_signed(),
+            TableOptions::Critical,
+        ),
+        (
+            cfe_sys::CFE_TBL_INFO_RECOVERED_TBL.cast_signed(),
+            TableOptions::DoubleBufferedCritical,
+        ),
+        (
+            cfe_sys::CFE_TBL_WARN_NOT_CRITICAL.cast_signed(),
+            TableOptions::Critical,
+        ),
+    ] {
+        let before_unreg = TBL_UNREGISTER_CALLS.load(Ordering::SeqCst);
+        TBL_SIM_REG_STATUS.store(status, Ordering::SeqCst);
+        {
+            let recovered = Table::register("CritCfg", size8, opts).unwrap();
+            assert_eq!(recovered.handle(), 7);
+            assert_eq!(TBL_UNREGISTER_CALLS.load(Ordering::SeqCst), before_unreg);
+        }
+        assert_eq!(
+            TBL_UNREGISTER_CALLS.load(Ordering::SeqCst),
+            before_unreg + 1
+        );
+    }
+    TBL_SIM_REG_STATUS.store(0, Ordering::SeqCst);
+
     // CFE_TBL_WARN_DUPLICATE must return Err without owning or unregistering the aliased handle
-    TBL_SIM_REG_DUPLICATE.store(true, Ordering::SeqCst);
+    let before_dup_unreg = TBL_UNREGISTER_CALLS.load(Ordering::SeqCst);
+    TBL_SIM_REG_STATUS.store(
+        cfe_sys::CFE_TBL_WARN_DUPLICATE.cast_signed(),
+        Ordering::SeqCst,
+    );
     assert_eq!(
         Table::register("LinkCfg", size8, TableOptions::Default).unwrap_err(),
         Status::from_raw(cfe_sys::CFE_TBL_WARN_DUPLICATE.cast_signed())
     );
-    assert_eq!(TBL_UNREGISTER_CALLS.load(Ordering::SeqCst), 0);
-    TBL_SIM_REG_DUPLICATE.store(false, Ordering::SeqCst);
+    assert_eq!(
+        TBL_UNREGISTER_CALLS.load(Ordering::SeqCst),
+        before_dup_unreg
+    );
+    TBL_SIM_REG_STATUS.store(0, Ordering::SeqCst);
+
+    // Unexpected non-negative status with a valid handle must unregister the handle and return Err
+    let before_unexpected_unreg = TBL_UNREGISTER_CALLS.load(Ordering::SeqCst);
+    TBL_SIM_REG_STATUS.store(
+        cfe_sys::CFE_TBL_INFO_UPDATED.cast_signed(),
+        Ordering::SeqCst,
+    );
+    assert_eq!(
+        Table::register("LinkCfg", size8, TableOptions::Default).unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_TBL_INFO_UPDATED.cast_signed())
+    );
+    assert_eq!(
+        TBL_UNREGISTER_CALLS.load(Ordering::SeqCst),
+        before_unexpected_unreg + 1
+    );
+    TBL_SIM_REG_STATUS.store(0, Ordering::SeqCst);
 
     // Registry full from C stub
     TBL_SIM_REG_FAIL.store(true, Ordering::SeqCst);

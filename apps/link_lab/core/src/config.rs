@@ -2,11 +2,10 @@
 
 use aldis::cop1::farm1::Farm1Window;
 use aldis::core::ErrorKind;
-use aldis::tc::PhysicalChannelConfig;
 use refapp_scenario::generated::{SPACECRAFT_ID, apid, cop1, link, tc, tm};
 
 use crate::downlink::TM_FRAME_LEN;
-use crate::uplink::TC_FRAME_AREA_LEN;
+use crate::uplink::build_tc_vc_table;
 
 /// Maximum number of APID-to-VC routing entries in [`LinkConfig`].
 pub const MAX_APID_ROUTES: usize = 8;
@@ -194,14 +193,12 @@ impl LinkConfig {
         if spacecraft_id > 0x03FF
             || usize::from(tm_frame_length) != TM_FRAME_LEN
             || !tm_fecf
-            || usize::from(tc_max_frame_length) > TC_FRAME_AREA_LEN
             || cop1_status_field > 0x07
             || route_count > MAX_APID_ROUTES
         {
             return Err(ErrorKind::InvalidConfig);
         }
-        PhysicalChannelConfig::new(usize::from(tc_max_frame_length), uplink_fecf)
-            .map_err(|e| e.kind())?;
+        build_tc_vc_table(spacecraft_id, tc_max_frame_length, uplink_fecf).map_err(|e| e.kind())?;
         Farm1Window::retransmission_allowed(u16::from(cop1_w)).map_err(|e| e.kind())?;
 
         if bytes.get(36..40) != Some(&[0_u8; 4][..]) {

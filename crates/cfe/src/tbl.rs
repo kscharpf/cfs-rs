@@ -118,9 +118,14 @@ impl Table {
     /// # Errors
     ///
     /// Returns `Err(Status)` with `CFE_TBL_ERR_INVALID_NAME` if `name` is invalid,
-    /// or the status returned by `CFE_TBL_Register` for any non-`CFE_SUCCESS`
-    /// result (including `CFE_TBL_WARN_DUPLICATE`, which aliases an existing handle).
+    /// or the status returned by `CFE_TBL_Register` for any status other than
+    /// `CFE_SUCCESS`, `CFE_TBL_INFO_RECOVERED_TBL`, and `CFE_TBL_WARN_NOT_CRITICAL`
+    /// (including `CFE_TBL_WARN_DUPLICATE`, which aliases an existing handle).
     pub fn register(name: &str, size: NonZeroUsize, options: TableOptions) -> Result<Self, Status> {
+        const INFO_RECOVERED_TBL: i32 = cfe_sys::CFE_TBL_INFO_RECOVERED_TBL.cast_signed();
+        const WARN_NOT_CRITICAL: i32 = cfe_sys::CFE_TBL_WARN_NOT_CRITICAL.cast_signed();
+        const WARN_DUPLICATE: i32 = cfe_sys::CFE_TBL_WARN_DUPLICATE.cast_signed();
+
         if name.is_empty() || name.len() >= MAX_TABLE_NAME_LEN || name.as_bytes().contains(&0) {
             return Err(Status::from_raw(cfe_sys::CFE_TBL_ERR_INVALID_NAME));
         }
@@ -142,14 +147,23 @@ impl Table {
             )
         };
         let status = Status::from_raw(raw_status);
-        if raw_status != 0 || handle == BAD_TABLE_HANDLE {
-            Err(status)
-        } else {
-            Ok(Self {
+        match raw_status {
+            0 | INFO_RECOVERED_TBL | WARN_NOT_CRITICAL if handle != BAD_TABLE_HANDLE => Ok(Self {
                 handle,
                 size,
                 _marker: core::marker::PhantomData,
-            })
+            }),
+            WARN_DUPLICATE => Err(status),
+            _ => {
+                if raw_status >= 0 && handle != BAD_TABLE_HANDLE {
+                    // SAFETY: `CFE_TBL_Register` returned an unexpected non-negative status with
+                    // a newly allocated handle; unregister it so the table slot is not leaked.
+                    unsafe {
+                        let _ = cfe_sys::CFE_TBL_Unregister(handle);
+                    }
+                }
+                Err(status)
+            }
         }
     }
 
