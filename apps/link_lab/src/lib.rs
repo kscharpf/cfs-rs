@@ -293,6 +293,13 @@ fn handle_tlm_packet(
     }
 }
 
+/// Records and submits a telemetry packet to the link layer.
+fn accept_tlm_packet(link: &mut Link, tx_sink: &mut LinkDownlinkSink, now: Instant, pkt: &[u8]) {
+    let apid = packet_apid(pkt).unwrap_or(0);
+    send_record_packet_out(apid, pkt);
+    link.accept_packet(now, pkt, tx_sink);
+}
+
 /// Handles `WAKE_TX` turn from `step_lab`.
 fn handle_wake_tx(
     link: &mut Link,
@@ -306,12 +313,10 @@ fn handle_wake_tx(
         let mut tx_sink = LinkDownlinkSink;
 
         // 1. Drain pending TLM packets buffered before WAKE_TX
-        for i in 0..*pending_count {
-            if let Some(Some(p)) = pending_tlm.get_mut(i) {
+        for slot in pending_tlm.iter_mut().take(*pending_count) {
+            if let Some(p) = slot.take() {
                 let pkt = p.data.get(..usize::from(p.len)).unwrap_or(&[]);
-                let apid = packet_apid(pkt).unwrap_or(0);
-                send_record_packet_out(apid, pkt);
-                link.accept_packet(now, pkt, &mut tx_sink);
+                accept_tlm_packet(link, &mut tx_sink, now, pkt);
             }
         }
         *pending_count = 0;
@@ -331,9 +336,7 @@ fn handle_wake_tx(
                             "LINK_LAB: Telemetry packet exceeds MAX_UNIT_LEN",
                         );
                     } else {
-                        let apid = packet_apid(pkt).unwrap_or(0);
-                        send_record_packet_out(apid, pkt);
-                        link.accept_packet(now, pkt, &mut tx_sink);
+                        accept_tlm_packet(link, &mut tx_sink, now, pkt);
                     }
                 }
             } else {
@@ -417,10 +420,8 @@ fn init_app() -> Result<Pipe, ()> {
     Ok(pipe)
 }
 
-/// Application entry point exported to cFE.
-#[expect(unsafe_code, reason = "cFS entry point must be extern \"C\"")]
-#[unsafe(no_mangle)]
-pub extern "C" fn LINK_LAB_AppMain() {
+/// Runs the `link_lab` initialization, Software Bus dispatch loop, and teardown.
+fn app_main() {
     let Ok(mut pipe) = init_app() else {
         es::exit_app(RunStatus::AppError);
         return;
@@ -508,6 +509,13 @@ pub extern "C" fn LINK_LAB_AppMain() {
 
     let _ = pipe.delete();
     es::exit_app(run_status);
+}
+
+/// Application entry point exported to cFE.
+#[expect(unsafe_code, reason = "cFS entry point must be extern \"C\"")]
+#[unsafe(no_mangle)]
+pub extern "C" fn LINK_LAB_AppMain() {
+    app_main();
 }
 
 #[cfg(not(test))]

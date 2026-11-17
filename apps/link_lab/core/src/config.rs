@@ -20,15 +20,6 @@ impl DataVc {
             Self::Payload => tm::VCID_PAYLOAD,
         }
     }
-
-    /// Returns the generator index (0 for Realtime, 1 for Payload).
-    #[must_use]
-    pub const fn index(self) -> usize {
-        match self {
-            Self::Realtime => 0,
-            Self::Payload => 1,
-        }
-    }
 }
 
 /// Managed parameters of the link layer (reference-application §4).
