@@ -15,6 +15,7 @@
     reason = "integration tests use standard test ergonomics (assertions, panics, indexing, unwrap)"
 )]
 
+use aldis::core::ErrorKind;
 use aldis::core::ids::FrameSeqNum;
 use aldis::core::security::SecurityLayout;
 use aldis::tc::{
@@ -26,7 +27,8 @@ use aldis::tm::{TmFrame, TmPhysicalChannelConfig};
 use link_lab_core::{
     APP_DOWNLINK_REFUSED, APP_FARM1_STATE, APP_FARM1_UNLOCK, APP_FRAME_DISCARDED,
     APP_FRAME_REJECTED, APP_PACKET_REJECTED, APP_SEQUENCE_VIOLATION, APP_UNKNOWN_MAP, DownlinkSink,
-    Level, Link, LinkConfig, TM_FRAME_LEN, UplinkSink,
+    Level, Link, LinkConfig, TC_FRAME_AREA_LEN, TC_REASSEMBLY_AREA_LEN, TM_FRAME_LEN,
+    UplinkBuffers, UplinkMode, UplinkSink, UplinkState,
 };
 use refapp_scenario::Instant;
 use refapp_scenario::generated::{SPACECRAFT_ID, apid, tc, tm};
@@ -298,6 +300,82 @@ fn test_frames_level_uplink_type_bd_and_faults() {
     assert_eq!(up_sink.packets.len(), 1);
     assert_eq!(up_sink.events.len(), 2);
     assert_eq!(up_sink.events[1].0, APP_UNKNOWN_MAP);
+}
+
+#[test]
+fn test_frames_mode_rejects_type_ad_and_bc_without_stepping_farm() {
+    let config = LinkConfig::default();
+    let mut uplink = UplinkState::new(&config, UplinkMode::Frames).expect("create uplink");
+    assert_eq!(uplink.mode(), UplinkMode::Frames);
+
+    let table = build_tc_table();
+    let t0 = Instant::from_micros(0);
+    let mut up_sink = TestUplinkSink::default();
+    let mut frame_area = [0_u8; TC_FRAME_AREA_LEN];
+    let mut fdu_buf = [0_u8; TC_FRAME_AREA_LEN];
+    let mut reassembly_area = [0_u8; TC_REASSEMBLY_AREA_LEN];
+
+    let initial_clcw = uplink.clcw();
+
+    // Type-AD frame must be rejected cleanly without stepping FARM-1.
+    let cmd_pkt = make_space_packet(apid::COMMANDS, true, 0, &[0xAA, 0xBB]);
+    let sequence_frame = build_tc_frame(&table, FrameType::Ad, 0, tc::MAP_COMMANDS, &cmd_pkt);
+    {
+        let mut buffers = UplinkBuffers {
+            frame_area: &mut frame_area,
+            fdu_buf: &mut fdu_buf,
+            reassembly_area: &mut reassembly_area,
+        };
+        uplink.accept(t0, &sequence_frame, &mut buffers, &mut up_sink);
+    }
+    assert_eq!(up_sink.packets.len(), 0);
+    assert_eq!(
+        up_sink.events,
+        vec![(
+            APP_FRAME_REJECTED,
+            vec![u64::from(ErrorKind::InvalidField.code())],
+        )]
+    );
+    assert_eq!(uplink.clcw(), initial_clcw);
+
+    // Type-BC Unlock frame must also be rejected cleanly without stepping FARM-1.
+    let unlock_ctrl = build_tc_unlock(&table);
+    {
+        let mut buffers = UplinkBuffers {
+            frame_area: &mut frame_area,
+            fdu_buf: &mut fdu_buf,
+            reassembly_area: &mut reassembly_area,
+        };
+        uplink.accept(t0, &unlock_ctrl, &mut buffers, &mut up_sink);
+    }
+    assert_eq!(up_sink.packets.len(), 0);
+    assert_eq!(
+        up_sink.events,
+        vec![
+            (
+                APP_FRAME_REJECTED,
+                vec![u64::from(ErrorKind::InvalidField.code())],
+            ),
+            (
+                APP_FRAME_REJECTED,
+                vec![u64::from(ErrorKind::InvalidField.code())],
+            ),
+        ]
+    );
+    assert_eq!(uplink.clcw(), initial_clcw);
+
+    // Type-BD frame still succeeds in Frames mode.
+    let bypass_frame = build_tc_frame(&table, FrameType::Bd, 0, tc::MAP_COMMANDS, &cmd_pkt);
+    {
+        let mut buffers = UplinkBuffers {
+            frame_area: &mut frame_area,
+            fdu_buf: &mut fdu_buf,
+            reassembly_area: &mut reassembly_area,
+        };
+        uplink.accept(t0, &bypass_frame, &mut buffers, &mut up_sink);
+    }
+    assert_eq!(up_sink.packets, vec![cmd_pkt]);
+    assert_eq!(up_sink.events.len(), 2);
 }
 
 #[test]
