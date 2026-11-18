@@ -16,6 +16,7 @@ doctest = false
 cfe = { workspace = true }
 cfe-sys = { workspace = true }
 link-lab-core = { workspace = true }
+node-glue = { workspace = true }
 step-lab-core = { workspace = true }
 
 [lints]

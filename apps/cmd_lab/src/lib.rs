@@ -3,138 +3,40 @@
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
 
+use aldis::core::ErrorKind;
+use aldis::spp::{PacketType, SequenceFlags, SpacePacket};
 use cfe::es::{self, RunStatus};
 use cfe::evs::{self, EventType};
-use cfe::sb::{MsgId, Pipe, Qos, Timeout, transmit_msg};
-use refapp_flight::FlightNode;
+use cfe::sb::{MsgId, Pipe, Qos, Timeout};
+use node_glue::{send_done, send_record_event, send_sb_msg, send_tlm_packet};
+use refapp_flight::command::{self, Call, Command, Reject, Timing};
+use refapp_flight::dump::Dump;
+use refapp_flight::event::{APP_CMD_RECEIVED, APP_PACKET_REJECTED, APP_TABLE_RECEIVED, Event};
 use refapp_flight::layout::{PayloadMode, Status};
-use refapp_scenario::{Apid, Delivered, Instant, Node, Output, StepInput};
+use refapp_flight::queue::TimeTagQueue;
+use refapp_flight::table::{Activation, TableStore};
+use refapp_flight::{Downlink, Stream};
+use refapp_scenario::generated::apid;
+use refapp_scenario::{Apid, Instant, Output};
 use step_lab_core::msg::{
-    CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, RecordMsg, ScnStatus, ScnStatusMsg, TlmPacketMsg,
-    WakeCmdMsg,
+    CmdPacketDoneMsg, CmdPacketMsg, ScnPayloadMode, ScnStatus, ScnStatusMsg, WakeTimeMsg,
 };
 
 /// Event ID for `cmd_lab` start-up event.
 pub const CMD_LAB_STARTUP_EID: u16 = 1;
 
-/// Prepares a Software Bus message header by setting its message ID and total size.
-fn prepare_msg(msg: &mut cfe_sys::CFE_MSG_Message_t, msg_id: u32, size: usize) -> Result<(), ()> {
-    cfe::msg::set_msg_id(msg, MsgId::from_u32(msg_id)).map_err(|_| ())?;
-    cfe::msg::set_size(msg, size).map_err(|_| ())
-}
-
-/// Sends a `DONE` message to `step_lab` signaling turn completion.
-fn send_done(next_deadline: Option<u64>) {
-    let mut done = DoneMsg::new(next_deadline);
-    if prepare_msg(
-        done.msg_mut(),
-        cfe_sys::NODE_DONE_MID,
-        core::mem::size_of::<DoneMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(4, EventType::Critical, "CMD_LAB: Failed to init DONE msg");
-        return;
-    }
-    if transmit_msg(done.msg(), true).is_err() {
-        let _ = evs::send_event(
-            5,
-            EventType::Critical,
-            "CMD_LAB: Failed to transmit DONE msg",
-        );
-    }
-}
-
 /// Sends a `CMD_PACKET_DONE` message to `link_lab` signaling command packet processing complete.
 fn send_cmd_packet_done() {
     let mut done = CmdPacketDoneMsg::new();
-    if prepare_msg(
+    send_sb_msg(
         done.msg_mut(),
         cfe_sys::NODE_CMD_PACKET_DONE_MID,
         core::mem::size_of::<CmdPacketDoneMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(
-            6,
-            EventType::Critical,
-            "CMD_LAB: Failed to init CMD_PACKET_DONE msg",
-        );
-        return;
-    }
-    if transmit_msg(done.msg(), true).is_err() {
-        let _ = evs::send_event(
-            7,
-            EventType::Critical,
-            "CMD_LAB: Failed to transmit CMD_PACKET_DONE msg",
-        );
-    }
-}
-
-/// Sends a telemetry packet to `link_lab`.
-fn send_tlm_packet(packet: &[u8]) {
-    let Some(mut tlm) = TlmPacketMsg::new(packet) else {
-        let _ = evs::send_event(
-            8,
-            EventType::Critical,
-            "CMD_LAB: Packet too long for TlmPacketMsg",
-        );
-        return;
-    };
-    if prepare_msg(
-        tlm.msg_mut(),
-        cfe_sys::NODE_TLM_PACKET_MID,
-        core::mem::size_of::<TlmPacketMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(
-            9,
-            EventType::Critical,
-            "CMD_LAB: Failed to init TLM_PACKET msg",
-        );
-        return;
-    }
-    if transmit_msg(tlm.msg(), true).is_err() {
-        let _ = evs::send_event(
-            10,
-            EventType::Critical,
-            "CMD_LAB: Failed to transmit TLM_PACKET msg",
-        );
-    }
-}
-
-/// Sends an application event to `step_lab`.
-fn send_record_event(code: u16, args: &[u64]) {
-    let Some(mut rec) = RecordMsg::new_event(code, args) else {
-        let _ = evs::send_event(
-            11,
-            EventType::Critical,
-            "CMD_LAB: Too many args for RecordMsg event",
-        );
-        return;
-    };
-    if prepare_msg(
-        rec.msg_mut(),
-        cfe_sys::NODE_RECORD_MID,
-        core::mem::size_of::<RecordMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(
-            12,
-            EventType::Critical,
-            "CMD_LAB: Failed to init RECORD msg",
-        );
-        return;
-    }
-    if transmit_msg(rec.msg(), true).is_err() {
-        let _ = evs::send_event(
-            13,
-            EventType::Critical,
-            "CMD_LAB: Failed to transmit RECORD msg",
-        );
-    }
+        6,
+        "CMD_LAB: Failed to init CMD_PACKET_DONE msg",
+        7,
+        "CMD_LAB: Failed to transmit CMD_PACKET_DONE msg",
+    );
 }
 
 /// Broadcasts the current scenario [`Status`] to `hk_lab` and `pl_lab`.
@@ -146,32 +48,23 @@ fn send_scn_status(status: &Status) {
         table_id: status.table_id,
         table_crc: status.table_crc,
         dumps_completed: status.dumps_completed,
-        payload_mode_on: status.payload_mode == PayloadMode::On,
+        payload_mode: match status.payload_mode {
+            PayloadMode::Off => ScnPayloadMode::Off,
+            PayloadMode::On => ScnPayloadMode::On,
+        },
     });
-    if prepare_msg(
+    send_sb_msg(
         msg.msg_mut(),
         cfe_sys::NODE_SCN_STATUS_MID,
         core::mem::size_of::<ScnStatusMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(
-            14,
-            EventType::Critical,
-            "CMD_LAB: Failed to init SCN_STATUS msg",
-        );
-        return;
-    }
-    if transmit_msg(msg.msg(), true).is_err() {
-        let _ = evs::send_event(
-            15,
-            EventType::Critical,
-            "CMD_LAB: Failed to transmit SCN_STATUS msg",
-        );
-    }
+        14,
+        "CMD_LAB: Failed to init SCN_STATUS msg",
+        15,
+        "CMD_LAB: Failed to transmit SCN_STATUS msg",
+    );
 }
 
-/// Output sink for `FlightNode` command/dump execution inside `cmd_lab`.
+/// Output sink for command/dump execution inside `cmd_lab`.
 struct CmdSink;
 
 impl Output for CmdSink {
@@ -188,14 +81,197 @@ impl Output for CmdSink {
     }
 }
 
-/// No-op sink used when probing `FlightNode::step` for the next command/dump deadline.
-struct NullSink;
+/// Command handler, time-tag queue, table store, and memory dump state for `cmd_lab`.
+#[derive(Default)]
+struct CmdApp {
+    downlink: Downlink,
+    status: Status,
+    queue: TimeTagQueue,
+    table: TableStore,
+    dump: Option<Dump>,
+}
 
-impl Output for NullSink {
-    fn unit(&mut self, _octets: &[u8]) {}
-    fn packet_out(&mut self, _apid: Apid, _octets: &[u8]) {}
-    fn packet_in(&mut self, _apid: Apid, _octets: &[u8]) {}
-    fn app_event(&mut self, _code: u16, _args: &[u64]) {}
+impl CmdApp {
+    /// Handles one delivered command or table-upload Space Packet.
+    fn handle_packet(&mut self, now: Instant, unit: &[u8], out: &mut dyn Output) {
+        let packet = match SpacePacket::decode_exact(unit) {
+            Ok(packet) => packet,
+            Err(e) => return reject_unit(out, e.kind()),
+        };
+        if packet.packet_type() != PacketType::Telecommand
+            || packet.sequence_flags() != SequenceFlags::Unsegmented
+            || packet.has_secondary_header()
+        {
+            return reject_unit(out, ErrorKind::InvalidField);
+        }
+        let data = packet.data_field();
+        match packet.apid().get() {
+            apid::COMMANDS => {
+                self.deliver_command(now, command::parse(packet.sequence_count(), data), out);
+            }
+            apid::TABLE_UPLOAD => self.deliver_table(data, out),
+            _ => reject_unit(out, ErrorKind::UnknownChannel),
+        }
+    }
+
+    fn deliver_command(&mut self, now: Instant, command: Command, out: &mut dyn Output) {
+        out.app_event(
+            APP_CMD_RECEIVED,
+            &[u64::from(command.function), u64::from(command.seq)],
+        );
+        match command.timing {
+            Timing::Immediate => self.execute(now, command, out),
+            Timing::BeforeRun => self.reject(now, &command, Reject::TimeTagPast, out),
+            Timing::At(at) if at < now => {
+                self.reject(now, &command, Reject::TimeTagPast, out);
+            }
+            Timing::At(at) => {
+                if let Err(reason) = self.queue.push(at, command) {
+                    self.reject(now, &command, reason, out);
+                }
+            }
+        }
+    }
+
+    fn deliver_table(&mut self, data: &[u8], out: &mut dyn Output) {
+        match self.table.store(data) {
+            Ok((table_id, length)) => {
+                out.app_event(
+                    APP_TABLE_RECEIVED,
+                    &[u64::from(table_id.get()), u64::from(length.get())],
+                );
+            }
+            Err(e) => reject_unit(out, e.kind()),
+        }
+    }
+
+    /// Executes due time-tagged commands and updates queue occupancy in `status`.
+    fn execute_due(&mut self, now: Instant, out: &mut dyn Output) {
+        while let Some(command) = self.queue.pop_due(now) {
+            self.execute(now, command, out);
+        }
+        self.status.queue_occupancy = self.queue.occupancy();
+    }
+
+    fn execute(&mut self, now: Instant, command: Command, out: &mut dyn Output) {
+        let call = match command.call {
+            Ok(call) => call,
+            Err(reason) => return self.reject(now, &command, reason, out),
+        };
+        if matches!(call, Call::DumpMemory(_)) && self.dump.is_some() {
+            return self.reject(now, &command, Reject::DumpInProgress, out);
+        }
+        self.status.commands_executed = self.status.commands_executed.wrapping_add(1);
+        self.report(
+            now,
+            Event::CmdExecuted {
+                function: command.function,
+                seq: command.seq,
+            },
+            out,
+        );
+        match call {
+            Call::Noop => {}
+            Call::DumpMemory(region) => match Dump::start(region, now) {
+                Ok(dump) => self.dump = Some(dump),
+                Err(e) => reject_unit(out, e.kind()),
+            },
+            Call::ActivateTable { table_id, crc } => {
+                let event = match self.table.activate(table_id, crc) {
+                    Activation::NoTable => Event::TableRejected {
+                        table_id: u16::from(table_id),
+                        reason: 1,
+                    },
+                    Activation::CrcMismatch => Event::TableRejected {
+                        table_id: u16::from(table_id),
+                        reason: 2,
+                    },
+                    Activation::Activated { length, crc } => {
+                        self.status.table_id = table_id;
+                        self.status.table_crc = crc.get();
+                        Event::TableActivated {
+                            table_id: u16::from(table_id),
+                            length: length.get(),
+                            crc: crc.get(),
+                        }
+                    }
+                };
+                self.report(now, event, out);
+            }
+            Call::SetPayloadMode(mode) => {
+                self.status.payload_mode = mode;
+                self.report(now, Event::PayloadMode { mode }, out);
+            }
+        }
+    }
+
+    fn reject(&mut self, now: Instant, command: &Command, reason: Reject, out: &mut dyn Output) {
+        self.status.commands_rejected = self.status.commands_rejected.wrapping_add(1);
+        self.report(
+            now,
+            Event::CmdRejected {
+                function: command.function,
+                seq: command.seq,
+                reason: reason.reason(),
+            },
+            out,
+        );
+    }
+
+    /// Emits all memory dump segments due up to `now`.
+    fn dump_segments(&mut self, now: Instant, out: &mut dyn Output) {
+        let Some(mut dump) = self.dump.take() else {
+            return;
+        };
+        loop {
+            if dump.due() > now {
+                self.dump = Some(dump);
+                return;
+            }
+            match dump.send(&mut self.downlink, out) {
+                Ok(segment) if segment.last => {
+                    self.status.dumps_completed = self.status.dumps_completed.wrapping_add(1);
+                    let region = dump.region();
+                    self.report(
+                        segment.at,
+                        Event::DumpCompleted {
+                            address: region.address(),
+                            length: region.length(),
+                        },
+                        out,
+                    );
+                    return;
+                }
+                Ok(_) => {}
+                Err(e) => return reject_unit(out, e.kind()),
+            }
+        }
+    }
+
+    fn report(&mut self, now: Instant, event: Event, out: &mut dyn Output) {
+        if let Err(e) = self.downlink.send(
+            Stream::Events,
+            SequenceFlags::Unsegmented,
+            now,
+            &event.user_data(),
+            out,
+        ) {
+            reject_unit(out, e.kind());
+        }
+    }
+
+    /// Returns the earliest next deadline from the time-tag queue or active dump.
+    fn next_deadline(&self) -> Option<u64> {
+        [self.queue.next_due(), self.dump.as_ref().map(Dump::due)]
+            .into_iter()
+            .flatten()
+            .min()
+            .map(Instant::as_micros)
+    }
+}
+
+fn reject_unit(out: &mut dyn Output, kind: ErrorKind) {
+    out.app_event(APP_PACKET_REJECTED, &[u64::from(kind.code())]);
 }
 
 /// Runs the `cmd_lab` initialization, Software Bus dispatch loop, and teardown.
@@ -245,8 +321,8 @@ fn app_main() {
         "CMD_LAB App Initialized. Version 0.1.0",
     );
 
-    // 5. Initialize flight node state.
-    let mut flight_node = FlightNode::new();
+    // 5. Initialize command/dump state.
+    let mut cmd_app = CmdApp::default();
 
     // 6. Run ES loop, pending on the pipe.
     let mut run_status = RunStatus::AppRun;
@@ -261,8 +337,8 @@ fn app_main() {
 
         match mid.as_u32() {
             cfe_sys::NODE_START_MID => {
-                flight_node = FlightNode::new();
-                send_scn_status(flight_node.status());
+                cmd_app = CmdApp::default();
+                send_scn_status(&cmd_app.status);
                 send_done(None);
             }
             cfe_sys::NODE_CMD_PACKET_MID => {
@@ -270,30 +346,30 @@ fn app_main() {
                     let now = Instant::from_micros(cmd.now);
                     let pkt = cmd.packet_bytes();
                     let mut sink = CmdSink;
-                    flight_node.handle_delivered(now, Delivered::new(&[pkt]), &mut sink);
+                    cmd_app.handle_packet(now, pkt, &mut sink);
+                } else {
+                    let _ = evs::send_event(
+                        16,
+                        EventType::Error,
+                        "CMD_LAB: Malformed CmdPacketMsg received",
+                    );
                 }
-                send_scn_status(flight_node.status());
                 send_cmd_packet_done();
             }
             cfe_sys::NODE_WAKE_CMD_MID => {
-                if let Some(wake) = WakeCmdMsg::from_bytes(buf.as_bytes()) {
+                if let Some(wake) = WakeTimeMsg::from_bytes(buf.as_bytes()) {
                     let now = Instant::from_micros(wake.now);
                     let mut sink = CmdSink;
-                    flight_node.execute_due(now, &mut sink);
-                    flight_node.dump_segments(now, &mut sink);
-                    send_scn_status(flight_node.status());
-                    let mut probe = flight_node.clone();
-                    let next_deadline = probe.step(
-                        &StepInput {
-                            now,
-                            delivered: Delivered::new(&[]),
-                            ops: &[],
-                            tx_slot: false,
-                        },
-                        &mut NullSink,
-                    );
-                    send_done(next_deadline.map(Instant::as_micros));
+                    cmd_app.execute_due(now, &mut sink);
+                    cmd_app.dump_segments(now, &mut sink);
+                    send_scn_status(&cmd_app.status);
+                    send_done(cmd_app.next_deadline());
                 } else {
+                    let _ = evs::send_event(
+                        17,
+                        EventType::Error,
+                        "CMD_LAB: Malformed WakeTimeMsg received",
+                    );
                     send_done(None);
                 }
             }

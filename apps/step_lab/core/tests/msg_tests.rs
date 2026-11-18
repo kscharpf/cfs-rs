@@ -9,8 +9,8 @@
 
 use step_lab_core::msg::{
     CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, LinkLevel, MAX_EVENT_ARGS, MAX_UNIT_LEN, RecordKind,
-    RecordMsg, ScnStatus, ScnStatusMsg, StartMsg, TlmPacketMsg, UnitMsg, WakeCmdMsg, WakeHkMsg,
-    WakePlMsg, WakeRxMsg, WakeTxMsg,
+    RecordMsg, ScnPayloadMode, ScnStatus, ScnStatusMsg, StartMsg, TlmPacketMsg, UnitMsg, WakeRxMsg,
+    WakeTimeMsg, WakeTurn, WakeTxMsg,
 };
 use step_lab_core::proto::{EventArgs, NodeOutput};
 
@@ -125,25 +125,31 @@ fn test_done_msg_round_trip() {
 
 #[test]
 fn test_wake_cmd_hk_pl_msg_round_trip() {
-    for (msg, expected_now) in [
-        (WakeCmdMsg::new(42_000), 42_000),
-        (WakeHkMsg::new(100_000), 100_000),
-        (WakePlMsg::new(500_000), 500_000),
+    assert_eq!(WakeTurn::ORDER, [WakeTurn::Cmd, WakeTurn::Hk, WakeTurn::Pl]);
+    assert_eq!(WakeTurn::Cmd.msg_id(), cfe_sys::NODE_WAKE_CMD_MID);
+    assert_eq!(WakeTurn::Hk.msg_id(), cfe_sys::NODE_WAKE_HK_MID);
+    assert_eq!(WakeTurn::Pl.msg_id(), cfe_sys::NODE_WAKE_PL_MID);
+
+    for (turn, expected_now) in [
+        (WakeTurn::Cmd, 42_000),
+        (WakeTurn::Hk, 100_000),
+        (WakeTurn::Pl, 500_000),
     ] {
+        let msg = WakeTimeMsg::new(expected_now);
         assert_eq!(msg.now, expected_now);
 
         // SAFETY: Struct is POD and safe to inspect as bytes.
         let bytes = unsafe {
             core::slice::from_raw_parts(
                 core::ptr::from_ref(&msg).cast::<u8>(),
-                core::mem::size_of::<WakeCmdMsg>(),
+                core::mem::size_of::<WakeTimeMsg>(),
             )
         };
-        let decoded = WakeCmdMsg::from_bytes(bytes).unwrap();
+        let decoded = turn.decode(bytes).unwrap();
         assert_eq!(decoded.now, expected_now);
     }
 
-    assert!(WakeCmdMsg::from_bytes(&[0u8; 8]).is_none());
+    assert!(WakeTimeMsg::from_bytes(&[0u8; 8]).is_none());
 }
 
 #[test]
@@ -155,10 +161,10 @@ fn test_scn_status_msg_round_trip() {
         table_id: 2,
         table_crc: 0x0C4F,
         dumps_completed: 1,
-        payload_mode_on: false,
+        payload_mode: ScnPayloadMode::Off,
     };
-    let msg = ScnStatusMsg::new(status);
-    assert_eq!(msg.status(), status);
+    let mut msg = ScnStatusMsg::new(status);
+    assert_eq!(msg.status(), Some(status));
 
     // SAFETY: Struct is POD and safe to inspect as bytes.
     let bytes = unsafe {
@@ -168,14 +174,16 @@ fn test_scn_status_msg_round_trip() {
         )
     };
     let decoded = ScnStatusMsg::from_bytes(bytes).unwrap();
-    assert_eq!(decoded.status(), status);
+    assert_eq!(decoded.status(), Some(status));
 
     let default_status = ScnStatus::default();
-    assert!(default_status.payload_mode_on);
+    assert_eq!(default_status.payload_mode, ScnPayloadMode::On);
     let default_msg = ScnStatusMsg::new(default_status);
-    assert_eq!(default_msg.status(), default_status);
+    assert_eq!(default_msg.status(), Some(default_status));
 
-    // Invalid payload_mode byte is rejected.
+    // Invalid payload_mode value returns None from status() and from_bytes().
+    msg.payload_mode = 2;
+    assert_eq!(msg.status(), None);
     let mut bad_bytes = bytes.to_vec();
     if let Some(byte) = bad_bytes.get_mut(26) {
         *byte = 2;

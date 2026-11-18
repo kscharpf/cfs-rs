@@ -454,15 +454,72 @@ impl WakeTimeMsg {
 const _: () = assert!(core::mem::size_of::<WakeTimeMsg>() == 16);
 const _: () = assert!(core::mem::offset_of!(WakeTimeMsg, now) == 8);
 
-/// `WAKE_CMD`: `step_lab` -> `cmd_lab`: execute time-tagged commands and dump segments.
-pub type WakeCmdMsg = WakeTimeMsg;
-/// `WAKE_HK`: `step_lab` -> `hk_lab`: run housekeeping periodic step.
-pub type WakeHkMsg = WakeTimeMsg;
-/// `WAKE_PL`: `step_lab` -> `pl_lab`: run payload periodic step.
-pub type WakePlMsg = WakeTimeMsg;
+/// Scenario time-turn target paired with its Software Bus message ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeTurn {
+    /// `WAKE_CMD`: `step_lab` -> `cmd_lab`: execute time-tagged commands and dump segments.
+    Cmd,
+    /// `WAKE_HK`: `step_lab` -> `hk_lab`: run housekeeping periodic step.
+    Hk,
+    /// `WAKE_PL`: `step_lab` -> `pl_lab`: run payload periodic step.
+    Pl,
+}
+
+impl WakeTurn {
+    /// All scenario time turns in exact §4.5 execution order.
+    pub const ORDER: [Self; 3] = [Self::Cmd, Self::Hk, Self::Pl];
+
+    /// Returns the Software Bus message ID for this turn.
+    #[must_use]
+    pub const fn msg_id(self) -> u32 {
+        match self {
+            Self::Cmd => cfe_sys::NODE_WAKE_CMD_MID,
+            Self::Hk => cfe_sys::NODE_WAKE_HK_MID,
+            Self::Pl => cfe_sys::NODE_WAKE_PL_MID,
+        }
+    }
+
+    /// Decodes a [`WakeTimeMsg`] from `bytes` for this turn.
+    #[must_use]
+    pub fn decode(self, bytes: &[u8]) -> Option<WakeTimeMsg> {
+        WakeTimeMsg::from_bytes(bytes)
+    }
+}
+
+/// Payload mode carried in [`ScnStatus`] and [`ScnStatusMsg`].
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScnPayloadMode {
+    /// Payload packets disabled (`0`).
+    Off = 0,
+    /// Payload packets enabled (`1`, default at scenario start).
+    #[default]
+    On = 1,
+}
+
+impl ScnPayloadMode {
+    /// Converts this mode to its raw `u8` wire value.
+    #[must_use]
+    pub const fn to_raw(self) -> u8 {
+        match self {
+            Self::Off => 0,
+            Self::On => 1,
+        }
+    }
+
+    /// Converts a raw `u8` wire value to a `ScnPayloadMode`, or `None` if invalid.
+    #[must_use]
+    pub const fn from_raw(val: u8) -> Option<Self> {
+        match val {
+            0 => Some(Self::Off),
+            1 => Some(Self::On),
+            _ => None,
+        }
+    }
+}
 
 /// Primitive snapshot of scenario status carried by [`ScnStatusMsg`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ScnStatus {
     /// Commands executed, wrapping modulo 2^16.
     pub commands_executed: u16,
@@ -476,22 +533,8 @@ pub struct ScnStatus {
     pub table_crc: u16,
     /// Dumps completed.
     pub dumps_completed: u16,
-    /// Whether payload mode is on (`true` = On, `false` = Off).
-    pub payload_mode_on: bool,
-}
-
-impl Default for ScnStatus {
-    fn default() -> Self {
-        Self {
-            commands_executed: 0,
-            commands_rejected: 0,
-            queue_occupancy: 0,
-            table_id: 0,
-            table_crc: 0,
-            dumps_completed: 0,
-            payload_mode_on: true,
-        }
-    }
+    /// Payload mode (`Off` or `On`).
+    pub payload_mode: ScnPayloadMode,
 }
 
 /// `SCN_STATUS`: `cmd_lab` -> `hk_lab`, `pl_lab`: snapshot of scenario status.
@@ -530,23 +573,26 @@ impl ScnStatusMsg {
             dumps_completed: status.dumps_completed,
             queue_occupancy: status.queue_occupancy,
             table_id: status.table_id,
-            payload_mode: if status.payload_mode_on { 1 } else { 0 },
+            payload_mode: status.payload_mode.to_raw(),
             pad: 0,
         }
     }
 
-    /// Returns the decoded [`ScnStatus`].
+    /// Returns the decoded [`ScnStatus`], or `None` if `payload_mode` is invalid.
     #[must_use]
-    pub const fn status(&self) -> ScnStatus {
-        ScnStatus {
+    pub const fn status(&self) -> Option<ScnStatus> {
+        let Some(payload_mode) = ScnPayloadMode::from_raw(self.payload_mode) else {
+            return None;
+        };
+        Some(ScnStatus {
             commands_executed: self.commands_executed,
             commands_rejected: self.commands_rejected,
             queue_occupancy: self.queue_occupancy,
             table_id: self.table_id,
             table_crc: self.table_crc,
             dumps_completed: self.dumps_completed,
-            payload_mode_on: self.payload_mode == 1,
-        }
+            payload_mode,
+        })
     }
 
     /// Safely decodes a `ScnStatusMsg` from raw message bytes.
@@ -561,11 +607,7 @@ impl ScnStatusMsg {
         let dumps_completed = u16::from_ne_bytes(bytes.get(22..24)?.try_into().ok()?);
         let queue_occupancy = *bytes.get(24)?;
         let table_id = *bytes.get(25)?;
-        let payload_mode_on = match *bytes.get(26)? {
-            0 => false,
-            1 => true,
-            _ => return None,
-        };
+        let payload_mode = ScnPayloadMode::from_raw(*bytes.get(26)?)?;
         let mut msg = Self::new(ScnStatus {
             commands_executed,
             commands_rejected,
@@ -573,7 +615,7 @@ impl ScnStatusMsg {
             table_id,
             table_crc,
             dumps_completed,
-            payload_mode_on,
+            payload_mode,
         });
         if let Some(src) = bytes.get(..16) {
             copy_tlm_header(&mut msg.header, src);
@@ -600,8 +642,9 @@ const _: () = assert!(core::mem::offset_of!(ScnStatusMsg, dumps_completed) == 22
 const _: () = assert!(core::mem::offset_of!(ScnStatusMsg, queue_occupancy) == 24);
 const _: () = assert!(core::mem::offset_of!(ScnStatusMsg, table_id) == 25);
 const _: () = assert!(core::mem::offset_of!(ScnStatusMsg, payload_mode) == 26);
+const _: () = assert!(core::mem::offset_of!(ScnStatusMsg, pad) == 27);
 
-/// `CMD_PACKET`: `link_lab` -> `scn_lab`: deliver one extracted command packet.
+/// `CMD_PACKET`: `link_lab` -> `cmd_lab`: deliver one extracted command packet.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CmdPacketMsg {
@@ -685,7 +728,7 @@ const _: () = assert!(core::mem::offset_of!(CmdPacketMsg, now) == 8);
 const _: () = assert!(core::mem::offset_of!(CmdPacketMsg, packet_len) == 16);
 const _: () = assert!(core::mem::offset_of!(CmdPacketMsg, packet) == 24);
 
-/// `CMD_PACKET_DONE`: `scn_lab` -> `link_lab`: return turn after handling a command packet.
+/// `CMD_PACKET_DONE`: `cmd_lab` -> `link_lab`: return turn after handling a command packet.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CmdPacketDoneMsg {
@@ -734,7 +777,7 @@ impl CmdPacketDoneMsg {
 }
 const _: () = assert!(core::mem::size_of::<CmdPacketDoneMsg>() == 8);
 
-/// `TLM_PACKET`: `scn_lab` -> `link_lab`: one telemetry packet for the downlink.
+/// `TLM_PACKET`: `cmd_lab` / `hk_lab` / `pl_lab` -> `link_lab`: one telemetry packet for the downlink.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TlmPacketMsg {
@@ -926,7 +969,7 @@ impl RecordKind {
     }
 }
 
-/// `RECORD`: `scn_lab` -> `link_lab` -> `step_lab`: carries one trace output record.
+/// `RECORD`: `cmd_lab` / `hk_lab` / `pl_lab` / `link_lab` -> `step_lab`: carries one trace output record.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RecordMsg {

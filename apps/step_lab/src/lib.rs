@@ -7,8 +7,9 @@ use cfe::es::{self, RunStatus};
 use cfe::evs::{self, EventType};
 use cfe::osal::TcpStream;
 use cfe::sb::{MsgId, Pipe, Qos, Timeout, check_pipe_depth, transmit_msg};
+use node_glue::prepare_msg;
 use step_lab_core::msg::{
-    DoneMsg, LinkLevel, RecordMsg, StartMsg, UnitMsg, WakeRxMsg, WakeTimeMsg, WakeTxMsg,
+    DoneMsg, LinkLevel, RecordMsg, StartMsg, UnitMsg, WakeRxMsg, WakeTimeMsg, WakeTurn, WakeTxMsg,
 };
 use step_lab_core::proto::{
     self, CodecError, EventArgs, Message, NodeOutput, Outputs, PROTOCOL_VERSION, Role, UnitsIter,
@@ -398,22 +399,22 @@ fn perform_handshake(
     Ok(level)
 }
 
-/// Prepares a Software Bus message header by setting its message ID and total size.
-fn prepare_msg(msg: &mut cfe_sys::CFE_MSG_Message_t, msg_id: u32, size: usize) -> Result<(), ()> {
-    cfe::msg::set_msg_id(msg, MsgId::from_u32(msg_id)).map_err(|_| ())?;
-    cfe::msg::set_size(msg, size).map_err(|_| ())
-}
-
 /// Sends a `WakeTimeMsg` turn (`WAKE_CMD`, `WAKE_HK`, or `WAKE_PL`) and collects outputs until `DONE`.
 fn wake_time_turn(
     pipe: &mut Pipe,
     collector: &mut StepCollector,
     earliest_deadline: &mut Option<u64>,
     now: u64,
-    msg_id: u32,
+    turn: WakeTurn,
 ) -> Result<(), ()> {
     let mut wake = WakeTimeMsg::new(now);
-    if prepare_msg(wake.msg_mut(), msg_id, core::mem::size_of::<WakeTimeMsg>()).is_err() {
+    if prepare_msg(
+        wake.msg_mut(),
+        turn.msg_id(),
+        core::mem::size_of::<WakeTimeMsg>(),
+    )
+    .is_err()
+    {
         let _ = evs::send_event(
             17,
             EventType::Critical,
@@ -480,12 +481,8 @@ fn handle_step(
     }
 
     // 2–4. WAKE_CMD -> cmd_lab, WAKE_HK -> hk_lab, WAKE_PL -> pl_lab in exact §4.5 order.
-    for mid in [
-        cfe_sys::NODE_WAKE_CMD_MID,
-        cfe_sys::NODE_WAKE_HK_MID,
-        cfe_sys::NODE_WAKE_PL_MID,
-    ] {
-        wake_time_turn(pipe, &mut collector, &mut earliest_deadline, now, mid)?;
+    for turn in WakeTurn::ORDER {
+        wake_time_turn(pipe, &mut collector, &mut earliest_deadline, now, turn)?;
     }
 
     // 5. WAKE_TX to link_lab -> collect until DONE.

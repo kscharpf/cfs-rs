@@ -6,106 +6,17 @@
 use aldis::spp::SequenceFlags;
 use cfe::es::{self, RunStatus};
 use cfe::evs::{self, EventType};
-use cfe::sb::{MsgId, Pipe, Qos, Timeout, transmit_msg};
+use cfe::sb::{MsgId, Pipe, Qos, Timeout};
+use node_glue::{send_done, send_record_event, send_tlm_packet};
 use refapp_flight::event::APP_PACKET_REJECTED;
 use refapp_flight::layout::{PayloadMode, payload};
 use refapp_flight::schedule::Periodic;
 use refapp_flight::{Downlink, Stream};
 use refapp_scenario::{Apid, Instant, Output};
-use step_lab_core::msg::{DoneMsg, RecordMsg, ScnStatusMsg, TlmPacketMsg, WakePlMsg};
+use step_lab_core::msg::{ScnPayloadMode, ScnStatusMsg, WakeTimeMsg};
 
 /// Event ID for `pl_lab` start-up event.
 pub const PL_LAB_STARTUP_EID: u16 = 1;
-
-/// Prepares a Software Bus message header by setting its message ID and total size.
-fn prepare_msg(msg: &mut cfe_sys::CFE_MSG_Message_t, msg_id: u32, size: usize) -> Result<(), ()> {
-    cfe::msg::set_msg_id(msg, MsgId::from_u32(msg_id)).map_err(|_| ())?;
-    cfe::msg::set_size(msg, size).map_err(|_| ())
-}
-
-/// Sends a `DONE` message to `step_lab` signaling turn completion.
-fn send_done(next_deadline: Option<u64>) {
-    let mut done = DoneMsg::new(next_deadline);
-    if prepare_msg(
-        done.msg_mut(),
-        cfe_sys::NODE_DONE_MID,
-        core::mem::size_of::<DoneMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(4, EventType::Critical, "PL_LAB: Failed to init DONE msg");
-        return;
-    }
-    if transmit_msg(done.msg(), true).is_err() {
-        let _ = evs::send_event(
-            5,
-            EventType::Critical,
-            "PL_LAB: Failed to transmit DONE msg",
-        );
-    }
-}
-
-/// Sends a telemetry packet to `link_lab`.
-fn send_tlm_packet(packet: &[u8]) {
-    let Some(mut tlm) = TlmPacketMsg::new(packet) else {
-        let _ = evs::send_event(
-            6,
-            EventType::Critical,
-            "PL_LAB: Packet too long for TlmPacketMsg",
-        );
-        return;
-    };
-    if prepare_msg(
-        tlm.msg_mut(),
-        cfe_sys::NODE_TLM_PACKET_MID,
-        core::mem::size_of::<TlmPacketMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(
-            7,
-            EventType::Critical,
-            "PL_LAB: Failed to init TLM_PACKET msg",
-        );
-        return;
-    }
-    if transmit_msg(tlm.msg(), true).is_err() {
-        let _ = evs::send_event(
-            8,
-            EventType::Critical,
-            "PL_LAB: Failed to transmit TLM_PACKET msg",
-        );
-    }
-}
-
-/// Sends an application event to `step_lab`.
-fn send_record_event(code: u16, args: &[u64]) {
-    let Some(mut rec) = RecordMsg::new_event(code, args) else {
-        let _ = evs::send_event(
-            9,
-            EventType::Critical,
-            "PL_LAB: Too many args for RecordMsg event",
-        );
-        return;
-    };
-    if prepare_msg(
-        rec.msg_mut(),
-        cfe_sys::NODE_RECORD_MID,
-        core::mem::size_of::<RecordMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(10, EventType::Critical, "PL_LAB: Failed to init RECORD msg");
-        return;
-    }
-    if transmit_msg(rec.msg(), true).is_err() {
-        let _ = evs::send_event(
-            11,
-            EventType::Critical,
-            "PL_LAB: Failed to transmit RECORD msg",
-        );
-    }
-}
 
 /// Output sink for `Downlink` running inside `pl_lab`.
 struct PlSink;
@@ -122,6 +33,34 @@ impl Output for PlSink {
     fn app_event(&mut self, code: u16, args: &[u64]) {
         send_record_event(code, args);
     }
+}
+
+/// Emits all payload packets due up to `now` when payload mode is `On`, and returns the next deadline.
+fn handle_wake_pl(
+    downlink: &mut Downlink,
+    payload_mode: PayloadMode,
+    payload_slot: &mut u32,
+    payload_number: &mut u32,
+    now: Instant,
+) -> Option<u64> {
+    let mut sink = PlSink;
+    while let Some(at) = Periodic::PAYLOAD.at(*payload_slot).filter(|at| *at <= now) {
+        if payload_mode == PayloadMode::On {
+            let data = payload(*payload_number);
+            if let Err(e) = downlink.send(
+                Stream::Payload,
+                SequenceFlags::Unsegmented,
+                at,
+                &data,
+                &mut sink,
+            ) {
+                send_record_event(APP_PACKET_REJECTED, &[u64::from(e.kind().code())]);
+            }
+            *payload_number = payload_number.saturating_add(1);
+        }
+        *payload_slot = payload_slot.saturating_add(1);
+    }
+    Periodic::PAYLOAD.at(*payload_slot).map(Instant::as_micros)
 }
 
 /// Runs the `pl_lab` initialization, Software Bus dispatch loop, and teardown.
@@ -173,7 +112,7 @@ fn app_main() {
 
     // 5. Initialize payload state.
     let mut downlink = Downlink::new();
-    let mut payload_mode = PayloadMode::On;
+    let mut payload_mode = PayloadMode::default();
     let mut payload_slot = 0_u32;
     let mut payload_number = 0_u32;
 
@@ -191,48 +130,48 @@ fn app_main() {
         match mid.as_u32() {
             cfe_sys::NODE_START_MID => {
                 downlink = Downlink::new();
-                payload_mode = PayloadMode::On;
+                payload_mode = PayloadMode::default();
                 payload_slot = 0;
                 payload_number = 0;
                 send_done(None);
             }
             cfe_sys::NODE_SCN_STATUS_MID => {
-                if let Some(msg) = ScnStatusMsg::from_bytes(buf.as_bytes()) {
-                    payload_mode = if msg.status().payload_mode_on {
-                        PayloadMode::On
-                    } else {
-                        PayloadMode::Off
+                if let Some(status) =
+                    ScnStatusMsg::from_bytes(buf.as_bytes()).and_then(|msg| msg.status())
+                {
+                    payload_mode = match status.payload_mode {
+                        ScnPayloadMode::Off => PayloadMode::Off,
+                        ScnPayloadMode::On => PayloadMode::On,
                     };
+                } else {
+                    let _ = evs::send_event(
+                        12,
+                        EventType::Error,
+                        "PL_LAB: Malformed ScnStatusMsg received",
+                    );
                 }
             }
             cfe_sys::NODE_WAKE_PL_MID => {
-                if let Some(wake) = WakePlMsg::from_bytes(buf.as_bytes()) {
-                    let now = Instant::from_micros(wake.now);
-                    let mut sink = PlSink;
-                    while let Some(at) = Periodic::PAYLOAD.at(payload_slot).filter(|at| *at <= now)
-                    {
-                        if payload_mode == PayloadMode::On {
-                            let data = payload(payload_number);
-                            if let Err(e) = downlink.send(
-                                Stream::Payload,
-                                SequenceFlags::Unsegmented,
-                                at,
-                                &data,
-                                &mut sink,
-                            ) {
-                                send_record_event(
-                                    APP_PACKET_REJECTED,
-                                    &[u64::from(e.kind().code())],
-                                );
-                            }
-                            payload_number = payload_number.saturating_add(1);
-                        }
-                        payload_slot = payload_slot.saturating_add(1);
-                    }
-                    send_done(Periodic::PAYLOAD.at(payload_slot).map(Instant::as_micros));
-                } else {
-                    send_done(None);
-                }
+                let next_deadline = WakeTimeMsg::from_bytes(buf.as_bytes()).map_or_else(
+                    || {
+                        let _ = evs::send_event(
+                            13,
+                            EventType::Error,
+                            "PL_LAB: Malformed WakeTimeMsg received",
+                        );
+                        None
+                    },
+                    |wake| {
+                        handle_wake_pl(
+                            &mut downlink,
+                            payload_mode,
+                            &mut payload_slot,
+                            &mut payload_number,
+                            Instant::from_micros(wake.now),
+                        )
+                    },
+                );
+                send_done(next_deadline);
             }
             _ => {}
         }

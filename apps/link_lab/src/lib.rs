@@ -8,15 +8,16 @@ use core::net::Ipv4Addr;
 use cfe::es::{self, RunStatus};
 use cfe::evs::{self, EventType};
 use cfe::osal::{self, UdpSocket};
-use cfe::sb::{MsgId, Pipe, Qos, Timeout, transmit_msg};
+use cfe::sb::{MsgId, Pipe, Qos, Timeout};
 use cfe::tbl::{Table, TableOptions};
 use link_lab_core::{
     DownlinkSink, Instant, Level, Link, LinkConfig, LinkMode, MIN_COMMAND_PACKET_LEN,
     RealtimeConfig, TC_FRAME_AREA_LEN, UplinkSink, is_valid_command_packet, packet_apid,
 };
+use node_glue::{send_done, send_record_event, send_sb_msg};
 use step_lab_core::msg::{
-    CmdPacketMsg, DoneMsg, LinkLevel, MAX_UNIT_LEN, RecordMsg, StartMsg, TlmPacketMsg, UnitMsg,
-    WakeRxMsg, WakeTxMsg,
+    CmdPacketMsg, LinkLevel, MAX_UNIT_LEN, RecordMsg, StartMsg, TlmPacketMsg, UnitMsg, WakeRxMsg,
+    WakeTxMsg,
 };
 
 /// Event ID for `link_lab` start-up event.
@@ -37,34 +38,6 @@ struct PendingTlm {
     data: [u8; MAX_UNIT_LEN],
 }
 
-/// Prepares a Software Bus message header by setting its message ID and total size.
-fn prepare_msg(msg: &mut cfe_sys::CFE_MSG_Message_t, msg_id: u32, size: usize) -> Result<(), ()> {
-    cfe::msg::set_msg_id(msg, MsgId::from_u32(msg_id)).map_err(|_| ())?;
-    cfe::msg::set_size(msg, size).map_err(|_| ())
-}
-
-/// Sends a `DONE` message to `step_lab` signaling turn completion.
-fn send_done(next_deadline: Option<u64>) {
-    let mut done = DoneMsg::new(next_deadline);
-    if prepare_msg(
-        done.msg_mut(),
-        cfe_sys::NODE_DONE_MID,
-        core::mem::size_of::<DoneMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(4, EventType::Critical, "LINK_LAB: Failed to init DONE msg");
-        return;
-    }
-    if transmit_msg(done.msg(), true).is_err() {
-        let _ = evs::send_event(
-            5,
-            EventType::Critical,
-            "LINK_LAB: Failed to transmit DONE msg",
-        );
-    }
-}
-
 /// Sends a `CMD_PACKET` message to `cmd_lab`.
 fn send_cmd_packet(now: u64, packet: &[u8]) {
     let Some(mut msg) = CmdPacketMsg::new(now, packet) else {
@@ -75,27 +48,15 @@ fn send_cmd_packet(now: u64, packet: &[u8]) {
         );
         return;
     };
-    if prepare_msg(
+    send_sb_msg(
         msg.msg_mut(),
         cfe_sys::NODE_CMD_PACKET_MID,
         core::mem::size_of::<CmdPacketMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(
-            7,
-            EventType::Critical,
-            "LINK_LAB: Failed to init CMD_PACKET msg",
-        );
-        return;
-    }
-    if transmit_msg(msg.msg(), true).is_err() {
-        let _ = evs::send_event(
-            8,
-            EventType::Critical,
-            "LINK_LAB: Failed to transmit CMD_PACKET msg",
-        );
-    }
+        7,
+        "LINK_LAB: Failed to init CMD_PACKET msg",
+        8,
+        "LINK_LAB: Failed to transmit CMD_PACKET msg",
+    );
 }
 
 /// Sends a `UNIT` message to `step_lab`.
@@ -108,56 +69,15 @@ fn send_unit(unit: &[u8]) {
         );
         return;
     };
-    if prepare_msg(
+    send_sb_msg(
         msg.msg_mut(),
         cfe_sys::NODE_UNIT_MID,
         core::mem::size_of::<UnitMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(10, EventType::Critical, "LINK_LAB: Failed to init UNIT msg");
-        return;
-    }
-    if transmit_msg(msg.msg(), true).is_err() {
-        let _ = evs::send_event(
-            11,
-            EventType::Critical,
-            "LINK_LAB: Failed to transmit UNIT msg",
-        );
-    }
-}
-
-/// Sends a `RECORD` event message to `step_lab`.
-fn send_record_event(code: u16, args: &[u64]) {
-    let Some(mut msg) = RecordMsg::new_event(code, args) else {
-        let _ = evs::send_event(
-            12,
-            EventType::Critical,
-            "LINK_LAB: Too many args for RecordMsg",
-        );
-        return;
-    };
-    if prepare_msg(
-        msg.msg_mut(),
-        cfe_sys::NODE_RECORD_MID,
-        core::mem::size_of::<RecordMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(
-            13,
-            EventType::Critical,
-            "LINK_LAB: Failed to init RECORD msg",
-        );
-        return;
-    }
-    if transmit_msg(msg.msg(), true).is_err() {
-        let _ = evs::send_event(
-            14,
-            EventType::Critical,
-            "LINK_LAB: Failed to transmit RECORD msg",
-        );
-    }
+        10,
+        "LINK_LAB: Failed to init UNIT msg",
+        11,
+        "LINK_LAB: Failed to transmit UNIT msg",
+    );
 }
 
 /// Sends a `RECORD` `packet_out` message to `step_lab`.
@@ -170,27 +90,15 @@ fn send_record_packet_out(apid: u16, packet: &[u8]) {
         );
         return;
     };
-    if prepare_msg(
+    send_sb_msg(
         msg.msg_mut(),
         cfe_sys::NODE_RECORD_MID,
         core::mem::size_of::<RecordMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(
-            16,
-            EventType::Critical,
-            "LINK_LAB: Failed to init RECORD msg",
-        );
-        return;
-    }
-    if transmit_msg(msg.msg(), true).is_err() {
-        let _ = evs::send_event(
-            17,
-            EventType::Critical,
-            "LINK_LAB: Failed to transmit RECORD msg",
-        );
-    }
+        16,
+        "LINK_LAB: Failed to init RECORD msg",
+        17,
+        "LINK_LAB: Failed to transmit RECORD msg",
+    );
 }
 
 /// Downlink sink emitting units and events to `step_lab`.

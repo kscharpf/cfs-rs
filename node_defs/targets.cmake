@@ -84,7 +84,7 @@ SET(SPACECRAFT_ID 0x42)
 # The "MISSION_GLOBAL_APPLIST" is a set of apps/libs that will be built
 # for every defined target.  These are built as dynamic modules
 # and must be loaded explicitly via startup script or command.
-# For node_defs, only link_lab and step_lab are built (specified in cpu1_APPLIST).
+# For node_defs, link_lab, step_lab, cmd_lab, hk_lab, and pl_lab are built (specified in cpu1_APPLIST).
 
 # FT_INSTALL_SUBDIR indicates where the black box test data files (lua scripts) should
 # be copied during the install process.
