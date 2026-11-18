@@ -1,6 +1,6 @@
 {
     global:
-        SCN_LAB_AppMain;
+        CMD_LAB_AppMain;
     local:
         *;
 };

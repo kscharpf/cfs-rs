@@ -1,0 +1,23 @@
+[package]
+name = "cmd-lab"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+test = false
+doctest = false
+
+[dependencies]
+cfe = { workspace = true }
+cfe-sys = { workspace = true }
+refapp-flight = { workspace = true }
+refapp-scenario = { workspace = true }
+step-lab-core = { workspace = true }
+
+[lints]
+workspace = true

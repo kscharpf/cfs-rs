@@ -118,18 +118,12 @@ run_case() {
     fi
 
     # Verify start-up EVS events in the node's console log
-    grep -q "LINK_LAB App Initialized. Version 0.1.0" "$out_dir/$case_name.node.log" || {
-        echo "FAIL: LINK_LAB start-up event not found in $out_dir/$case_name.node.log" >&2
-        exit 1
-    }
-    grep -q "STEP_LAB App Initialized. Version 0.1.0" "$out_dir/$case_name.node.log" || {
-        echo "FAIL: STEP_LAB start-up event not found in $out_dir/$case_name.node.log" >&2
-        exit 1
-    }
-    grep -q "SCN_LAB App Initialized. Version 0.1.0" "$out_dir/$case_name.node.log" || {
-        echo "FAIL: SCN_LAB start-up event not found in $out_dir/$case_name.node.log" >&2
-        exit 1
-    }
+    for app in LINK_LAB STEP_LAB CMD_LAB HK_LAB PL_LAB; do
+        grep -q "${app} App Initialized. Version 0.1.0" "$out_dir/$case_name.node.log" || {
+            echo "FAIL: ${app} start-up event not found in $out_dir/$case_name.node.log" >&2
+            exit 1
+        }
+    done
 
     echo "$build_type (run $run_num): $case_name passed and matched golden trace byte-for-byte"
 }

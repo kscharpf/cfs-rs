@@ -1,0 +1,6 @@
+{
+    global:
+        HK_LAB_AppMain;
+    local:
+        *;
+};

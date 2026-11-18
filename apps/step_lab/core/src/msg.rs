@@ -405,18 +405,18 @@ impl DoneMsg {
 const _: () = assert!(core::mem::size_of::<DoneMsg>() == 24);
 const _: () = assert!(core::mem::offset_of!(DoneMsg, next_deadline) == 16);
 
-/// `WAKE_APPS`: `step_lab` -> `scn_lab`: wake scenario apps for steps 2–5.
+/// `WAKE_CMD` / `WAKE_HK` / `WAKE_PL`: `step_lab` -> scenario app: wake for turn at `now`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct WakeAppsMsg {
+pub struct WakeTimeMsg {
     /// Command header.
     pub header: cfe_sys::CFE_MSG_CommandHeader_t,
     /// Scenario time in microseconds.
     pub now: u64,
 }
 
-impl WakeAppsMsg {
-    /// Creates a new `WakeAppsMsg`.
+impl WakeTimeMsg {
+    /// Creates a new `WakeTimeMsg`.
     #[must_use]
     pub const fn new(now: u64) -> Self {
         Self {
@@ -425,7 +425,7 @@ impl WakeAppsMsg {
         }
     }
 
-    /// Safely decodes a `WakeAppsMsg` from raw message bytes.
+    /// Safely decodes a `WakeTimeMsg` from raw message bytes.
     #[must_use]
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < core::mem::size_of::<Self>() {
@@ -451,8 +451,155 @@ impl WakeAppsMsg {
         &mut self.header.Msg
     }
 }
-const _: () = assert!(core::mem::size_of::<WakeAppsMsg>() == 16);
-const _: () = assert!(core::mem::offset_of!(WakeAppsMsg, now) == 8);
+const _: () = assert!(core::mem::size_of::<WakeTimeMsg>() == 16);
+const _: () = assert!(core::mem::offset_of!(WakeTimeMsg, now) == 8);
+
+/// `WAKE_CMD`: `step_lab` -> `cmd_lab`: execute time-tagged commands and dump segments.
+pub type WakeCmdMsg = WakeTimeMsg;
+/// `WAKE_HK`: `step_lab` -> `hk_lab`: run housekeeping periodic step.
+pub type WakeHkMsg = WakeTimeMsg;
+/// `WAKE_PL`: `step_lab` -> `pl_lab`: run payload periodic step.
+pub type WakePlMsg = WakeTimeMsg;
+
+/// Primitive snapshot of scenario status carried by [`ScnStatusMsg`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScnStatus {
+    /// Commands executed, wrapping modulo 2^16.
+    pub commands_executed: u16,
+    /// Commands rejected, wrapping modulo 2^16.
+    pub commands_rejected: u16,
+    /// Time-tag queue occupancy.
+    pub queue_occupancy: u8,
+    /// Last activated table ID (0 if none).
+    pub table_id: u8,
+    /// CRC-16 of the last activated table (0 if none).
+    pub table_crc: u16,
+    /// Dumps completed.
+    pub dumps_completed: u16,
+    /// Whether payload mode is on (`true` = On, `false` = Off).
+    pub payload_mode_on: bool,
+}
+
+impl Default for ScnStatus {
+    fn default() -> Self {
+        Self {
+            commands_executed: 0,
+            commands_rejected: 0,
+            queue_occupancy: 0,
+            table_id: 0,
+            table_crc: 0,
+            dumps_completed: 0,
+            payload_mode_on: true,
+        }
+    }
+}
+
+/// `SCN_STATUS`: `cmd_lab` -> `hk_lab`, `pl_lab`: snapshot of scenario status.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ScnStatusMsg {
+    /// Telemetry header.
+    pub header: cfe_sys::CFE_MSG_TelemetryHeader_t,
+    /// Commands executed, wrapping modulo 2^16.
+    pub commands_executed: u16,
+    /// Commands rejected, wrapping modulo 2^16.
+    pub commands_rejected: u16,
+    /// CRC-16 of the last activated table (0 if none).
+    pub table_crc: u16,
+    /// Dumps completed.
+    pub dumps_completed: u16,
+    /// Time-tag queue occupancy.
+    pub queue_occupancy: u8,
+    /// Last activated table ID (0 if none).
+    pub table_id: u8,
+    /// Payload mode (`0` = Off, `1` = On).
+    pub payload_mode: u8,
+    /// Alignment padding.
+    pub pad: u8,
+}
+
+impl ScnStatusMsg {
+    /// Creates a new `ScnStatusMsg` from primitive status fields.
+    #[must_use]
+    pub const fn new(status: ScnStatus) -> Self {
+        Self {
+            header: default_tlm_header(),
+            commands_executed: status.commands_executed,
+            commands_rejected: status.commands_rejected,
+            table_crc: status.table_crc,
+            dumps_completed: status.dumps_completed,
+            queue_occupancy: status.queue_occupancy,
+            table_id: status.table_id,
+            payload_mode: if status.payload_mode_on { 1 } else { 0 },
+            pad: 0,
+        }
+    }
+
+    /// Returns the decoded [`ScnStatus`].
+    #[must_use]
+    pub const fn status(&self) -> ScnStatus {
+        ScnStatus {
+            commands_executed: self.commands_executed,
+            commands_rejected: self.commands_rejected,
+            queue_occupancy: self.queue_occupancy,
+            table_id: self.table_id,
+            table_crc: self.table_crc,
+            dumps_completed: self.dumps_completed,
+            payload_mode_on: self.payload_mode == 1,
+        }
+    }
+
+    /// Safely decodes a `ScnStatusMsg` from raw message bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < core::mem::size_of::<Self>() {
+            return None;
+        }
+        let commands_executed = u16::from_ne_bytes(bytes.get(16..18)?.try_into().ok()?);
+        let commands_rejected = u16::from_ne_bytes(bytes.get(18..20)?.try_into().ok()?);
+        let table_crc = u16::from_ne_bytes(bytes.get(20..22)?.try_into().ok()?);
+        let dumps_completed = u16::from_ne_bytes(bytes.get(22..24)?.try_into().ok()?);
+        let queue_occupancy = *bytes.get(24)?;
+        let table_id = *bytes.get(25)?;
+        let payload_mode_on = match *bytes.get(26)? {
+            0 => false,
+            1 => true,
+            _ => return None,
+        };
+        let mut msg = Self::new(ScnStatus {
+            commands_executed,
+            commands_rejected,
+            queue_occupancy,
+            table_id,
+            table_crc,
+            dumps_completed,
+            payload_mode_on,
+        });
+        if let Some(src) = bytes.get(..16) {
+            copy_tlm_header(&mut msg.header, src);
+        }
+        Some(msg)
+    }
+
+    /// Returns a reference to the generic message header.
+    #[must_use]
+    pub const fn msg(&self) -> &cfe_sys::CFE_MSG_Message_t {
+        &self.header.Msg
+    }
+
+    /// Returns a mutable reference to the generic message header.
+    pub const fn msg_mut(&mut self) -> &mut cfe_sys::CFE_MSG_Message_t {
+        &mut self.header.Msg
+    }
+}
+const _: () = assert!(core::mem::size_of::<ScnStatusMsg>() == 28);
+const _: () = assert!(core::mem::offset_of!(ScnStatusMsg, commands_executed) == 16);
+const _: () = assert!(core::mem::offset_of!(ScnStatusMsg, commands_rejected) == 18);
+const _: () = assert!(core::mem::offset_of!(ScnStatusMsg, table_crc) == 20);
+const _: () = assert!(core::mem::offset_of!(ScnStatusMsg, dumps_completed) == 22);
+const _: () = assert!(core::mem::offset_of!(ScnStatusMsg, queue_occupancy) == 24);
+const _: () = assert!(core::mem::offset_of!(ScnStatusMsg, table_id) == 25);
+const _: () = assert!(core::mem::offset_of!(ScnStatusMsg, payload_mode) == 26);
 
 /// `CMD_PACKET`: `link_lab` -> `scn_lab`: deliver one extracted command packet.
 #[repr(C)]

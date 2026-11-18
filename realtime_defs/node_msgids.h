@@ -25,16 +25,19 @@
 #define NODE_START_MID           (NODE_CMD_MID_BASE + 0x00) /* step_lab -> all: link level of case */
 #define NODE_WAKE_RX_MID         (NODE_CMD_MID_BASE + 0x01) /* step_lab -> link_lab: process delivered unit */
 #define NODE_WAKE_TX_MID         (NODE_CMD_MID_BASE + 0x02) /* step_lab -> link_lab: drain pipe, frame of slot */
-#define NODE_WAKE_APPS_MID       (NODE_CMD_MID_BASE + 0x03) /* step_lab -> scn_lab: scenario steps 2-5 */
-#define NODE_CMD_PACKET_MID      (NODE_CMD_MID_BASE + 0x04) /* link_lab -> scn_lab: one command packet */
-#define NODE_CMD_PACKET_DONE_MID (NODE_CMD_MID_BASE + 0x05) /* scn_lab -> link_lab: return turn */
+#define NODE_WAKE_CMD_MID        (NODE_CMD_MID_BASE + 0x03) /* step_lab -> cmd_lab: execute_due + dump_segments */
+#define NODE_CMD_PACKET_MID      (NODE_CMD_MID_BASE + 0x04) /* link_lab -> cmd_lab: one command packet */
+#define NODE_CMD_PACKET_DONE_MID (NODE_CMD_MID_BASE + 0x05) /* cmd_lab -> link_lab: return turn */
+#define NODE_WAKE_HK_MID         (NODE_CMD_MID_BASE + 0x06) /* step_lab -> hk_lab: housekeeping periodic */
+#define NODE_WAKE_PL_MID         (NODE_CMD_MID_BASE + 0x07) /* step_lab -> pl_lab: payload periodic */
 #define NODE_TEST_MID            (NODE_CMD_MID_BASE + 0x0F) /* step_lab pipe depth self-check */
 
 /* Telemetry / Data */
-#define NODE_TLM_PACKET_MID      (NODE_TLM_MID_BASE + 0x00) /* scn_lab -> link_lab: one telemetry packet */
-#define NODE_RECORD_MID          (NODE_TLM_MID_BASE + 0x01) /* scn_lab -> link_lab -> step_lab: app_event */
+#define NODE_TLM_PACKET_MID      (NODE_TLM_MID_BASE + 0x00) /* cmd/hk/pl -> link_lab: one telemetry packet */
+#define NODE_RECORD_MID          (NODE_TLM_MID_BASE + 0x01) /* cmd/hk/pl/link_lab -> step_lab: app_event */
 #define NODE_UNIT_MID            (NODE_TLM_MID_BASE + 0x02) /* link_lab -> step_lab: one link unit */
 #define NODE_DONE_MID            (NODE_TLM_MID_BASE + 0x03) /* app -> step_lab: next deadline, ends turn */
+#define NODE_SCN_STATUS_MID      (NODE_TLM_MID_BASE + 0x04) /* cmd_lab -> hk_lab, pl_lab: status snapshot */
 
 /*
  * Build-time check: verify that no internal node message ID falls within
@@ -50,13 +53,16 @@
 NODE_CHECK_MID(NODE_START_MID);
 NODE_CHECK_MID(NODE_WAKE_RX_MID);
 NODE_CHECK_MID(NODE_WAKE_TX_MID);
-NODE_CHECK_MID(NODE_WAKE_APPS_MID);
+NODE_CHECK_MID(NODE_WAKE_CMD_MID);
 NODE_CHECK_MID(NODE_CMD_PACKET_MID);
 NODE_CHECK_MID(NODE_CMD_PACKET_DONE_MID);
+NODE_CHECK_MID(NODE_WAKE_HK_MID);
+NODE_CHECK_MID(NODE_WAKE_PL_MID);
 NODE_CHECK_MID(NODE_TLM_PACKET_MID);
 NODE_CHECK_MID(NODE_RECORD_MID);
 NODE_CHECK_MID(NODE_UNIT_MID);
 NODE_CHECK_MID(NODE_DONE_MID);
+NODE_CHECK_MID(NODE_SCN_STATUS_MID);
 NODE_CHECK_MID(NODE_TEST_MID);
 
 #endif /* NODE_MSGIDS_H */

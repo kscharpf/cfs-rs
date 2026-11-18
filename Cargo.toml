@@ -9,7 +9,9 @@ members = [
     "apps/link_lab/core",
     "apps/step_lab",
     "apps/step_lab/core",
-    "apps/scn_lab",
+    "apps/cmd_lab",
+    "apps/hk_lab",
+    "apps/pl_lab",
 ]
 
 [workspace.package]
