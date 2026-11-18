@@ -1050,6 +1050,7 @@ static TBL_SIM_REG_FAIL: AtomicBool = AtomicBool::new(false);
 static TBL_SIM_REG_STATUS: AtomicI32 = AtomicI32::new(0);
 static TBL_SIM_UNREG_FAIL: AtomicBool = AtomicBool::new(false);
 static TBL_SIM_LOAD_FAIL: AtomicBool = AtomicBool::new(false);
+static TBL_SIM_LOAD_STATUS: AtomicI32 = AtomicI32::new(0);
 static TBL_SIM_MANAGE_STATUS: AtomicI32 = AtomicI32::new(0);
 static TBL_SIM_NEVER_LOADED: AtomicBool = AtomicBool::new(false);
 static TBL_SIM_GETADDR_NULL: AtomicBool = AtomicBool::new(false);
@@ -1070,6 +1071,7 @@ fn reset_tbl_stubs() {
     TBL_SIM_REG_STATUS.store(0, Ordering::SeqCst);
     TBL_SIM_UNREG_FAIL.store(false, Ordering::SeqCst);
     TBL_SIM_LOAD_FAIL.store(false, Ordering::SeqCst);
+    TBL_SIM_LOAD_STATUS.store(0, Ordering::SeqCst);
     TBL_SIM_MANAGE_STATUS.store(0, Ordering::SeqCst);
     TBL_SIM_NEVER_LOADED.store(false, Ordering::SeqCst);
     TBL_SIM_GETADDR_NULL.store(false, Ordering::SeqCst);
@@ -1135,7 +1137,7 @@ pub unsafe extern "C" fn CFE_TBL_Load(
         return cfe_sys::CFE_TBL_ERR_ACCESS;
     }
     TBL_SIM_UPDATED_ON_GETADDR.store(true, Ordering::SeqCst);
-    0
+    TBL_SIM_LOAD_STATUS.load(Ordering::SeqCst)
 }
 
 #[unsafe(no_mangle)]
@@ -1390,6 +1392,19 @@ fn test_tbl_error_handling() {
         Status::from_raw(cfe_sys::CFE_TBL_ERR_ACCESS)
     );
     TBL_SIM_LOAD_FAIL.store(false, Ordering::SeqCst);
+
+    // Load warning statuses (truncated / partial loads) are rejected as Err
+    for warn in [
+        cfe_sys::CFE_TBL_WARN_SHORT_FILE.cast_signed(),
+        cfe_sys::CFE_TBL_WARN_PARTIAL_LOAD.cast_signed(),
+    ] {
+        TBL_SIM_LOAD_STATUS.store(warn, Ordering::SeqCst);
+        assert_eq!(
+            table.load_from_file("/cf/link_lab_cfg.tbl").unwrap_err(),
+            Status::from_raw(warn)
+        );
+    }
+    TBL_SIM_LOAD_STATUS.store(0, Ordering::SeqCst);
 
     // Manage error from C stub
     TBL_SIM_MANAGE_STATUS.store(cfe_sys::CFE_TBL_ERR_NO_ACCESS, Ordering::SeqCst);
