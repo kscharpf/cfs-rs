@@ -19,7 +19,7 @@ extern crate std;
 use crate::es::{self, RunStatus};
 use crate::evs::{self, EventType};
 use crate::msg;
-use crate::osal::{TcpStream, UdpSocket, local_time_us};
+use crate::osal::{self, TcpStream, UdpSocket, local_time_us};
 use crate::sb::{self, MsgId, Pipe, PipeId, Qos, Timeout};
 use crate::status::Status;
 use crate::tbl::{self, Table, TableOptions};
@@ -947,30 +947,30 @@ fn test_osal_udp_socket_and_local_time() {
             assert_eq!(&guard.0[..guard.1], b"0.0.0.0");
         }
 
+        // osal::Timeout conversion
+        assert_eq!(
+            osal::Timeout::Poll.to_raw(),
+            cfe_sys::OS_CHECK.cast_signed()
+        );
+        assert_eq!(osal::Timeout::PendForever.to_raw(), cfe_sys::OS_PEND);
+        assert_eq!(osal::Timeout::Millis(250).to_raw(), 250);
+        assert_eq!(osal::Timeout::Millis(u32::MAX).to_raw(), i32::MAX);
+
         // Receive datagram
         let mut buf = [0u8; 16];
-        assert_eq!(
-            sock.recv_from(&mut buf, cfe_sys::OS_CHECK.cast_signed()),
-            Ok(Some(3))
-        );
+        assert_eq!(sock.recv_from(&mut buf, osal::Timeout::Poll), Ok(Some(3)));
         assert_eq!(&buf[..3], &[0xA0, 0xA1, 0xA2]);
 
         // Non-blocking OS_CHECK timeout / empty queue returns Ok(None)
         UDP_RECVFROM_MODE.store(1, Ordering::SeqCst);
-        assert_eq!(
-            sock.recv_from(&mut buf, cfe_sys::OS_CHECK.cast_signed()),
-            Ok(None)
-        );
+        assert_eq!(sock.recv_from(&mut buf, osal::Timeout::Poll), Ok(None));
         UDP_RECVFROM_MODE.store(2, Ordering::SeqCst);
-        assert_eq!(
-            sock.recv_from(&mut buf, cfe_sys::OS_CHECK.cast_signed()),
-            Ok(None)
-        );
+        assert_eq!(sock.recv_from(&mut buf, osal::Timeout::Poll), Ok(None));
 
         // Hard recv error returns Err(Status)
         UDP_RECVFROM_MODE.store(3, Ordering::SeqCst);
         assert_eq!(
-            sock.recv_from(&mut buf, cfe_sys::OS_CHECK.cast_signed()),
+            sock.recv_from(&mut buf, osal::Timeout::Poll),
             Err(Status::from_raw(cfe_sys::OS_ERROR))
         );
         UDP_RECVFROM_MODE.store(0, Ordering::SeqCst);
@@ -1032,6 +1032,13 @@ fn test_osal_udp_socket_and_local_time() {
     assert_eq!(local_time_us(), Ok(1_234_567));
 
     LOCAL_TIME_TICKS.store(-10, Ordering::SeqCst);
+    assert_eq!(local_time_us(), Err(Status::from_raw(cfe_sys::OS_ERROR)));
+
+    // Sub-microsecond negative ticks (-9..=-1) must also return Err rather than Ok(0)
+    LOCAL_TIME_TICKS.store(-1, Ordering::SeqCst);
+    assert_eq!(local_time_us(), Err(Status::from_raw(cfe_sys::OS_ERROR)));
+
+    LOCAL_TIME_TICKS.store(-9, Ordering::SeqCst);
     assert_eq!(local_time_us(), Err(Status::from_raw(cfe_sys::OS_ERROR)));
 
     SIMULATE_TIME_FAIL.store(true, Ordering::SeqCst);
@@ -1398,11 +1405,13 @@ fn test_tbl_error_handling() {
         cfe_sys::CFE_TBL_WARN_SHORT_FILE.cast_signed(),
         cfe_sys::CFE_TBL_WARN_PARTIAL_LOAD.cast_signed(),
     ] {
+        let before_load = TBL_LOAD_CALLS.load(Ordering::SeqCst);
         TBL_SIM_LOAD_STATUS.store(warn, Ordering::SeqCst);
         assert_eq!(
             table.load_from_file("/cf/link_lab_cfg.tbl").unwrap_err(),
             Status::from_raw(warn)
         );
+        assert_eq!(TBL_LOAD_CALLS.load(Ordering::SeqCst), before_load + 1);
     }
     TBL_SIM_LOAD_STATUS.store(0, Ordering::SeqCst);
 

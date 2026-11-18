@@ -1,5 +1,7 @@
 //! Link configuration and routing.
 
+use core::num::NonZeroU16;
+
 use aldis::cop1::farm1::Farm1Window;
 use aldis::core::ErrorKind;
 use refapp_scenario::generated::{SPACECRAFT_ID, apid, cop1, link, tc, tm};
@@ -49,14 +51,26 @@ pub struct ApidRoute {
     pub vc: DataVc,
 }
 
+/// Configuration parameters specific to [`LinkMode::NativeRealtime`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RealtimeConfig {
+    /// Fallback VC for unmapped APIDs.
+    pub default_vc: Option<DataVc>,
+    /// UDP receive port for incoming TC frames (non-zero).
+    pub rx_port: NonZeroU16,
+    /// UDP destination port for outgoing TM frames (non-zero).
+    pub tx_port: NonZeroU16,
+    /// Ground IPv4 address for outgoing TM frames.
+    pub ground_ipv4: [u8; 4],
+}
+
 /// Operating mode of `link_lab`.
-#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkMode {
     /// Lockstep simulation driven by `step_lab` (`a0`–`a3`).
-    Lockstep = 0,
+    Lockstep,
     /// Native real-time mode over UDP TM/TC frames.
-    NativeRealtime = 1,
+    NativeRealtime(RealtimeConfig),
 }
 
 impl LinkMode {
@@ -65,17 +79,7 @@ impl LinkMode {
     pub const fn to_raw(self) -> u8 {
         match self {
             Self::Lockstep => 0,
-            Self::NativeRealtime => 1,
-        }
-    }
-
-    /// Converts a raw `u8` from `LINK_LAB_CfgTbl_t` into [`LinkMode`].
-    #[must_use]
-    pub const fn from_raw(raw: u8) -> Option<Self> {
-        match raw {
-            0 => Some(Self::Lockstep),
-            1 => Some(Self::NativeRealtime),
-            _ => None,
+            Self::NativeRealtime(_) => 1,
         }
     }
 }
@@ -109,14 +113,6 @@ pub struct LinkConfig {
     pub apid_routes: [Option<ApidRoute>; MAX_APID_ROUTES],
     /// Link operating mode (`Lockstep` vs `NativeRealtime`).
     pub mode: LinkMode,
-    /// Fallback VC for unmapped APIDs in `NativeRealtime` mode.
-    pub default_vc: Option<DataVc>,
-    /// UDP receive port for incoming TC frames in `NativeRealtime` mode.
-    pub rx_port: u16,
-    /// UDP destination port for outgoing TM frames in `NativeRealtime` mode.
-    pub tx_port: u16,
-    /// Ground IPv4 address for outgoing TM frames in `NativeRealtime` mode.
-    pub ground_ipv4: [u8; 4],
 }
 
 fn read_u8(bytes: &[u8], offset: usize) -> Result<u8, ErrorKind> {
@@ -191,10 +187,6 @@ impl LinkConfig {
                 None,
             ],
             mode: LinkMode::Lockstep,
-            default_vc: None,
-            rx_port: 1234,
-            tx_port: 2234,
-            ground_ipv4: [127, 0, 0, 1],
         }
     }
 
@@ -288,23 +280,35 @@ impl LinkConfig {
             idx = idx.saturating_add(1);
         }
 
-        let rx_port = read_u16(bytes, 72)?;
-        let tx_port = read_u16(bytes, 74)?;
+        let rx_port_raw = read_u16(bytes, 72)?;
+        let tx_port_raw = read_u16(bytes, 74)?;
         let ground_ipv4: [u8; 4] = bytes
             .get(76..80)
             .and_then(|s| s.try_into().ok())
             .ok_or(ErrorKind::InvalidConfig)?;
-        let mode = LinkMode::from_raw(read_u8(bytes, 80)?).ok_or(ErrorKind::InvalidConfig)?;
+        let mode_raw = read_u8(bytes, 80)?;
         let default_vc = match read_u8(bytes, 81)? {
             0xFF => None,
             vcid => Some(DataVc::from_vcid(vcid).ok_or(ErrorKind::InvalidConfig)?),
         };
-        if mode == LinkMode::NativeRealtime && (rx_port == 0 || tx_port == 0) {
-            return Err(ErrorKind::InvalidConfig);
-        }
         if bytes.get(82..88) != Some(&[0_u8; 6][..]) {
             return Err(ErrorKind::InvalidConfig);
         }
+
+        let mode = match mode_raw {
+            0 => LinkMode::Lockstep,
+            1 => {
+                let rx_port = NonZeroU16::new(rx_port_raw).ok_or(ErrorKind::InvalidConfig)?;
+                let tx_port = NonZeroU16::new(tx_port_raw).ok_or(ErrorKind::InvalidConfig)?;
+                LinkMode::NativeRealtime(RealtimeConfig {
+                    default_vc,
+                    rx_port,
+                    tx_port,
+                    ground_ipv4,
+                })
+            }
+            _ => return Err(ErrorKind::InvalidConfig),
+        };
 
         Ok(Self {
             spacecraft_id,
@@ -320,10 +324,6 @@ impl LinkConfig {
             farm_initial_vr,
             apid_routes,
             mode,
-            default_vc,
-            rx_port,
-            tx_port,
-            ground_ipv4,
         })
     }
 
@@ -357,17 +357,21 @@ impl LinkConfig {
             count = count.saturating_add(1);
         }
         write_slice(&mut out, 35, &[count]);
-        write_slice(&mut out, 72, &self.rx_port.to_ne_bytes());
-        write_slice(&mut out, 74, &self.tx_port.to_ne_bytes());
-        write_slice(&mut out, 76, &self.ground_ipv4);
-        write_slice(
-            &mut out,
-            80,
-            &[
-                self.mode.to_raw(),
-                self.default_vc.map_or(0xFF, DataVc::vcid),
-            ],
-        );
+        match self.mode {
+            LinkMode::Lockstep => {
+                write_slice(&mut out, 80, &[self.mode.to_raw(), 0xFF]);
+            }
+            LinkMode::NativeRealtime(rt) => {
+                write_slice(&mut out, 72, &rt.rx_port.get().to_ne_bytes());
+                write_slice(&mut out, 74, &rt.tx_port.get().to_ne_bytes());
+                write_slice(&mut out, 76, &rt.ground_ipv4);
+                write_slice(
+                    &mut out,
+                    80,
+                    &[self.mode.to_raw(), rt.default_vc.map_or(0xFF, DataVc::vcid)],
+                );
+            }
+        }
         out
     }
 
@@ -380,10 +384,12 @@ impl LinkConfig {
             .find_map(|route| (route.apid == apid).then_some(route.vc))
             .or(match self.mode {
                 LinkMode::Lockstep => None,
-                LinkMode::NativeRealtime => self.default_vc,
+                LinkMode::NativeRealtime(rt) => rt.default_vc,
             })
     }
 }
+
+const _: () = assert!(LinkConfig::TABLE_SIZE == 88);
 
 impl Default for LinkConfig {
     fn default() -> Self {
