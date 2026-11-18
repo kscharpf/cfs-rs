@@ -13,7 +13,7 @@ use refapp_flight::layout::{PayloadMode, Status, housekeeping};
 use refapp_flight::schedule::Periodic;
 use refapp_flight::{Downlink, Stream};
 use refapp_scenario::{Apid, Instant, Output};
-use step_lab_core::msg::{ScnPayloadMode, ScnStatusMsg, WakeTimeMsg};
+use step_lab_core::msg::{ScnPayloadMode, ScnStatusMsg, WakeTurn};
 
 /// Event ID for `hk_lab` start-up event.
 pub const HK_LAB_STARTUP_EID: u16 = 1;
@@ -35,12 +35,9 @@ impl Output for HkSink {
     }
 }
 
-/// Converts a [`ScnStatusMsg`] into [`refapp_flight::layout::Status`].
-const fn status_from_msg(msg: &ScnStatusMsg) -> Option<Status> {
-    let Some(s) = msg.status() else {
-        return None;
-    };
-    Some(Status {
+/// Converts a [`step_lab_core::msg::ScnStatus`] into [`refapp_flight::layout::Status`].
+const fn status_from_scn(s: step_lab_core::msg::ScnStatus) -> Status {
+    Status {
         commands_executed: s.commands_executed,
         commands_rejected: s.commands_rejected,
         queue_occupancy: s.queue_occupancy,
@@ -51,7 +48,7 @@ const fn status_from_msg(msg: &ScnStatusMsg) -> Option<Status> {
             ScnPayloadMode::Off => PayloadMode::Off,
             ScnPayloadMode::On => PayloadMode::On,
         },
-    })
+    }
 }
 
 /// Emits all housekeeping packets due up to `now` and returns the next deadline.
@@ -149,8 +146,9 @@ fn app_main() {
                 send_done(None);
             }
             cfe_sys::NODE_SCN_STATUS_MID => {
-                if let Some(next_status) =
-                    ScnStatusMsg::from_bytes(buf.as_bytes()).and_then(|msg| status_from_msg(&msg))
+                if let Some(next_status) = ScnStatusMsg::from_bytes(buf.as_bytes())
+                    .and_then(|msg| msg.status())
+                    .map(status_from_scn)
                 {
                     status = next_status;
                 } else {
@@ -162,24 +160,26 @@ fn app_main() {
                 }
             }
             cfe_sys::NODE_WAKE_HK_MID => {
-                let next_deadline = WakeTimeMsg::from_bytes(buf.as_bytes()).map_or_else(
-                    || {
-                        let _ = evs::send_event(
-                            13,
-                            EventType::Error,
-                            "HK_LAB: Malformed WakeTimeMsg received",
-                        );
-                        None
-                    },
-                    |wake| {
-                        handle_wake_hk(
-                            &mut downlink,
-                            &status,
-                            &mut hk_slot,
-                            Instant::from_micros(wake.now),
-                        )
-                    },
-                );
+                let next_deadline = WakeTurn::Hk
+                    .decode(mid.as_u32(), buf.as_bytes())
+                    .map_or_else(
+                        || {
+                            let _ = evs::send_event(
+                                13,
+                                EventType::Error,
+                                "HK_LAB: Malformed WakeTimeMsg received",
+                            );
+                            None
+                        },
+                        |now_us| {
+                            handle_wake_hk(
+                                &mut downlink,
+                                &status,
+                                &mut hk_slot,
+                                Instant::from_micros(now_us),
+                            )
+                        },
+                    );
                 send_done(next_deadline);
             }
             _ => {}

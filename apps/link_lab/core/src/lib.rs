@@ -12,7 +12,7 @@ pub mod event;
 pub mod uplink;
 
 use aldis::core::{ErrorKind, Result};
-use aldis::spp::{PacketType, SpacePacket, SpacePacketHeader};
+use aldis::spp::{PacketType, SpacePacket};
 pub use config::{ApidRoute, DataVc, LinkConfig, LinkMode, MAX_APID_ROUTES, RealtimeConfig};
 pub use downlink::{DownlinkState, TM_DATA_FIELD_LEN, TM_FRAME_LEN, TM_QUEUE_LEN};
 pub use event::{
@@ -39,17 +39,17 @@ pub fn packet_apid(packet: &[u8]) -> Option<u16> {
 
 /// Returns `true` if `packet` is a valid cFE command Space Packet.
 ///
-/// Checks that `packet` is at least [`MIN_COMMAND_PACKET_LEN`] bytes long and decodes a primary
-/// header with `Version == 0`, `Type == Telecommand`, and `SecHdrFlag == 1`.
+/// Checks that `packet` is at least [`MIN_COMMAND_PACKET_LEN`] bytes long and decodes an exact
+/// Space Packet with `Version == 0`, `Type == Telecommand`, and `SecHdrFlag == 1`.
 #[must_use]
 pub fn is_valid_command_packet(packet: &[u8]) -> bool {
     if packet.len() < MIN_COMMAND_PACKET_LEN {
         return false;
     }
-    let Ok(hdr) = SpacePacketHeader::decode(packet) else {
+    let Ok(pkt) = SpacePacket::decode_exact(packet) else {
         return false;
     };
-    hdr.packet_type() == PacketType::Telecommand && hdr.has_secondary_header()
+    pkt.packet_type() == PacketType::Telecommand && pkt.has_secondary_header()
 }
 
 /// Data link level of operation (§4.3).

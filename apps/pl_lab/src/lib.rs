@@ -13,7 +13,7 @@ use refapp_flight::layout::{PayloadMode, payload};
 use refapp_flight::schedule::Periodic;
 use refapp_flight::{Downlink, Stream};
 use refapp_scenario::{Apid, Instant, Output};
-use step_lab_core::msg::{ScnPayloadMode, ScnStatusMsg, WakeTimeMsg};
+use step_lab_core::msg::{ScnPayloadMode, ScnStatusMsg, WakeTurn};
 
 /// Event ID for `pl_lab` start-up event.
 pub const PL_LAB_STARTUP_EID: u16 = 1;
@@ -63,22 +63,17 @@ fn handle_wake_pl(
     Periodic::PAYLOAD.at(*payload_slot).map(Instant::as_micros)
 }
 
-/// Runs the `pl_lab` initialization, Software Bus dispatch loop, and teardown.
-fn app_main() {
-    // 1. Register with EVS.
+/// Initializes `pl_lab`: registers with EVS, creates the SB pipe, subscribes, and emits startup event.
+fn init_app() -> Result<Pipe, ()> {
     if evs::register().is_err() {
-        es::exit_app(RunStatus::AppError);
-        return;
+        return Err(());
     }
 
-    // 2. Create Software Bus input pipe.
-    let Ok(mut pipe) = Pipe::create(32, "PL_LAB_PIPE") else {
+    let Ok(pipe) = Pipe::create(32, "PL_LAB_PIPE") else {
         let _ = evs::send_event(2, EventType::Critical, "PL_LAB: Failed to create SB pipe");
-        es::exit_app(RunStatus::AppError);
-        return;
+        return Err(());
     };
 
-    // 3. Subscribe to scenario turns and status updates.
     if pipe
         .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_START_MID), Qos::DEFAULT, 4)
         .is_err()
@@ -99,18 +94,26 @@ fn app_main() {
             "PL_LAB: Failed to subscribe to turns",
         );
         let _ = pipe.delete();
-        es::exit_app(RunStatus::AppError);
-        return;
+        return Err(());
     }
 
-    // 4. Send start-up event.
     let _ = evs::send_event(
         PL_LAB_STARTUP_EID,
         EventType::Information,
         "PL_LAB App Initialized. Version 0.1.0",
     );
 
-    // 5. Initialize payload state.
+    Ok(pipe)
+}
+
+/// Runs the `pl_lab` initialization, Software Bus dispatch loop, and teardown.
+fn app_main() {
+    let Ok(mut pipe) = init_app() else {
+        es::exit_app(RunStatus::AppError);
+        return;
+    };
+
+    // Initialize payload state.
     let mut downlink = Downlink::new();
     let mut payload_mode = PayloadMode::default();
     let mut payload_slot = 0_u32;
@@ -152,25 +155,27 @@ fn app_main() {
                 }
             }
             cfe_sys::NODE_WAKE_PL_MID => {
-                let next_deadline = WakeTimeMsg::from_bytes(buf.as_bytes()).map_or_else(
-                    || {
-                        let _ = evs::send_event(
-                            13,
-                            EventType::Error,
-                            "PL_LAB: Malformed WakeTimeMsg received",
-                        );
-                        None
-                    },
-                    |wake| {
-                        handle_wake_pl(
-                            &mut downlink,
-                            payload_mode,
-                            &mut payload_slot,
-                            &mut payload_number,
-                            Instant::from_micros(wake.now),
-                        )
-                    },
-                );
+                let next_deadline = WakeTurn::Pl
+                    .decode(mid.as_u32(), buf.as_bytes())
+                    .map_or_else(
+                        || {
+                            let _ = evs::send_event(
+                                13,
+                                EventType::Error,
+                                "PL_LAB: Malformed WakeTimeMsg received",
+                            );
+                            None
+                        },
+                        |now_us| {
+                            handle_wake_pl(
+                                &mut downlink,
+                                payload_mode,
+                                &mut payload_slot,
+                                &mut payload_number,
+                                Instant::from_micros(now_us),
+                            )
+                        },
+                    );
                 send_done(next_deadline);
             }
             _ => {}

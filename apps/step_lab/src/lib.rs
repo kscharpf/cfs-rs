@@ -6,10 +6,10 @@
 use cfe::es::{self, RunStatus};
 use cfe::evs::{self, EventType};
 use cfe::osal::TcpStream;
-use cfe::sb::{MsgId, Pipe, Qos, Timeout, check_pipe_depth, transmit_msg};
-use node_glue::prepare_msg;
+use cfe::sb::{MsgId, Pipe, Qos, Timeout, check_pipe_depth};
+use node_glue::{send_sb_msg, send_wake_turn};
 use step_lab_core::msg::{
-    DoneMsg, LinkLevel, RecordMsg, StartMsg, UnitMsg, WakeRxMsg, WakeTimeMsg, WakeTurn, WakeTxMsg,
+    DoneMsg, LinkLevel, RecordMsg, StartMsg, UnitMsg, WakeRxMsg, WakeTurn, WakeTxMsg,
 };
 use step_lab_core::proto::{
     self, CodecError, EventArgs, Message, NodeOutput, Outputs, PROTOCOL_VERSION, Role, UnitsIter,
@@ -407,29 +407,15 @@ fn wake_time_turn(
     now: u64,
     turn: WakeTurn,
 ) -> Result<(), ()> {
-    let mut wake = WakeTimeMsg::new(now);
-    if prepare_msg(
-        wake.msg_mut(),
-        turn.msg_id(),
-        core::mem::size_of::<WakeTimeMsg>(),
+    send_wake_turn(
+        turn,
+        now,
+        17,
+        "STEP_LAB: Failed to init WakeTimeMsg",
+        18,
+        "STEP_LAB: Failed to transmit WakeTimeMsg",
     )
-    .is_err()
-    {
-        let _ = evs::send_event(
-            17,
-            EventType::Critical,
-            "STEP_LAB: Failed to init WakeTimeMsg",
-        );
-        return Err(());
-    }
-    if transmit_msg(wake.msg(), true).is_err() {
-        let _ = evs::send_event(
-            18,
-            EventType::Critical,
-            "STEP_LAB: Failed to transmit WakeTimeMsg",
-        );
-        return Err(());
-    }
+    .map_err(|_| ())?;
     wait_collect_turn(pipe, collector, earliest_deadline)
 }
 
@@ -455,28 +441,14 @@ fn handle_step(
             );
             return Err(());
         };
-        if prepare_msg(
-            wake_rx.msg_mut(),
-            cfe_sys::NODE_WAKE_RX_MID,
-            core::mem::size_of::<WakeRxMsg>(),
+        send_sb_msg(
+            &mut wake_rx,
+            11,
+            "STEP_LAB: Failed to init WakeRxMsg",
+            12,
+            "STEP_LAB: Failed to transmit WakeRxMsg",
         )
-        .is_err()
-        {
-            let _ = evs::send_event(
-                11,
-                EventType::Critical,
-                "STEP_LAB: Failed to init WakeRxMsg",
-            );
-            return Err(());
-        }
-        if transmit_msg(wake_rx.msg(), true).is_err() {
-            let _ = evs::send_event(
-                12,
-                EventType::Critical,
-                "STEP_LAB: Failed to transmit WakeRxMsg",
-            );
-            return Err(());
-        }
+        .map_err(|_| ())?;
         wait_collect_turn(pipe, &mut collector, &mut earliest_deadline)?;
     }
 
@@ -487,28 +459,14 @@ fn handle_step(
 
     // 5. WAKE_TX to link_lab -> collect until DONE.
     let mut wake_tx = WakeTxMsg::new(now, tx_slot);
-    if prepare_msg(
-        wake_tx.msg_mut(),
-        cfe_sys::NODE_WAKE_TX_MID,
-        core::mem::size_of::<WakeTxMsg>(),
+    send_sb_msg(
+        &mut wake_tx,
+        13,
+        "STEP_LAB: Failed to init WakeTxMsg",
+        14,
+        "STEP_LAB: Failed to transmit WakeTxMsg",
     )
-    .is_err()
-    {
-        let _ = evs::send_event(
-            13,
-            EventType::Critical,
-            "STEP_LAB: Failed to init WakeTxMsg",
-        );
-        return Err(());
-    }
-    if transmit_msg(wake_tx.msg(), true).is_err() {
-        let _ = evs::send_event(
-            14,
-            EventType::Critical,
-            "STEP_LAB: Failed to transmit WakeTxMsg",
-        );
-        return Err(());
-    }
+    .map_err(|_| ())?;
     wait_collect_turn(pipe, &mut collector, &mut earliest_deadline)?;
 
     // 6. Reply STEP_RESULT with all outputs in arrival order and earliest next_deadline.
@@ -528,24 +486,15 @@ fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
 
     // Send START to all apps with configured LinkLevel
     let mut start_msg = StartMsg::new(level);
-    if prepare_msg(
-        start_msg.msg_mut(),
-        cfe_sys::NODE_START_MID,
-        core::mem::size_of::<StartMsg>(),
+    if send_sb_msg(
+        &mut start_msg,
+        15,
+        "STEP_LAB: Failed to init StartMsg",
+        16,
+        "STEP_LAB: Failed to transmit StartMsg",
     )
     .is_err()
     {
-        let _ = evs::send_event(15, EventType::Critical, "STEP_LAB: Failed to init StartMsg");
-        let _ = stream.close();
-        let _ = pipe.delete();
-        return;
-    }
-    if transmit_msg(start_msg.msg(), true).is_err() {
-        let _ = evs::send_event(
-            16,
-            EventType::Critical,
-            "STEP_LAB: Failed to transmit StartMsg",
-        );
         let _ = stream.close();
         let _ = pipe.delete();
         return;

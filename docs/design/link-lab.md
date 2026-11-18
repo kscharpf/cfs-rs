@@ -336,19 +336,19 @@ Level `Cop1`. Most of the work is already in WP-4.
   - [`kscharpf/aldis#590`](https://github.com/kscharpf/aldis/issues/590) (A-3): `FlightNode` packet-level phase (`handle_delivered`) made public — implemented and consumed by `scn_lab` at rev `4852ee68`.
   - [`kscharpf/aldis#591`](https://github.com/kscharpf/aldis/issues/591) (A-4): `SpacePacketHeader` decode made public — open; non-blocking because packets arrive whole and `SpacePacket::decode_exact` suffices.
   - `aldis-link` requires the `epp` feature alongside `spp` (`Cargo.toml` enables `epp` in addition to the L11 feature list).
-- **Post-v1 options:** All five §8 options are deferred to [`kscharpf/cfs-rs#27`](https://github.com/kscharpf/cfs-rs/issues/27).
+- **Post-v1 options:** Tracked in [`kscharpf/cfs-rs#27`](https://github.com/kscharpf/cfs-rs/issues/27) (three of five now implemented; see §8).
 
 ## 8. After the first version
 
-All five post-v1 options are deferred to [`https://github.com/kscharpf/cfs-rs/issues/27`](https://github.com/kscharpf/cfs-rs/issues/27):
+Post-v1 options tracked in [`https://github.com/kscharpf/cfs-rs/issues/27`](https://github.com/kscharpf/cfs-rs/issues/27):
 
-| Option | Value |
-|---|---|
-| Native mode: cFE's own telemetry and commands over TM and TC frames, in real time, to a ground system (Aldis already has a Yamcs interop directory) | The feature a cFS user would actually want; a demonstration, since no trace covers it |
-| Routing and managed parameters from a cFE table | Exercises TBL; makes the app configurable without a rebuild |
-| AOS and USLP levels | The scenario's `a4-*` cases |
-| `scn_lab` split into command, housekeeping, and payload apps | More Software Bus integration |
-| Move `apps/link_lab` to its own repository | Once the `cfe` crate's API is stable |
+| Option | Status | Value |
+|---|---|---|
+| Native mode: cFE's own telemetry and commands over TM and TC frames, in real time, to a ground system (Aldis already has a Yamcs interop directory) | **Implemented** (PR #40) | The feature a cFS user would actually want; a demonstration, since no trace covers it |
+| Routing and managed parameters from a cFE table | **Implemented** (PR #37) | Exercises TBL; makes the app configurable without a rebuild |
+| AOS and USLP levels | Deferred (`#27`) | The scenario's `a4-*` cases |
+| `scn_lab` split into command, housekeeping, and payload apps | **Implemented** (PR #45) | More Software Bus integration |
+| Move `apps/link_lab` to its own repository | Deferred (`#27`) | Once the `cfe` crate's API is stable |
 
 ## 9. Risks
 

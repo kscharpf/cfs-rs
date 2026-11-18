@@ -19,7 +19,7 @@ use refapp_flight::{Downlink, Stream};
 use refapp_scenario::generated::apid;
 use refapp_scenario::{Apid, Instant, Output};
 use step_lab_core::msg::{
-    CmdPacketDoneMsg, CmdPacketMsg, ScnPayloadMode, ScnStatus, ScnStatusMsg, WakeTimeMsg,
+    CmdPacketDoneMsg, CmdPacketMsg, ScnPayloadMode, ScnStatus, ScnStatusMsg, WakeTurn,
 };
 
 /// Event ID for `cmd_lab` start-up event.
@@ -28,10 +28,8 @@ pub const CMD_LAB_STARTUP_EID: u16 = 1;
 /// Sends a `CMD_PACKET_DONE` message to `link_lab` signaling command packet processing complete.
 fn send_cmd_packet_done() {
     let mut done = CmdPacketDoneMsg::new();
-    send_sb_msg(
-        done.msg_mut(),
-        cfe_sys::NODE_CMD_PACKET_DONE_MID,
-        core::mem::size_of::<CmdPacketDoneMsg>(),
+    let _ = send_sb_msg(
+        &mut done,
         6,
         "CMD_LAB: Failed to init CMD_PACKET_DONE msg",
         7,
@@ -53,10 +51,8 @@ fn send_scn_status(status: &Status) {
             PayloadMode::On => ScnPayloadMode::On,
         },
     });
-    send_sb_msg(
-        msg.msg_mut(),
-        cfe_sys::NODE_SCN_STATUS_MID,
-        core::mem::size_of::<ScnStatusMsg>(),
+    let _ = send_sb_msg(
+        &mut msg,
         14,
         "CMD_LAB: Failed to init SCN_STATUS msg",
         15,
@@ -357,8 +353,8 @@ fn app_main() {
                 send_cmd_packet_done();
             }
             cfe_sys::NODE_WAKE_CMD_MID => {
-                if let Some(wake) = WakeTimeMsg::from_bytes(buf.as_bytes()) {
-                    let now = Instant::from_micros(wake.now);
+                if let Some(now_us) = WakeTurn::Cmd.decode(mid.as_u32(), buf.as_bytes()) {
+                    let now = Instant::from_micros(now_us);
                     let mut sink = CmdSink;
                     cmd_app.execute_due(now, &mut sink);
                     cmd_app.dump_segments(now, &mut sink);

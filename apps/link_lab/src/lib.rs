@@ -48,10 +48,8 @@ fn send_cmd_packet(now: u64, packet: &[u8]) {
         );
         return;
     };
-    send_sb_msg(
-        msg.msg_mut(),
-        cfe_sys::NODE_CMD_PACKET_MID,
-        core::mem::size_of::<CmdPacketMsg>(),
+    let _ = send_sb_msg(
+        &mut msg,
         7,
         "LINK_LAB: Failed to init CMD_PACKET msg",
         8,
@@ -69,10 +67,8 @@ fn send_unit(unit: &[u8]) {
         );
         return;
     };
-    send_sb_msg(
-        msg.msg_mut(),
-        cfe_sys::NODE_UNIT_MID,
-        core::mem::size_of::<UnitMsg>(),
+    let _ = send_sb_msg(
+        &mut msg,
         10,
         "LINK_LAB: Failed to init UNIT msg",
         11,
@@ -90,10 +86,8 @@ fn send_record_packet_out(apid: u16, packet: &[u8]) {
         );
         return;
     };
-    send_sb_msg(
-        msg.msg_mut(),
-        cfe_sys::NODE_RECORD_MID,
-        core::mem::size_of::<RecordMsg>(),
+    let _ = send_sb_msg(
+        &mut msg,
         16,
         "LINK_LAB: Failed to init RECORD msg",
         17,
@@ -602,13 +596,16 @@ impl UplinkSink for RealtimeUplinkSink {
 struct RealtimeDownlinkSink<'a> {
     udp: &'a UdpSocket,
     ground_ipv4: Ipv4Addr,
-    tx_port: u16,
+    tx_port: core::num::NonZeroU16,
     send_err_logged: bool,
 }
 
 impl DownlinkSink for RealtimeDownlinkSink<'_> {
     fn unit(&mut self, unit: &[u8]) {
-        match self.udp.send_to_ipv4(unit, self.ground_ipv4, self.tx_port) {
+        match self
+            .udp
+            .send_to_ipv4(unit, self.ground_ipv4, self.tx_port.get())
+        {
             Ok(_) => self.send_err_logged = false,
             Err(_) => {
                 if !self.send_err_logged {
@@ -648,7 +645,7 @@ fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig, rt: RealtimeConfig)
     let mut down_sink = RealtimeDownlinkSink {
         udp: &udp,
         ground_ipv4: rt.ground_ipv4,
-        tx_port: rt.tx_port.get(),
+        tx_port: rt.tx_port,
         send_err_logged: false,
     };
     let mut up_sink = RealtimeUplinkSink;
