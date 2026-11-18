@@ -12,6 +12,7 @@ members = [
     "apps/cmd_lab",
     "apps/hk_lab",
     "apps/pl_lab",
+    "apps/node_glue",
 ]
 
 [workspace.package]
@@ -28,6 +29,7 @@ cfe-sys = { path = "crates/cfe-sys" }
 cfe = { path = "crates/cfe" }
 step-lab-core = { path = "apps/step_lab/core" }
 link-lab-core = { path = "apps/link_lab/core" }
+node-glue = { path = "apps/node_glue" }
 aldis = { git = "https://github.com/kscharpf/aldis.git", rev = "4852ee687ab64b22041dfb556c33ef0dc8666e83", default-features = false, features = ["core", "spp", "epp", "tm", "tc", "link", "cop1", "time", "spp-time"] }
 refapp-scenario = { git = "https://github.com/kscharpf/aldis.git", rev = "4852ee687ab64b22041dfb556c33ef0dc8666e83" }
 refapp-flight = { git = "https://github.com/kscharpf/aldis.git", rev = "4852ee687ab64b22041dfb556c33ef0dc8666e83" }

@@ -13,8 +13,10 @@ test = false
 doctest = false
 
 [dependencies]
+aldis = { workspace = true }
 cfe = { workspace = true }
 cfe-sys = { workspace = true }
+node-glue = { workspace = true }
 refapp-flight = { workspace = true }
 refapp-scenario = { workspace = true }
 step-lab-core = { workspace = true }
