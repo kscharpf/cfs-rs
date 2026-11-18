@@ -23,6 +23,7 @@ use crate::osal::{self, TcpStream, UdpSocket, local_time_us};
 use crate::sb::{self, MsgId, Pipe, PipeId, Qos, Timeout};
 use crate::status::Status;
 use crate::tbl::{self, Table, TableOptions};
+use core::net::Ipv4Addr;
 use core::num::NonZeroUsize;
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -879,9 +880,21 @@ fn test_osal_tcp_stream() {
     assert_eq!(OS_SOCKET_SEND_CALLS.load(Ordering::SeqCst), 1);
 
     let mut recv_bytes = [0u8; 8];
-    let recvd = stream.recv(&mut recv_bytes, 1000).unwrap();
+    let recvd = stream
+        .recv(&mut recv_bytes, osal::Timeout::Millis(1000))
+        .unwrap();
     assert_eq!(recvd, 4);
     assert_eq!(&recv_bytes[..4], &[1, 2, 3, 4]);
+    assert_eq!(
+        stream.recv(&mut recv_bytes, osal::Timeout::Poll).unwrap(),
+        4
+    );
+    assert_eq!(
+        stream
+            .recv(&mut recv_bytes, osal::Timeout::PendForever)
+            .unwrap(),
+        4
+    );
 
     // Test read_exact with chunked recv
     RECV_CHUNK_MODE.store(1, Ordering::SeqCst);
@@ -953,6 +966,10 @@ fn test_osal_udp_socket_and_local_time() {
             cfe_sys::OS_CHECK.cast_signed()
         );
         assert_eq!(osal::Timeout::PendForever.to_raw(), cfe_sys::OS_PEND);
+        assert_eq!(
+            osal::Timeout::Millis(0).to_raw(),
+            cfe_sys::OS_CHECK.cast_signed()
+        );
         assert_eq!(osal::Timeout::Millis(250).to_raw(), 250);
         assert_eq!(osal::Timeout::Millis(u32::MAX).to_raw(), i32::MAX);
 
@@ -984,7 +1001,7 @@ fn test_osal_udp_socket_and_local_time() {
         }
 
         assert_eq!(
-            sock.send_to_ipv4(&[5, 6, 7], [192, 168, 10, 42], 3234),
+            sock.send_to_ipv4(&[5, 6, 7], Ipv4Addr::new(192, 168, 10, 42), 3234),
             Ok(3)
         );
         assert_eq!(LAST_UDP_PORT.load(Ordering::SeqCst), 3234);
@@ -997,7 +1014,7 @@ fn test_osal_udp_socket_and_local_time() {
         // send_to failure
         UDP_SENDTO_FAIL.store(true, Ordering::SeqCst);
         assert_eq!(
-            sock.send_to_ipv4(&[1], [127, 0, 0, 1], 2234),
+            sock.send_to_ipv4(&[1], Ipv4Addr::LOCALHOST, 2234),
             Err(Status::from_raw(cfe_sys::OS_ERROR))
         );
         UDP_SENDTO_FAIL.store(false, Ordering::SeqCst);

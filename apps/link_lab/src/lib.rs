@@ -3,14 +3,16 @@
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
 
+use core::net::Ipv4Addr;
+
 use cfe::es::{self, RunStatus};
 use cfe::evs::{self, EventType};
 use cfe::osal::{self, UdpSocket};
 use cfe::sb::{MsgId, Pipe, Qos, Timeout, transmit_msg};
 use cfe::tbl::{Table, TableOptions};
 use link_lab_core::{
-    DownlinkSink, Instant, Level, Link, LinkConfig, LinkMode, RealtimeConfig, TC_FRAME_AREA_LEN,
-    UplinkSink, packet_apid,
+    DownlinkSink, Instant, Level, Link, LinkConfig, LinkMode, MIN_COMMAND_PACKET_LEN,
+    RealtimeConfig, TC_FRAME_AREA_LEN, UplinkSink, is_valid_command_packet, packet_apid,
 };
 use step_lab_core::msg::{
     CmdPacketMsg, DoneMsg, LinkLevel, MAX_UNIT_LEN, RecordMsg, StartMsg, TlmPacketMsg, UnitMsg,
@@ -643,18 +645,12 @@ fn run_lockstep(pipe: &mut Pipe, table: &mut Table, config: &mut LinkConfig) -> 
     run_status
 }
 
-const MIN_CMD_PACKET_LEN: usize = core::mem::size_of::<cfe_sys::CFE_MSG_CommandHeader_t>();
-const _: () = assert!(MIN_CMD_PACKET_LEN == 8);
+const _: () =
+    assert!(MIN_COMMAND_PACKET_LEN == core::mem::size_of::<cfe_sys::CFE_MSG_CommandHeader_t>());
 
 const RX_BUF_LEN: usize = TC_FRAME_AREA_LEN.saturating_add(1);
 const _: () = assert!(RX_BUF_LEN == 129);
-
-const fn is_valid_command_packet(packet: &[u8]) -> bool {
-    let Some(&byte0) = packet.first() else {
-        return false;
-    };
-    packet.len() >= MIN_CMD_PACKET_LEN && (byte0 & 0x10) != 0
-}
+const _: () = assert!(RX_BUF_LEN > TC_FRAME_AREA_LEN);
 
 struct RealtimeUplinkSink;
 
@@ -697,22 +693,25 @@ impl UplinkSink for RealtimeUplinkSink {
 
 struct RealtimeDownlinkSink<'a> {
     udp: &'a UdpSocket,
-    ground_ipv4: [u8; 4],
+    ground_ipv4: Ipv4Addr,
     tx_port: u16,
+    send_err_logged: bool,
 }
 
 impl DownlinkSink for RealtimeDownlinkSink<'_> {
     fn unit(&mut self, unit: &[u8]) {
-        if self
-            .udp
-            .send_to_ipv4(unit, self.ground_ipv4, self.tx_port)
-            .is_err()
-        {
-            let _ = evs::send_event(
-                35,
-                EventType::Error,
-                "LINK_LAB: UDP send_to_ipv4 failed for TM frame",
-            );
+        match self.udp.send_to_ipv4(unit, self.ground_ipv4, self.tx_port) {
+            Ok(_) => self.send_err_logged = false,
+            Err(_) => {
+                if !self.send_err_logged {
+                    self.send_err_logged = true;
+                    let _ = evs::send_event(
+                        35,
+                        EventType::Error,
+                        "LINK_LAB: UDP send_to_ipv4 failed for TM frame",
+                    );
+                }
+            }
         }
     }
 }
@@ -742,6 +741,7 @@ fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig, rt: RealtimeConfig)
         udp: &udp,
         ground_ipv4: rt.ground_ipv4,
         tx_port: rt.tx_port.get(),
+        send_err_logged: false,
     };
     let mut up_sink = RealtimeUplinkSink;
     let mut rx_buf = [0u8; RX_BUF_LEN];
