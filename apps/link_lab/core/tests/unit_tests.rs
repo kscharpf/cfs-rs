@@ -15,6 +15,8 @@
     reason = "integration tests use standard test ergonomics (assertions, panics, indexing, unwrap)"
 )]
 
+use core::num::NonZeroU16;
+
 use aldis::core::ErrorKind;
 use aldis::core::ids::FrameSeqNum;
 use aldis::core::security::SecurityLayout;
@@ -28,8 +30,8 @@ use link_lab_core::{
     APP_DOWNLINK_REFUSED, APP_FARM1_STATE, APP_FARM1_UNLOCK, APP_FRAME_DISCARDED,
     APP_FRAME_REJECTED, APP_PACKET_REJECTED, APP_SEQUENCE_VIOLATION, APP_UNKNOWN_MAP, ApidRoute,
     DataVc, DownlinkSink, DownlinkState, Level, Link, LinkConfig, LinkMode, MAX_APID_ROUTES,
-    TC_FRAME_AREA_LEN, TC_REASSEMBLY_AREA_LEN, TM_FRAME_LEN, UplinkBuffers, UplinkMode, UplinkSink,
-    UplinkState,
+    RealtimeConfig, TC_FRAME_AREA_LEN, TC_REASSEMBLY_AREA_LEN, TM_FRAME_LEN, UplinkBuffers,
+    UplinkMode, UplinkSink, UplinkState,
 };
 use refapp_scenario::Instant;
 use refapp_scenario::generated::{SPACECRAFT_ID, apid, tc, tm};
@@ -524,18 +526,26 @@ fn test_link_config_from_table_bytes_round_trip_and_routing() {
     assert_eq!(decoded_custom.vc_for_apid(0x0123), Some(DataVc::Payload));
     assert_eq!(decoded_custom.vc_for_apid(apid::HOUSEKEEPING), None);
 
-    // NativeRealtime mode falls back to default_vc when APID is not in apid_routes,
-    // while Lockstep ignores default_vc even if set.
-    let mut lockstep_with_default = scenario_cfg;
-    lockstep_with_default.default_vc = Some(DataVc::Realtime);
-    assert_eq!(lockstep_with_default.vc_for_apid(0x0008), None);
+    // Lockstep mode has no default_vc and ignores unmapped APIDs (and ignores any UDP fields in table bytes).
+    assert_eq!(scenario_cfg.vc_for_apid(0x0008), None);
+    let mut lockstep_with_table_rt_fields = bytes;
+    lockstep_with_table_rt_fields[72..74].copy_from_slice(&1234_u16.to_ne_bytes());
+    lockstep_with_table_rt_fields[74..76].copy_from_slice(&2234_u16.to_ne_bytes());
+    lockstep_with_table_rt_fields[76..80].copy_from_slice(&[127, 0, 0, 1]);
+    lockstep_with_table_rt_fields[81] = DataVc::Realtime.vcid();
+    let decoded_lockstep =
+        LinkConfig::from_table_bytes(&lockstep_with_table_rt_fields).expect("valid lockstep table");
+    assert_eq!(decoded_lockstep, scenario_cfg);
+    assert_eq!(decoded_lockstep.vc_for_apid(0x0008), None);
 
+    // NativeRealtime mode falls back to default_vc when APID is not in apid_routes.
     let mut realtime = scenario_cfg;
-    realtime.mode = LinkMode::NativeRealtime;
-    realtime.default_vc = Some(DataVc::Realtime);
-    realtime.rx_port = 11234;
-    realtime.tx_port = 12234;
-    realtime.ground_ipv4 = [10, 0, 0, 2];
+    realtime.mode = LinkMode::NativeRealtime(RealtimeConfig {
+        default_vc: Some(DataVc::Realtime),
+        rx_port: NonZeroU16::new(11234).expect("non-zero rx_port"),
+        tx_port: NonZeroU16::new(12234).expect("non-zero tx_port"),
+        ground_ipv4: [10, 0, 0, 2],
+    });
     let rt_bytes = realtime.to_table_bytes();
     let decoded_rt = LinkConfig::from_table_bytes(&rt_bytes).expect("valid realtime table bytes");
     assert_eq!(decoded_rt, realtime);
@@ -545,7 +555,12 @@ fn test_link_config_from_table_bytes_round_trip_and_routing() {
 
     // NativeRealtime with default_vc = None refuses unmapped APIDs.
     let mut rt_no_default = realtime;
-    rt_no_default.default_vc = None;
+    rt_no_default.mode = LinkMode::NativeRealtime(RealtimeConfig {
+        default_vc: None,
+        rx_port: NonZeroU16::new(11234).expect("non-zero rx_port"),
+        tx_port: NonZeroU16::new(12234).expect("non-zero tx_port"),
+        ground_ipv4: [10, 0, 0, 2],
+    });
     let rt_no_def_bytes = rt_no_default.to_table_bytes();
     let decoded_rt_no_def = LinkConfig::from_table_bytes(&rt_no_def_bytes)
         .expect("valid realtime table without default");
@@ -645,9 +660,11 @@ fn test_link_config_from_table_bytes_validation_errors() {
     assert_invalid(|b| {
         b[80] = 1;
         b[72..74].copy_from_slice(&0_u16.to_ne_bytes());
+        b[74..76].copy_from_slice(&2234_u16.to_ne_bytes());
     });
     assert_invalid(|b| {
         b[80] = 1;
+        b[72..74].copy_from_slice(&1234_u16.to_ne_bytes());
         b[74..76].copy_from_slice(&0_u16.to_ne_bytes());
     });
 }

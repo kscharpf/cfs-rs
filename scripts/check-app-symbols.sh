@@ -5,7 +5,8 @@
 # 3. Contain no panic/unwind symbols.
 set -eu
 
-cf_dir="${1:?usage: check-app-symbols.sh <path-to-cf-dir>}"
+cf_dir="${1:?usage: check-app-symbols.sh <path-to-cf-dir> [app.so:EntrySym ...]}"
+shift
 
 status=0
 
@@ -65,8 +66,20 @@ check_app() {
     echo "app symbols ok: $base exports only $expected_sym, heap-free, panic-free"
 }
 
-check_app "$cf_dir/link_lab.so" "LINK_LAB_AppMain"
-check_app "$cf_dir/step_lab.so" "STEP_LAB_AppMain"
-check_app "$cf_dir/scn_lab.so" "SCN_LAB_AppMain"
+if [ "$#" -gt 0 ]; then
+    for spec in "$@"; do
+        app_name="${spec%%:*}"
+        entry_sym="${spec#*:}"
+        if [ -z "$app_name" ] || [ -z "$entry_sym" ] || [ "$app_name" = "$spec" ]; then
+            echo "FAIL: invalid app spec '$spec' (expected app.so:EntrySym)" >&2
+            exit 1
+        fi
+        check_app "$cf_dir/$app_name" "$entry_sym"
+    done
+else
+    check_app "$cf_dir/link_lab.so" "LINK_LAB_AppMain"
+    check_app "$cf_dir/step_lab.so" "STEP_LAB_AppMain"
+    check_app "$cf_dir/scn_lab.so" "SCN_LAB_AppMain"
+fi
 
 exit "$status"

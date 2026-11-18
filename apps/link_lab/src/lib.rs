@@ -9,8 +9,8 @@ use cfe::osal::{self, UdpSocket};
 use cfe::sb::{MsgId, Pipe, Qos, Timeout, transmit_msg};
 use cfe::tbl::{Table, TableOptions};
 use link_lab_core::{
-    DownlinkSink, Instant, Level, Link, LinkConfig, LinkMode, TC_FRAME_AREA_LEN, UplinkSink,
-    packet_apid,
+    DownlinkSink, Instant, Level, Link, LinkConfig, LinkMode, RealtimeConfig, TC_FRAME_AREA_LEN,
+    UplinkSink, packet_apid,
 };
 use step_lab_core::msg::{
     CmdPacketMsg, DoneMsg, LinkLevel, MAX_UNIT_LEN, RecordMsg, StartMsg, TlmPacketMsg, UnitMsg,
@@ -501,7 +501,7 @@ fn init_app() -> Result<(Pipe, Table, LinkConfig), ()> {
 
     let sub_result = match config.mode {
         LinkMode::Lockstep => subscribe_turns(&pipe),
-        LinkMode::NativeRealtime => subscribe_realtime(&pipe),
+        LinkMode::NativeRealtime(_) => subscribe_realtime(&pipe),
     };
     if sub_result.is_err() {
         let _ = evs::send_event(
@@ -643,18 +643,55 @@ fn run_lockstep(pipe: &mut Pipe, table: &mut Table, config: &mut LinkConfig) -> 
     run_status
 }
 
+const MIN_CMD_PACKET_LEN: usize = core::mem::size_of::<cfe_sys::CFE_MSG_CommandHeader_t>();
+const _: () = assert!(MIN_CMD_PACKET_LEN == 8);
+
+const RX_BUF_LEN: usize = TC_FRAME_AREA_LEN.saturating_add(1);
+const _: () = assert!(RX_BUF_LEN == 129);
+
+const fn is_valid_command_packet(packet: &[u8]) -> bool {
+    let Some(&byte0) = packet.first() else {
+        return false;
+    };
+    packet.len() >= MIN_CMD_PACKET_LEN && (byte0 & 0x10) != 0
+}
+
 struct RealtimeUplinkSink;
 
 impl UplinkSink for RealtimeUplinkSink {
     fn command_packet(&mut self, packet: &[u8]) {
+        if !is_valid_command_packet(packet) {
+            let _ = evs::send_event(
+                32,
+                EventType::Error,
+                "LINK_LAB: Rejected non-command or undersized uplink packet",
+            );
+            return;
+        }
         let Ok(mut msg_buf) = cfe::sb::allocate_message_buffer(packet.len()) else {
+            let _ = evs::send_event(
+                33,
+                EventType::Error,
+                "LINK_LAB: Failed to allocate SB buffer for command packet",
+            );
             return;
         };
         let Some(dest) = msg_buf.as_bytes_mut().get_mut(..packet.len()) else {
+            let _ = evs::send_event(
+                33,
+                EventType::Error,
+                "LINK_LAB: Allocated SB buffer smaller than command packet",
+            );
             return;
         };
         dest.copy_from_slice(packet);
-        let _ = cfe::sb::transmit_buffer(msg_buf, false);
+        if cfe::sb::transmit_buffer(msg_buf, false).is_err() {
+            let _ = evs::send_event(
+                34,
+                EventType::Error,
+                "LINK_LAB: Failed to transmit uplink command packet on SB",
+            );
+        }
     }
 }
 
@@ -666,14 +703,24 @@ struct RealtimeDownlinkSink<'a> {
 
 impl DownlinkSink for RealtimeDownlinkSink<'_> {
     fn unit(&mut self, unit: &[u8]) {
-        let _ = self.udp.send_to_ipv4(unit, self.ground_ipv4, self.tx_port);
+        if self
+            .udp
+            .send_to_ipv4(unit, self.ground_ipv4, self.tx_port)
+            .is_err()
+        {
+            let _ = evs::send_event(
+                35,
+                EventType::Error,
+                "LINK_LAB: UDP send_to_ipv4 failed for TM frame",
+            );
+        }
     }
 }
 
 /// Runs the native real-time UDP TM/TC dispatch loop.
 #[inline(never)]
-fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig) -> RunStatus {
-    let Ok(udp) = UdpSocket::bind("0.0.0.0", config.rx_port) else {
+fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig, rt: RealtimeConfig) -> RunStatus {
+    let Ok(udp) = UdpSocket::bind("0.0.0.0", rt.rx_port.get()) else {
         let _ = evs::send_event(
             30,
             EventType::Critical,
@@ -693,11 +740,12 @@ fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig) -> RunStatus {
 
     let mut down_sink = RealtimeDownlinkSink {
         udp: &udp,
-        ground_ipv4: config.ground_ipv4,
-        tx_port: config.tx_port,
+        ground_ipv4: rt.ground_ipv4,
+        tx_port: rt.tx_port.get(),
     };
     let mut up_sink = RealtimeUplinkSink;
-    let mut rx_buf = [0u8; TC_FRAME_AREA_LEN];
+    let mut rx_buf = [0u8; RX_BUF_LEN];
+    let mut time_err_logged = false;
 
     let mut run_status = RunStatus::AppRun;
     while es::run_loop(&mut run_status) {
@@ -707,18 +755,46 @@ fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig) -> RunStatus {
         let Ok(mid) = buf.msg_id() else {
             continue;
         };
-        let now = Instant::from_micros(osal::local_time_us().unwrap_or(0));
+        let now = if let Ok(us) = osal::local_time_us() {
+            time_err_logged = false;
+            Instant::from_micros(us)
+        } else {
+            if !time_err_logged {
+                time_err_logged = true;
+                let _ = evs::send_event(
+                    37,
+                    EventType::Error,
+                    "LINK_LAB: Failed to read OSAL local time",
+                );
+            }
+            Instant::from_micros(0)
+        };
 
         match mid.as_u32() {
             cfe_sys::NODE_WAKE_TX_MID => {
                 for _ in 0..64 {
-                    match udp.recv_from(&mut rx_buf, cfe_sys::OS_CHECK.cast_signed()) {
+                    match udp.recv_from(&mut rx_buf, osal::Timeout::Poll) {
+                        Ok(Some(n)) if n > TC_FRAME_AREA_LEN => {
+                            let _ = evs::send_event(
+                                31,
+                                EventType::Error,
+                                "LINK_LAB: Rejected oversized UDP TC datagram",
+                            );
+                        }
                         Ok(Some(n)) => {
                             if let Some(frame) = rx_buf.get(..n) {
                                 link.accept_unit(now, frame, &mut up_sink);
                             }
                         }
-                        Ok(None) | Err(_) => break,
+                        Ok(None) => break,
+                        Err(_) => {
+                            let _ = evs::send_event(
+                                36,
+                                EventType::Error,
+                                "LINK_LAB: UDP recv_from failed",
+                            );
+                            break;
+                        }
                     }
                 }
                 link.slot(now, true, &mut down_sink);
@@ -747,7 +823,7 @@ fn app_main() {
 
     let run_status = match config.mode {
         LinkMode::Lockstep => run_lockstep(&mut pipe, &mut table, &mut config),
-        LinkMode::NativeRealtime => run_native_realtime(&mut pipe, &config),
+        LinkMode::NativeRealtime(rt) => run_native_realtime(&mut pipe, &config, rt),
     };
 
     let _ = table.unregister();

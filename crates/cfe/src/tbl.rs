@@ -15,9 +15,9 @@ pub const MAX_TABLE_NAME_LEN: usize = cfe_sys::CFE_MISSION_TBL_MAX_NAME_LENGTH a
 /// Maximum length of a table file path including the null terminator.
 #[expect(
     clippy::as_conversions,
-    reason = "CFE_MISSION_MAX_PATH_LEN is a C bindgen u32 constant used as buffer size"
+    reason = "OS_MAX_PATH_LEN is a C bindgen u32 constant used as buffer size"
 )]
-pub const MAX_PATH_LEN: usize = cfe_sys::CFE_MISSION_MAX_PATH_LEN as usize;
+pub const MAX_PATH_LEN: usize = cfe_sys::OS_MAX_PATH_LEN as usize;
 
 /// Supported table registration options for [`Table::register`].
 ///
@@ -79,6 +79,9 @@ const _: () = {
     );
     assert!(TableOptions::DumpOnly.to_raw() as u32 == cfe_sys::CFE_TBL_OPT_DUMP_ONLY);
     assert!((BAD_TABLE_HANDLE as i32) == cfe_sys::CFE_TBL_BAD_TABLE_HANDLE);
+    assert!(cfe_sys::CFE_MISSION_TBL_MAX_NAME_LENGTH > 1);
+    assert!(cfe_sys::OS_MAX_PATH_LEN > 1);
+    assert!(cfe_sys::CFE_MISSION_MAX_PATH_LEN == cfe_sys::OS_MAX_PATH_LEN);
 };
 
 /// Scope guard ensuring `CFE_TBL_ReleaseAddress` is called before `read_bytes` returns.

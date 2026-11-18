@@ -25,6 +25,9 @@ chmod -R a+rwX "$root/build" 2>/dev/null || true
 staging="$build_dir/usr/local/cpu1"
 log_file="$build_dir/core-cpu1.log"
 
+echo "=== Checking app symbol visibility (realtime-rs) ==="
+"$root/scripts/check-app-symbols.sh" "$staging/cf" "link_lab.so:LINK_LAB_AppMain"
+
 if [ ! -x "$staging/core-cpu1" ]; then
     echo "FAIL: missing $staging/core-cpu1" >&2
     exit 1

@@ -166,7 +166,8 @@ fn realtime_tm_tc_roundtrip() {
     let noop_pkt = build_cfe_es_noop_packet(1);
     let tc_frame = encode_tc_frame(&tc_table, &noop_pkt);
 
-    let pc = TmPhysicalChannelConfig::new(TM_FRAME_LEN, true).expect("valid TM physical config");
+    let pc =
+        TmPhysicalChannelConfig::new(TM_FRAME_LEN, tm::FECF).expect("valid TM physical config");
     let ext_cfg = PacketExtractorConfig::<Tm>::new(
         TmParams,
         ValidPvns::SPACE,

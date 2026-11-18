@@ -237,6 +237,35 @@ impl Drop for TcpStream {
     }
 }
 
+/// Timeout for OSAL socket receive operations.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Timeout {
+    /// Wait forever until data arrives (`OS_PEND`).
+    PendForever,
+    /// Do not wait; poll the socket (`OS_CHECK`).
+    Poll,
+    /// Wait up to the specified number of milliseconds.
+    Millis(u32),
+}
+
+impl Timeout {
+    /// Convert to the raw `i32` millisecond timeout expected by OSAL socket APIs.
+    #[must_use]
+    pub const fn to_raw(self) -> i32 {
+        match self {
+            Self::PendForever => cfe_sys::OS_PEND,
+            Self::Poll => cfe_sys::OS_CHECK.cast_signed(),
+            Self::Millis(ms) => {
+                if ms > i32::MAX.cast_unsigned() {
+                    i32::MAX
+                } else {
+                    ms.cast_signed()
+                }
+            }
+        }
+    }
+}
+
 /// A UDP datagram socket bound via OSAL datagram sockets.
 #[derive(Debug)]
 pub struct UdpSocket {
@@ -283,15 +312,14 @@ impl UdpSocket {
         Ok(Self { id: sock_id })
     }
 
-    /// Receives a datagram into `buf`, waiting up to `timeout_ms` milliseconds
-    /// (`OS_CHECK` = `0` for non-blocking poll, `OS_PEND` = `-1` to wait forever).
+    /// Receives a datagram into `buf`, waiting according to `timeout`.
     ///
     /// Returns `Ok(None)` if no datagram is available (`OS_ERROR_TIMEOUT` or `OS_QUEUE_EMPTY`).
     ///
     /// # Errors
     ///
     /// Returns `Err(Status)` if OSAL socket receive fails with another error.
-    pub fn recv_from(&self, buf: &mut [u8], timeout_ms: i32) -> Result<Option<usize>, Status> {
+    pub fn recv_from(&self, buf: &mut [u8], timeout: Timeout) -> Result<Option<usize>, Status> {
         // SAFETY: buf is a valid buffer of length buf.len(); RemoteAddr may be NULL per OSAL API.
         let nbytes = unsafe {
             cfe_sys::OS_SocketRecvFrom(
@@ -299,7 +327,7 @@ impl UdpSocket {
                 buf.as_mut_ptr().cast(),
                 buf.len(),
                 core::ptr::null_mut(),
-                timeout_ms,
+                timeout.to_raw(),
             )
         };
         if nbytes == cfe_sys::OS_ERROR_TIMEOUT || nbytes == cfe_sys::OS_QUEUE_EMPTY {
@@ -377,12 +405,11 @@ pub fn local_time_us() -> Result<u64, Status> {
     if status != cfe_sys::OS_SUCCESS.cast_signed() {
         return Err(Status::from_raw(status));
     }
-    let ticks_per_usec = i64::from(cfe_sys::OS_TIME_TICKS_PER_USEC);
-    let micros = time
-        .ticks
+    let ticks = u64::try_from(time.ticks).map_err(|_| Status::from_raw(cfe_sys::OS_ERROR))?;
+    let ticks_per_usec = u64::from(cfe_sys::OS_TIME_TICKS_PER_USEC);
+    ticks
         .checked_div(ticks_per_usec)
-        .ok_or_else(|| Status::from_raw(cfe_sys::OS_ERROR))?;
-    u64::try_from(micros).map_err(|_| Status::from_raw(cfe_sys::OS_ERROR))
+        .ok_or_else(|| Status::from_raw(cfe_sys::OS_ERROR))
 }
 
 /// Delays the calling task for the specified duration in milliseconds.
