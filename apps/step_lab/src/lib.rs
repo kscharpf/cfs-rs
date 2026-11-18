@@ -8,7 +8,7 @@ use cfe::evs::{self, EventType};
 use cfe::osal::TcpStream;
 use cfe::sb::{MsgId, Pipe, Qos, Timeout, check_pipe_depth, transmit_msg};
 use step_lab_core::msg::{
-    DoneMsg, LinkLevel, RecordMsg, StartMsg, UnitMsg, WakeAppsMsg, WakeRxMsg, WakeTxMsg,
+    DoneMsg, LinkLevel, RecordMsg, StartMsg, UnitMsg, WakeRxMsg, WakeTimeMsg, WakeTxMsg,
 };
 use step_lab_core::proto::{
     self, CodecError, EventArgs, Message, NodeOutput, Outputs, PROTOCOL_VERSION, Role, UnitsIter,
@@ -404,6 +404,34 @@ fn prepare_msg(msg: &mut cfe_sys::CFE_MSG_Message_t, msg_id: u32, size: usize) -
     cfe::msg::set_size(msg, size).map_err(|_| ())
 }
 
+/// Sends a `WakeTimeMsg` turn (`WAKE_CMD`, `WAKE_HK`, or `WAKE_PL`) and collects outputs until `DONE`.
+fn wake_time_turn(
+    pipe: &mut Pipe,
+    collector: &mut StepCollector,
+    earliest_deadline: &mut Option<u64>,
+    now: u64,
+    msg_id: u32,
+) -> Result<(), ()> {
+    let mut wake = WakeTimeMsg::new(now);
+    if prepare_msg(wake.msg_mut(), msg_id, core::mem::size_of::<WakeTimeMsg>()).is_err() {
+        let _ = evs::send_event(
+            17,
+            EventType::Critical,
+            "STEP_LAB: Failed to init WakeTimeMsg",
+        );
+        return Err(());
+    }
+    if transmit_msg(wake.msg(), true).is_err() {
+        let _ = evs::send_event(
+            18,
+            EventType::Critical,
+            "STEP_LAB: Failed to transmit WakeTimeMsg",
+        );
+        return Err(());
+    }
+    wait_collect_turn(pipe, collector, earliest_deadline)
+}
+
 /// Handles a single STEP from the harness according to docs/design/link-lab.md §4.5.
 fn handle_step(
     stream: &mut TcpStream,
@@ -451,33 +479,16 @@ fn handle_step(
         wait_collect_turn(pipe, &mut collector, &mut earliest_deadline)?;
     }
 
-    // 2. WAKE_APPS to scn_lab -> wait for scn_lab's DONE.
-    let mut wake_apps = WakeAppsMsg::new(now);
-    if prepare_msg(
-        wake_apps.msg_mut(),
-        cfe_sys::NODE_WAKE_APPS_MID,
-        core::mem::size_of::<WakeAppsMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(
-            17,
-            EventType::Critical,
-            "STEP_LAB: Failed to init WakeAppsMsg",
-        );
-        return Err(());
+    // 2–4. WAKE_CMD -> cmd_lab, WAKE_HK -> hk_lab, WAKE_PL -> pl_lab in exact §4.5 order.
+    for mid in [
+        cfe_sys::NODE_WAKE_CMD_MID,
+        cfe_sys::NODE_WAKE_HK_MID,
+        cfe_sys::NODE_WAKE_PL_MID,
+    ] {
+        wake_time_turn(pipe, &mut collector, &mut earliest_deadline, now, mid)?;
     }
-    if transmit_msg(wake_apps.msg(), true).is_err() {
-        let _ = evs::send_event(
-            18,
-            EventType::Critical,
-            "STEP_LAB: Failed to transmit WakeAppsMsg",
-        );
-        return Err(());
-    }
-    wait_collect_turn(pipe, &mut collector, &mut earliest_deadline)?;
 
-    // 3. WAKE_TX to link_lab -> collect until DONE.
+    // 5. WAKE_TX to link_lab -> collect until DONE.
     let mut wake_tx = WakeTxMsg::new(now, tx_slot);
     if prepare_msg(
         wake_tx.msg_mut(),
@@ -503,7 +514,7 @@ fn handle_step(
     }
     wait_collect_turn(pipe, &mut collector, &mut earliest_deadline)?;
 
-    // 4. Reply STEP_RESULT with all outputs in arrival order and earliest next_deadline.
+    // 6. Reply STEP_RESULT with all outputs in arrival order and earliest next_deadline.
     let mut output_storage = [NodeOutput::Unit(&[]); MAX_OUTPUTS];
     let count = collector.build_outputs(&mut output_storage);
     let result_msg = Message::StepResult {
@@ -542,10 +553,11 @@ fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
         let _ = pipe.delete();
         return;
     }
-    // Wait for DONE from both link_lab and scn_lab
+    // Wait for DONE from link_lab, cmd_lab, hk_lab, and pl_lab
     let mut unused_deadline = None;
-    wait_for_done(&mut pipe, &mut unused_deadline);
-    wait_for_done(&mut pipe, &mut unused_deadline);
+    for _ in 0..4 {
+        wait_for_done(&mut pipe, &mut unused_deadline);
+    }
 
     let mut run_status = RunStatus::AppRun;
     while es::run_loop(&mut run_status) {

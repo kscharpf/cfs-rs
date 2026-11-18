@@ -79,7 +79,9 @@ if [ "$#" -gt 0 ]; then
 else
     check_app "$cf_dir/link_lab.so" "LINK_LAB_AppMain"
     check_app "$cf_dir/step_lab.so" "STEP_LAB_AppMain"
-    check_app "$cf_dir/scn_lab.so" "SCN_LAB_AppMain"
+    check_app "$cf_dir/cmd_lab.so" "CMD_LAB_AppMain"
+    check_app "$cf_dir/hk_lab.so" "HK_LAB_AppMain"
+    check_app "$cf_dir/pl_lab.so" "PL_LAB_AppMain"
 fi
 
 exit "$status"

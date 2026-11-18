@@ -107,6 +107,29 @@ name = "cfe-sys"
 version = "0.0.0"
 
 [[package]]
+name = "cmd-lab"
+version = "0.0.0"
+dependencies = [
+ "cfe",
+ "cfe-sys",
+ "refapp-flight",
+ "refapp-scenario",
+ "step-lab-core",
+]
+
+[[package]]
+name = "hk-lab"
+version = "0.0.0"
+dependencies = [
+ "aldis",
+ "cfe",
+ "cfe-sys",
+ "refapp-flight",
+ "refapp-scenario",
+ "step-lab-core",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -136,6 +159,18 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "pl-lab"
+version = "0.0.0"
+dependencies = [
+ "aldis",
+ "cfe",
+ "cfe-sys",
+ "refapp-flight",
+ "refapp-scenario",
+ "step-lab-core",
+]
 
 [[package]]
 name = "proc-macro2"
@@ -170,17 +205,6 @@ version = "0.1.0"
 source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
 dependencies = [
  "aldis",
-]
-
-[[package]]
-name = "scn-lab"
-version = "0.0.0"
-dependencies = [
- "cfe",
- "cfe-sys",
- "refapp-flight",
- "refapp-scenario",
- "step-lab-core",
 ]
 
 [[package]]

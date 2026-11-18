@@ -63,7 +63,7 @@ fn send_done(next_deadline: Option<u64>) {
     }
 }
 
-/// Sends a `CMD_PACKET` message to `scn_lab`.
+/// Sends a `CMD_PACKET` message to `cmd_lab`.
 fn send_cmd_packet(now: u64, packet: &[u8]) {
     let Some(mut msg) = CmdPacketMsg::new(now, packet) else {
         let _ = evs::send_event(
@@ -204,7 +204,7 @@ impl DownlinkSink for LinkDownlinkSink {
     }
 }
 
-/// Uplink sink exchanging command packets with `scn_lab`.
+/// Uplink sink exchanging command packets with `cmd_lab`.
 struct LinkUplinkSink<'a> {
     pipe: &'a mut Pipe,
     now: Instant,
@@ -262,7 +262,7 @@ fn handle_wake_rx(
     send_done(None);
 }
 
-/// Handles incoming `TLM_PACKET` from `scn_lab`, buffering it for `WAKE_TX`.
+/// Handles incoming `TLM_PACKET` from scenario apps, buffering it for `WAKE_TX`.
 fn handle_tlm_packet(
     bytes: &[u8],
     pending_tlm: &mut [Option<PendingTlm>; MAX_PENDING_TLM],

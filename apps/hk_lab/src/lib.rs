@@ -1,19 +1,21 @@
-//! `scn_lab`: scenario flight applications.
+//! `hk_lab`: periodic housekeeping telemetry app.
 
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
 
+use aldis::spp::SequenceFlags;
 use cfe::es::{self, RunStatus};
 use cfe::evs::{self, EventType};
 use cfe::sb::{MsgId, Pipe, Qos, Timeout, transmit_msg};
-use refapp_flight::FlightNode;
-use refapp_scenario::{Apid, Delivered, Instant, Node, Output, StepInput};
-use step_lab_core::msg::{
-    CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, RecordMsg, TlmPacketMsg, WakeAppsMsg,
-};
+use refapp_flight::event::APP_PACKET_REJECTED;
+use refapp_flight::layout::{PayloadMode, Status, housekeeping};
+use refapp_flight::schedule::Periodic;
+use refapp_flight::{Downlink, Stream};
+use refapp_scenario::{Apid, Instant, Output};
+use step_lab_core::msg::{DoneMsg, RecordMsg, ScnStatusMsg, TlmPacketMsg, WakeHkMsg};
 
-/// Event ID for `scn_lab` start-up event.
-pub const SCN_LAB_STARTUP_EID: u16 = 1;
+/// Event ID for `hk_lab` start-up event.
+pub const HK_LAB_STARTUP_EID: u16 = 1;
 
 /// Prepares a Software Bus message header by setting its message ID and total size.
 fn prepare_msg(msg: &mut cfe_sys::CFE_MSG_Message_t, msg_id: u32, size: usize) -> Result<(), ()> {
@@ -31,40 +33,14 @@ fn send_done(next_deadline: Option<u64>) {
     )
     .is_err()
     {
-        let _ = evs::send_event(4, EventType::Critical, "SCN_LAB: Failed to init DONE msg");
+        let _ = evs::send_event(4, EventType::Critical, "HK_LAB: Failed to init DONE msg");
         return;
     }
     if transmit_msg(done.msg(), true).is_err() {
         let _ = evs::send_event(
             5,
             EventType::Critical,
-            "SCN_LAB: Failed to transmit DONE msg",
-        );
-    }
-}
-
-/// Sends a `CMD_PACKET_DONE` message to `link_lab` signaling command packet processing complete.
-fn send_cmd_packet_done() {
-    let mut done = CmdPacketDoneMsg::new();
-    if prepare_msg(
-        done.msg_mut(),
-        cfe_sys::NODE_CMD_PACKET_DONE_MID,
-        core::mem::size_of::<CmdPacketDoneMsg>(),
-    )
-    .is_err()
-    {
-        let _ = evs::send_event(
-            6,
-            EventType::Critical,
-            "SCN_LAB: Failed to init CMD_PACKET_DONE msg",
-        );
-        return;
-    }
-    if transmit_msg(done.msg(), true).is_err() {
-        let _ = evs::send_event(
-            7,
-            EventType::Critical,
-            "SCN_LAB: Failed to transmit CMD_PACKET_DONE msg",
+            "HK_LAB: Failed to transmit DONE msg",
         );
     }
 }
@@ -73,9 +49,9 @@ fn send_cmd_packet_done() {
 fn send_tlm_packet(packet: &[u8]) {
     let Some(mut tlm) = TlmPacketMsg::new(packet) else {
         let _ = evs::send_event(
-            8,
+            6,
             EventType::Critical,
-            "SCN_LAB: Packet too long for TlmPacketMsg",
+            "HK_LAB: Packet too long for TlmPacketMsg",
         );
         return;
     };
@@ -87,17 +63,17 @@ fn send_tlm_packet(packet: &[u8]) {
     .is_err()
     {
         let _ = evs::send_event(
-            9,
+            7,
             EventType::Critical,
-            "SCN_LAB: Failed to init TLM_PACKET msg",
+            "HK_LAB: Failed to init TLM_PACKET msg",
         );
         return;
     }
     if transmit_msg(tlm.msg(), true).is_err() {
         let _ = evs::send_event(
-            10,
+            8,
             EventType::Critical,
-            "SCN_LAB: Failed to transmit TLM_PACKET msg",
+            "HK_LAB: Failed to transmit TLM_PACKET msg",
         );
     }
 }
@@ -106,9 +82,9 @@ fn send_tlm_packet(packet: &[u8]) {
 fn send_record_event(code: u16, args: &[u64]) {
     let Some(mut rec) = RecordMsg::new_event(code, args) else {
         let _ = evs::send_event(
-            11,
+            9,
             EventType::Critical,
-            "SCN_LAB: Too many args for RecordMsg event",
+            "HK_LAB: Too many args for RecordMsg event",
         );
         return;
     };
@@ -119,26 +95,22 @@ fn send_record_event(code: u16, args: &[u64]) {
     )
     .is_err()
     {
-        let _ = evs::send_event(
-            12,
-            EventType::Critical,
-            "SCN_LAB: Failed to init RECORD msg",
-        );
+        let _ = evs::send_event(10, EventType::Critical, "HK_LAB: Failed to init RECORD msg");
         return;
     }
     if transmit_msg(rec.msg(), true).is_err() {
         let _ = evs::send_event(
-            13,
+            11,
             EventType::Critical,
-            "SCN_LAB: Failed to transmit RECORD msg",
+            "HK_LAB: Failed to transmit RECORD msg",
         );
     }
 }
 
-/// Output sink for `FlightNode` running inside `scn_lab`.
-struct ScnSink;
+/// Output sink for `Downlink` running inside `hk_lab`.
+struct HkSink;
 
-impl Output for ScnSink {
+impl Output for HkSink {
     fn unit(&mut self, _octets: &[u8]) {}
 
     fn packet_out(&mut self, _apid: Apid, octets: &[u8]) {
@@ -152,7 +124,49 @@ impl Output for ScnSink {
     }
 }
 
-/// Runs the `scn_lab` initialization, Software Bus dispatch loop, and teardown.
+/// Converts a [`ScnStatusMsg`] into [`refapp_flight::layout::Status`].
+const fn status_from_msg(msg: &ScnStatusMsg) -> Status {
+    let s = msg.status();
+    Status {
+        commands_executed: s.commands_executed,
+        commands_rejected: s.commands_rejected,
+        queue_occupancy: s.queue_occupancy,
+        table_id: s.table_id,
+        table_crc: s.table_crc,
+        dumps_completed: s.dumps_completed,
+        payload_mode: if s.payload_mode_on {
+            PayloadMode::On
+        } else {
+            PayloadMode::Off
+        },
+    }
+}
+
+/// Emits all housekeeping packets due up to `now` and returns the next deadline.
+fn handle_wake_hk(
+    downlink: &mut Downlink,
+    status: &Status,
+    hk_slot: &mut u32,
+    now: Instant,
+) -> Option<u64> {
+    let mut sink = HkSink;
+    while let Some(at) = Periodic::HOUSEKEEPING.at(*hk_slot).filter(|at| *at <= now) {
+        let data = housekeeping(status, *hk_slot);
+        if let Err(e) = downlink.send(
+            Stream::Housekeeping,
+            SequenceFlags::Unsegmented,
+            at,
+            &data,
+            &mut sink,
+        ) {
+            send_record_event(APP_PACKET_REJECTED, &[u64::from(e.kind().code())]);
+        }
+        *hk_slot = hk_slot.saturating_add(1);
+    }
+    Periodic::HOUSEKEEPING.at(*hk_slot).map(Instant::as_micros)
+}
+
+/// Runs the `hk_lab` initialization, Software Bus dispatch loop, and teardown.
 fn app_main() {
     // 1. Register with EVS.
     if evs::register().is_err() {
@@ -161,35 +175,31 @@ fn app_main() {
     }
 
     // 2. Create Software Bus input pipe.
-    let Ok(mut pipe) = Pipe::create(32, "SCN_LAB_PIPE") else {
-        let _ = evs::send_event(2, EventType::Critical, "SCN_LAB: Failed to create SB pipe");
+    let Ok(mut pipe) = Pipe::create(32, "HK_LAB_PIPE") else {
+        let _ = evs::send_event(2, EventType::Critical, "HK_LAB: Failed to create SB pipe");
         es::exit_app(RunStatus::AppError);
         return;
     };
 
-    // 3. Subscribe to scenario turns.
+    // 3. Subscribe to scenario turns and status updates.
     if pipe
         .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_START_MID), Qos::DEFAULT, 4)
         .is_err()
         || pipe
             .subscribe_ex(
-                MsgId::from_u32(cfe_sys::NODE_WAKE_APPS_MID),
-                Qos::DEFAULT,
-                4,
-            )
-            .is_err()
-        || pipe
-            .subscribe_ex(
-                MsgId::from_u32(cfe_sys::NODE_CMD_PACKET_MID),
+                MsgId::from_u32(cfe_sys::NODE_SCN_STATUS_MID),
                 Qos::DEFAULT,
                 32,
             )
+            .is_err()
+        || pipe
+            .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_WAKE_HK_MID), Qos::DEFAULT, 4)
             .is_err()
     {
         let _ = evs::send_event(
             3,
             EventType::Critical,
-            "SCN_LAB: Failed to subscribe to turns",
+            "HK_LAB: Failed to subscribe to turns",
         );
         let _ = pipe.delete();
         es::exit_app(RunStatus::AppError);
@@ -198,13 +208,15 @@ fn app_main() {
 
     // 4. Send start-up event.
     let _ = evs::send_event(
-        SCN_LAB_STARTUP_EID,
+        HK_LAB_STARTUP_EID,
         EventType::Information,
-        "SCN_LAB App Initialized. Version 0.1.0",
+        "HK_LAB App Initialized. Version 0.1.0",
     );
 
-    // 5. Initialize flight node state.
-    let mut flight_node = FlightNode::new();
+    // 5. Initialize housekeeping state.
+    let mut downlink = Downlink::new();
+    let mut status = Status::default();
+    let mut hk_slot = 0_u32;
 
     // 6. Run ES loop, pending on the pipe.
     let mut run_status = RunStatus::AppRun;
@@ -219,35 +231,26 @@ fn app_main() {
 
         match mid.as_u32() {
             cfe_sys::NODE_START_MID => {
-                flight_node = FlightNode::new();
+                downlink = Downlink::new();
+                status = Status::default();
+                hk_slot = 0;
                 send_done(None);
             }
-            cfe_sys::NODE_CMD_PACKET_MID => {
-                if let Some(cmd) = CmdPacketMsg::from_bytes(buf.as_bytes()) {
-                    let now = Instant::from_micros(cmd.now);
-                    let pkt = cmd.packet_bytes();
-                    let mut sink = ScnSink;
-                    flight_node.handle_delivered(now, Delivered::new(&[pkt]), &mut sink);
+            cfe_sys::NODE_SCN_STATUS_MID => {
+                if let Some(msg) = ScnStatusMsg::from_bytes(buf.as_bytes()) {
+                    status = status_from_msg(&msg);
                 }
-                send_cmd_packet_done();
             }
-            cfe_sys::NODE_WAKE_APPS_MID => {
-                if let Some(wake) = WakeAppsMsg::from_bytes(buf.as_bytes()) {
-                    let now = Instant::from_micros(wake.now);
-                    let mut sink = ScnSink;
-                    let next_deadline = flight_node.step(
-                        &StepInput {
-                            now,
-                            delivered: Delivered::new(&[]),
-                            ops: &[],
-                            tx_slot: false,
-                        },
-                        &mut sink,
-                    );
-                    send_done(next_deadline.map(Instant::as_micros));
-                } else {
-                    send_done(None);
-                }
+            cfe_sys::NODE_WAKE_HK_MID => {
+                let next_deadline = WakeHkMsg::from_bytes(buf.as_bytes()).and_then(|wake| {
+                    handle_wake_hk(
+                        &mut downlink,
+                        &status,
+                        &mut hk_slot,
+                        Instant::from_micros(wake.now),
+                    )
+                });
+                send_done(next_deadline);
             }
             _ => {}
         }
@@ -260,7 +263,7 @@ fn app_main() {
 /// Application entry point exported to cFE.
 #[expect(unsafe_code, reason = "cFS entry point must be extern \"C\"")]
 #[unsafe(no_mangle)]
-pub extern "C" fn SCN_LAB_AppMain() {
+pub extern "C" fn HK_LAB_AppMain() {
     app_main();
 }
 

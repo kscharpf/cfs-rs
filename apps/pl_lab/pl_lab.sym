@@ -1,0 +1,6 @@
+{
+    global:
+        PL_LAB_AppMain;
+    local:
+        *;
+};
