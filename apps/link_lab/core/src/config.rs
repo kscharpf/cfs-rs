@@ -1,5 +1,6 @@
 //! Link configuration and routing.
 
+use core::net::Ipv4Addr;
 use core::num::NonZeroU16;
 
 use aldis::cop1::farm1::Farm1Window;
@@ -61,7 +62,7 @@ pub struct RealtimeConfig {
     /// UDP destination port for outgoing TM frames (non-zero).
     pub tx_port: NonZeroU16,
     /// Ground IPv4 address for outgoing TM frames.
-    pub ground_ipv4: [u8; 4],
+    pub ground_ipv4: Ipv4Addr,
 }
 
 /// Operating mode of `link_lab`.
@@ -282,10 +283,11 @@ impl LinkConfig {
 
         let rx_port_raw = read_u16(bytes, 72)?;
         let tx_port_raw = read_u16(bytes, 74)?;
-        let ground_ipv4: [u8; 4] = bytes
+        let ground_ipv4_octets: [u8; 4] = bytes
             .get(76..80)
             .and_then(|s| s.try_into().ok())
             .ok_or(ErrorKind::InvalidConfig)?;
+        let ground_ipv4 = Ipv4Addr::from(ground_ipv4_octets);
         let mode_raw = read_u8(bytes, 80)?;
         let default_vc = match read_u8(bytes, 81)? {
             0xFF => None,
@@ -364,7 +366,7 @@ impl LinkConfig {
             LinkMode::NativeRealtime(rt) => {
                 write_slice(&mut out, 72, &rt.rx_port.get().to_ne_bytes());
                 write_slice(&mut out, 74, &rt.tx_port.get().to_ne_bytes());
-                write_slice(&mut out, 76, &rt.ground_ipv4);
+                write_slice(&mut out, 76, &rt.ground_ipv4.octets());
                 write_slice(
                     &mut out,
                     80,

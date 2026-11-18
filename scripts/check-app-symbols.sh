@@ -24,13 +24,13 @@ check_app() {
     # 1. Export visibility: In ELF, nm -D --defined-only output format is: <addr> <type> <name>
     syms="$(nm -D --defined-only "$app_so" | awk '{ print $3 }')"
 
-    if ! printf '%s\n' "$syms" | grep -qx "$expected_sym"; then
+    if ! printf '%s\n' "$syms" | grep -Fqx "$expected_sym"; then
         echo "FAIL: $base does not export $expected_sym" >&2
         status=1
         return
     fi
 
-    other_syms="$(printf '%s\n' "$syms" | grep -v "^${expected_sym}$" || true)"
+    other_syms="$(printf '%s\n' "$syms" | grep -Fxv "$expected_sym" || true)"
     if [ -n "$other_syms" ]; then
         echo "FAIL: $base exports unexpected symbols:" >&2
         printf '%s\n' "$other_syms" >&2

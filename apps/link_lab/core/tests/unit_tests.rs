@@ -15,6 +15,7 @@
     reason = "integration tests use standard test ergonomics (assertions, panics, indexing, unwrap)"
 )]
 
+use core::net::Ipv4Addr;
 use core::num::NonZeroU16;
 
 use aldis::core::ErrorKind;
@@ -30,8 +31,8 @@ use link_lab_core::{
     APP_DOWNLINK_REFUSED, APP_FARM1_STATE, APP_FARM1_UNLOCK, APP_FRAME_DISCARDED,
     APP_FRAME_REJECTED, APP_PACKET_REJECTED, APP_SEQUENCE_VIOLATION, APP_UNKNOWN_MAP, ApidRoute,
     DataVc, DownlinkSink, DownlinkState, Level, Link, LinkConfig, LinkMode, MAX_APID_ROUTES,
-    RealtimeConfig, TC_FRAME_AREA_LEN, TC_REASSEMBLY_AREA_LEN, TM_FRAME_LEN, UplinkBuffers,
-    UplinkMode, UplinkSink, UplinkState,
+    MIN_COMMAND_PACKET_LEN, RealtimeConfig, TC_FRAME_AREA_LEN, TC_REASSEMBLY_AREA_LEN,
+    TM_FRAME_LEN, UplinkBuffers, UplinkMode, UplinkSink, UplinkState, is_valid_command_packet,
 };
 use refapp_scenario::Instant;
 use refapp_scenario::generated::{SPACECRAFT_ID, apid, tc, tm};
@@ -544,7 +545,7 @@ fn test_link_config_from_table_bytes_round_trip_and_routing() {
         default_vc: Some(DataVc::Realtime),
         rx_port: NonZeroU16::new(11234).expect("non-zero rx_port"),
         tx_port: NonZeroU16::new(12234).expect("non-zero tx_port"),
-        ground_ipv4: [10, 0, 0, 2],
+        ground_ipv4: Ipv4Addr::new(10, 0, 0, 2),
     });
     let rt_bytes = realtime.to_table_bytes();
     let decoded_rt = LinkConfig::from_table_bytes(&rt_bytes).expect("valid realtime table bytes");
@@ -559,7 +560,7 @@ fn test_link_config_from_table_bytes_round_trip_and_routing() {
         default_vc: None,
         rx_port: NonZeroU16::new(11234).expect("non-zero rx_port"),
         tx_port: NonZeroU16::new(12234).expect("non-zero tx_port"),
-        ground_ipv4: [10, 0, 0, 2],
+        ground_ipv4: Ipv4Addr::new(10, 0, 0, 2),
     });
     let rt_no_def_bytes = rt_no_default.to_table_bytes();
     let decoded_rt_no_def = LinkConfig::from_table_bytes(&rt_no_def_bytes)
@@ -725,4 +726,38 @@ fn test_downlink_validation_and_zero_slot_period() {
     let pkt = make_space_packet(apid::HOUSEKEEPING, false, 1, &[1, 2, 3]);
     link.accept_packet(Instant::from_micros(0), &pkt, &mut down_sink);
     assert_eq!(link.next_deadline(Instant::from_micros(0)), None);
+}
+
+#[test]
+fn test_is_valid_command_packet() {
+    // Byte 0 layout: [Version:3][Type:1][SecHdrFlag:1][APID_hi:3]
+    // Version=0, Type=1 (Telecommand), SecHdrFlag=1 => 0b000_1_1_000 = 0x18.
+    let min_cmd = [0x18, 0x01, 0xC0, 0x00, 0x00, 0x01, 0x00, 0x00];
+    assert_eq!(min_cmd.len(), MIN_COMMAND_PACKET_LEN);
+    assert!(is_valid_command_packet(&min_cmd));
+
+    // Longer valid telecommand packet with secondary header.
+    let long_cmd = [0x18, 0x01, 0xC0, 0x00, 0x00, 0x05, 0xAA, 0xBB, 1, 2, 3, 4];
+    assert!(is_valid_command_packet(&long_cmd));
+
+    // Empty and undersized packets (< 8 bytes, including 7-byte valid Space Packet).
+    assert!(!is_valid_command_packet(&[]));
+    assert!(!is_valid_command_packet(&min_cmd[..5]));
+    assert!(!is_valid_command_packet(&min_cmd[..6]));
+    assert!(!is_valid_command_packet(&min_cmd[..7]));
+
+    // Unsupported CCSDS Version != 0 (Version = 1 => 0b001_1_1_000 = 0x38).
+    let mut bad_version = min_cmd;
+    bad_version[0] = 0x38;
+    assert!(!is_valid_command_packet(&bad_version));
+
+    // Telemetry packet (Type = 0, SecHdrFlag = 1 => 0b000_0_1_000 = 0x08).
+    let mut tlm_pkt = min_cmd;
+    tlm_pkt[0] = 0x08;
+    assert!(!is_valid_command_packet(&tlm_pkt));
+
+    // Telecommand without secondary header (Type = 1, SecHdrFlag = 0 => 0b000_1_0_000 = 0x10).
+    let mut no_sec_hdr = min_cmd;
+    no_sec_hdr[0] = 0x10;
+    assert!(!is_valid_command_packet(&no_sec_hdr));
 }

@@ -1,5 +1,7 @@
 //! OSAL wrappers, including `TcpStream`, `UdpSocket`, `local_time_us`, and task delay.
 
+use core::net::Ipv4Addr;
+
 use crate::status::Status;
 
 #[expect(
@@ -77,10 +79,10 @@ fn write_u8_ascii(mut val: u8, buf: &mut [u8], pos: &mut usize) {
     *pos = pos.saturating_add(1);
 }
 
-/// Formats an IPv4 address `[a, b, c, d]` as dotted-decimal ASCII into `buf` and returns its byte length.
-fn format_ipv4(ip: [u8; 4], buf: &mut [u8; 16]) -> usize {
+/// Formats an IPv4 address as dotted-decimal ASCII into `buf` and returns its byte length.
+fn format_ipv4(ip: Ipv4Addr, buf: &mut [u8; 16]) -> usize {
     let mut pos = 0usize;
-    for (idx, octet) in ip.iter().enumerate() {
+    for (idx, octet) in ip.octets().iter().enumerate() {
         if idx > 0 {
             if let Some(slot) = buf.get_mut(pos) {
                 *slot = b'.';
@@ -139,20 +141,24 @@ impl TcpStream {
         Ok(Self { id: sock_id })
     }
 
-    /// Receives bytes from the socket into `buf`.
-    ///
-    /// Pass timeout in ms (or -1 for indefinite wait).
+    /// Receives bytes from the socket into `buf`, waiting according to `timeout`.
     ///
     /// # Errors
     ///
     /// Returns `Err(Status)` if OSAL read fails.
-    pub fn recv(&mut self, buf: &mut [u8], timeout_ms: i32) -> Result<usize, Status> {
+    pub fn recv(&mut self, buf: &mut [u8], timeout: Timeout) -> Result<usize, Status> {
         // SAFETY: buf is a valid buffer of length buf.len().
         let nbytes = unsafe {
-            if timeout_ms == -1 {
-                cfe_sys::OS_read(self.id, buf.as_mut_ptr().cast(), buf.len())
-            } else {
-                cfe_sys::OS_TimedRead(self.id, buf.as_mut_ptr().cast(), buf.len(), timeout_ms)
+            match timeout {
+                Timeout::PendForever => {
+                    cfe_sys::OS_read(self.id, buf.as_mut_ptr().cast(), buf.len())
+                }
+                Timeout::Poll | Timeout::Millis(_) => cfe_sys::OS_TimedRead(
+                    self.id,
+                    buf.as_mut_ptr().cast(),
+                    buf.len(),
+                    timeout.to_raw(),
+                ),
             }
         };
         usize::try_from(nbytes).map_err(|_| Status::from_raw(nbytes))
@@ -168,7 +174,7 @@ impl TcpStream {
     /// or with the corresponding OSAL error code.
     pub fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<(), Status> {
         while !buf.is_empty() {
-            let n = self.recv(buf, -1)?;
+            let n = self.recv(buf, Timeout::PendForever)?;
             if n == 0 {
                 return Err(Status::from_raw(cfe_sys::OS_ERR_STREAM_DISCONNECTED));
             }
@@ -250,6 +256,9 @@ pub enum Timeout {
 
 impl Timeout {
     /// Convert to the raw `i32` millisecond timeout expected by OSAL socket APIs.
+    ///
+    /// Note: `Timeout::Millis(0)` converts to `0` (equivalent to `OS_CHECK` / [`Timeout::Poll`]),
+    /// and `Timeout::Millis` values exceeding `i32::MAX` are clamped to `i32::MAX`.
     #[must_use]
     pub const fn to_raw(self) -> i32 {
         match self {
@@ -265,6 +274,9 @@ impl Timeout {
         }
     }
 }
+
+const _: () = assert!(cfe_sys::OS_PEND == -1);
+const _: () = assert!(cfe_sys::OS_CHECK == 0);
 
 /// A UDP datagram socket bound via OSAL datagram sockets.
 #[derive(Debug)]
@@ -352,12 +364,12 @@ impl UdpSocket {
         usize::try_from(nbytes).map_err(|_| Status::from_raw(nbytes))
     }
 
-    /// Sends a datagram to an IPv4 address `[a, b, c, d]` and `port` without heap allocation.
+    /// Sends a datagram to an IPv4 address and `port` without heap allocation.
     ///
     /// # Errors
     ///
     /// Returns `Err(Status)` if OSAL `OS_SocketSendTo` fails.
-    pub fn send_to_ipv4(&self, buf: &[u8], ip: [u8; 4], port: u16) -> Result<usize, Status> {
+    pub fn send_to_ipv4(&self, buf: &[u8], ip: Ipv4Addr, port: u16) -> Result<usize, Status> {
         let mut ip_buf = [0u8; 16];
         let len = format_ipv4(ip, &mut ip_buf);
         let ip_slice = ip_buf
@@ -392,6 +404,8 @@ impl Drop for UdpSocket {
         }
     }
 }
+
+const _: () = assert!(cfe_sys::OS_TIME_TICKS_PER_USEC > 0);
 
 /// Returns the OSAL local clock in microseconds.
 ///
