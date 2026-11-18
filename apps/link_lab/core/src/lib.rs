@@ -49,7 +49,7 @@ pub fn is_valid_command_packet(packet: &[u8]) -> bool {
     let Ok(pkt) = SpacePacket::decode_exact(packet) else {
         return false;
     };
-    pkt.header().packet_type() == PacketType::Telecommand && pkt.header().has_secondary_header()
+    pkt.packet_type() == PacketType::Telecommand && pkt.has_secondary_header()
 }
 
 /// Data link level of operation (§4.3).

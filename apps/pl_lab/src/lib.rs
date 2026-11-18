@@ -166,13 +166,13 @@ fn app_main() {
                             );
                             None
                         },
-                        |wake| {
+                        |now_us| {
                             handle_wake_pl(
                                 &mut downlink,
                                 payload_mode,
                                 &mut payload_slot,
                                 &mut payload_number,
-                                Instant::from_micros(wake.now),
+                                Instant::from_micros(now_us),
                             )
                         },
                     );

@@ -10,7 +10,7 @@
 use step_lab_core::msg::{
     CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, LinkLevel, MAX_EVENT_ARGS, MAX_UNIT_LEN, RecordKind,
     RecordMsg, ScnPayloadMode, ScnStatus, ScnStatusMsg, StartMsg, TlmPacketMsg, UnitMsg,
-    WakeCmdMsg, WakeRxMsg, WakeTimeMsg, WakeTurn, WakeTxMsg,
+    WakeCmdMsg, WakeRxMsg, WakeTurn, WakeTxMsg,
 };
 use step_lab_core::proto::{EventArgs, NodeOutput};
 
@@ -142,11 +142,11 @@ fn test_wake_cmd_hk_pl_msg_round_trip() {
         let bytes = unsafe {
             core::slice::from_raw_parts(
                 core::ptr::from_ref(&msg).cast::<u8>(),
-                core::mem::size_of::<WakeTimeMsg>(),
+                core::mem::size_of::<WakeCmdMsg>(),
             )
         };
-        let decoded = turn.decode(turn.msg_id(), bytes).unwrap();
-        assert_eq!(decoded.now, expected_now);
+        let decoded_now = turn.decode(turn.msg_id(), bytes).unwrap();
+        assert_eq!(decoded_now, expected_now);
         assert!(
             WakeTurn::Cmd
                 .decode(cfe_sys::NODE_WAKE_HK_MID, bytes)

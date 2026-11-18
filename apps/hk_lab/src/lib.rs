@@ -171,12 +171,12 @@ fn app_main() {
                             );
                             None
                         },
-                        |wake| {
+                        |now_us| {
                             handle_wake_hk(
                                 &mut downlink,
                                 &status,
                                 &mut hk_slot,
-                                Instant::from_micros(wake.now),
+                                Instant::from_micros(now_us),
                             )
                         },
                     );

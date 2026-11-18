@@ -353,8 +353,8 @@ fn app_main() {
                 send_cmd_packet_done();
             }
             cfe_sys::NODE_WAKE_CMD_MID => {
-                if let Some(wake) = WakeTurn::Cmd.decode(mid.as_u32(), buf.as_bytes()) {
-                    let now = Instant::from_micros(wake.now);
+                if let Some(now_us) = WakeTurn::Cmd.decode(mid.as_u32(), buf.as_bytes()) {
+                    let now = Instant::from_micros(now_us);
                     let mut sink = CmdSink;
                     cmd_app.execute_due(now, &mut sink);
                     cmd_app.dump_segments(now, &mut sink);

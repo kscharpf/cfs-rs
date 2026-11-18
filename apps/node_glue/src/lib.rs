@@ -10,7 +10,7 @@ use cfe::sb::{MsgId, transmit_msg};
 use cfe::status::Status;
 use step_lab_core::msg::{
     CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, RecordMsg, ScnStatusMsg, StartMsg, TlmPacketMsg,
-    UnitMsg, WakeCmdMsg, WakeHkMsg, WakePlMsg, WakeRxMsg, WakeTimeMsg, WakeTurn, WakeTxMsg,
+    UnitMsg, WakeCmdMsg, WakeHkMsg, WakePlMsg, WakeRxMsg, WakeTurn, WakeTxMsg,
 };
 
 /// Shared EVS event IDs used by [`node_glue`](crate) helpers (kept above per-app EIDs).
@@ -61,18 +61,9 @@ impl_sb_message!(CmdPacketDoneMsg, cfe_sys::NODE_CMD_PACKET_DONE_MID);
 impl_sb_message!(TlmPacketMsg, cfe_sys::NODE_TLM_PACKET_MID);
 impl_sb_message!(UnitMsg, cfe_sys::NODE_UNIT_MID);
 impl_sb_message!(RecordMsg, cfe_sys::NODE_RECORD_MID);
-
-impl<const MID: u32> SbMessage for WakeTimeMsg<MID> {
-    const MID: MsgId = MsgId::from_u32(MID);
-
-    fn msg(&self) -> &cfe_sys::CFE_MSG_Message_t {
-        Self::msg(self)
-    }
-
-    fn msg_mut(&mut self) -> &mut cfe_sys::CFE_MSG_Message_t {
-        Self::msg_mut(self)
-    }
-}
+impl_sb_message!(WakeCmdMsg, cfe_sys::NODE_WAKE_CMD_MID);
+impl_sb_message!(WakeHkMsg, cfe_sys::NODE_WAKE_HK_MID);
+impl_sb_message!(WakePlMsg, cfe_sys::NODE_WAKE_PL_MID);
 
 /// Prepares a typed Software Bus message header by setting its compile-time [`SbMessage::MID`] and `size_of::<M>()`.
 ///

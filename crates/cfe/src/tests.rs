@@ -874,7 +874,7 @@ fn test_osal_tcp_stream() {
     OS_SOCKET_SEND_CALLS.store(0, Ordering::SeqCst);
     OS_SOCKET_RECV_CALLS.store(0, Ordering::SeqCst);
     OS_TIMED_READ_CALLS.store(0, Ordering::SeqCst);
-    LAST_TIMED_READ_TIMEOUT.store(0, Ordering::SeqCst);
+    LAST_TIMED_READ_TIMEOUT.store(i32::MIN, Ordering::SeqCst);
     OS_CLOSE_CALLS.store(0, Ordering::SeqCst);
 
     let mut stream = TcpStream::connect("127.0.0.1", 1234).unwrap();
