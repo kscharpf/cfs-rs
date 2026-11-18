@@ -9,8 +9,8 @@
 
 use step_lab_core::msg::{
     CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, LinkLevel, MAX_EVENT_ARGS, MAX_UNIT_LEN, RecordKind,
-    RecordMsg, ScnPayloadMode, ScnStatus, ScnStatusMsg, StartMsg, TlmPacketMsg, UnitMsg, WakeRxMsg,
-    WakeTimeMsg, WakeTurn, WakeTxMsg,
+    RecordMsg, ScnPayloadMode, ScnStatus, ScnStatusMsg, StartMsg, TlmPacketMsg, UnitMsg,
+    WakeCmdMsg, WakeRxMsg, WakeTimeMsg, WakeTurn, WakeTxMsg,
 };
 use step_lab_core::proto::{EventArgs, NodeOutput};
 
@@ -135,7 +135,7 @@ fn test_wake_cmd_hk_pl_msg_round_trip() {
         (WakeTurn::Hk, 100_000),
         (WakeTurn::Pl, 500_000),
     ] {
-        let msg = WakeTimeMsg::new(expected_now);
+        let msg = WakeCmdMsg::new(expected_now);
         assert_eq!(msg.now, expected_now);
 
         // SAFETY: Struct is POD and safe to inspect as bytes.
@@ -145,11 +145,21 @@ fn test_wake_cmd_hk_pl_msg_round_trip() {
                 core::mem::size_of::<WakeTimeMsg>(),
             )
         };
-        let decoded = turn.decode(bytes).unwrap();
+        let decoded = turn.decode(turn.msg_id(), bytes).unwrap();
         assert_eq!(decoded.now, expected_now);
+        assert!(
+            WakeTurn::Cmd
+                .decode(cfe_sys::NODE_WAKE_HK_MID, bytes)
+                .is_none()
+        );
     }
 
-    assert!(WakeTimeMsg::from_bytes(&[0u8; 8]).is_none());
+    assert!(WakeCmdMsg::from_bytes(&[0u8; 8]).is_none());
+    assert!(
+        WakeTurn::Cmd
+            .decode(cfe_sys::NODE_WAKE_CMD_MID, &[0u8; 15])
+            .is_none()
+    );
 }
 
 #[test]
@@ -181,12 +191,20 @@ fn test_scn_status_msg_round_trip() {
     let default_msg = ScnStatusMsg::new(default_status);
     assert_eq!(default_msg.status(), Some(default_status));
 
-    // Invalid payload_mode value returns None from status() and from_bytes().
+    // Invalid payload_mode value returns None from from_raw(), status(), and from_bytes().
+    assert_eq!(ScnPayloadMode::from_raw(0), Some(ScnPayloadMode::Off));
+    assert_eq!(ScnPayloadMode::from_raw(1), Some(ScnPayloadMode::On));
+    assert_eq!(ScnPayloadMode::from_raw(2), None);
+    assert_eq!(ScnPayloadMode::from_raw(u8::MAX), None);
     msg.payload_mode = 2;
     assert_eq!(msg.status(), None);
     let mut bad_bytes = bytes.to_vec();
     if let Some(byte) = bad_bytes.get_mut(26) {
         *byte = 2;
+    }
+    assert!(ScnStatusMsg::from_bytes(&bad_bytes).is_none());
+    if let Some(byte) = bad_bytes.get_mut(26) {
+        *byte = u8::MAX;
     }
     assert!(ScnStatusMsg::from_bytes(&bad_bytes).is_none());
     assert!(ScnStatusMsg::from_bytes(bytes.get(..20).unwrap()).is_none());

@@ -408,14 +408,26 @@ const _: () = assert!(core::mem::offset_of!(DoneMsg, next_deadline) == 16);
 /// `WAKE_CMD` / `WAKE_HK` / `WAKE_PL`: `step_lab` -> scenario app: wake for turn at `now`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct WakeTimeMsg {
+pub struct WakeTimeMsg<const MID: u32 = { cfe_sys::NODE_WAKE_CMD_MID }> {
     /// Command header.
     pub header: cfe_sys::CFE_MSG_CommandHeader_t,
     /// Scenario time in microseconds.
     pub now: u64,
 }
 
-impl WakeTimeMsg {
+/// `WAKE_CMD`: `step_lab` -> `cmd_lab`: execute time-tagged commands and dump segments.
+pub type WakeCmdMsg = WakeTimeMsg<{ cfe_sys::NODE_WAKE_CMD_MID }>;
+
+/// `WAKE_HK`: `step_lab` -> `hk_lab`: run housekeeping periodic step.
+pub type WakeHkMsg = WakeTimeMsg<{ cfe_sys::NODE_WAKE_HK_MID }>;
+
+/// `WAKE_PL`: `step_lab` -> `pl_lab`: run payload periodic step.
+pub type WakePlMsg = WakeTimeMsg<{ cfe_sys::NODE_WAKE_PL_MID }>;
+
+impl<const MID: u32> WakeTimeMsg<MID> {
+    /// The Software Bus message ID (`u32`) for this wake message type.
+    pub const MID: u32 = MID;
+
     /// Creates a new `WakeTimeMsg`.
     #[must_use]
     pub const fn new(now: u64) -> Self {
@@ -447,12 +459,13 @@ impl WakeTimeMsg {
     }
 
     /// Returns a mutable reference to the generic message header.
+    #[must_use]
     pub const fn msg_mut(&mut self) -> &mut cfe_sys::CFE_MSG_Message_t {
         &mut self.header.Msg
     }
 }
-const _: () = assert!(core::mem::size_of::<WakeTimeMsg>() == 16);
-const _: () = assert!(core::mem::offset_of!(WakeTimeMsg, now) == 8);
+const _: () = assert!(core::mem::size_of::<WakeCmdMsg>() == 16);
+const _: () = assert!(core::mem::offset_of!(WakeCmdMsg, now) == 8);
 
 /// Scenario time-turn target paired with its Software Bus message ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -479,9 +492,12 @@ impl WakeTurn {
         }
     }
 
-    /// Decodes a [`WakeTimeMsg`] from `bytes` for this turn.
+    /// Decodes a [`WakeTimeMsg`] from `bytes` when `mid` matches [`self.msg_id()`](Self::msg_id).
     #[must_use]
-    pub fn decode(self, bytes: &[u8]) -> Option<WakeTimeMsg> {
+    pub fn decode(self, mid: u32, bytes: &[u8]) -> Option<WakeTimeMsg> {
+        if mid != self.msg_id() {
+            return None;
+        }
         WakeTimeMsg::from_bytes(bytes)
     }
 }

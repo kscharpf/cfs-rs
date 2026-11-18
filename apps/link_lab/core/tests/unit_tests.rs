@@ -760,4 +760,18 @@ fn test_is_valid_command_packet() {
     let mut no_sec_hdr = min_cmd;
     no_sec_hdr[0] = 0x10;
     assert!(!is_valid_command_packet(&no_sec_hdr));
+
+    // Length mismatch: header declares 6 data octets (12 total), slice is 8 bytes.
+    let mut len_mismatch_short = min_cmd;
+    len_mismatch_short[5] = 0x05;
+    assert!(!is_valid_command_packet(&len_mismatch_short));
+
+    // Length mismatch: header declares 2 data octets (8 total), slice is 12 bytes.
+    let mut len_mismatch_long = long_cmd;
+    len_mismatch_long[5] = 0x01;
+    assert!(!is_valid_command_packet(&len_mismatch_long));
+
+    // Idle packet (APID = 0x7FF) with Type = Telecommand and SecHdrFlag = 1 is invalid per CCSDS.
+    let idle_with_sec_hdr = [0x1F, 0xFF, 0xC0, 0x00, 0x00, 0x01, 0x00, 0x00];
+    assert!(!is_valid_command_packet(&idle_with_sec_hdr));
 }

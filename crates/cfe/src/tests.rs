@@ -45,6 +45,8 @@ static OS_SOCKET_BIND_CALLS: AtomicU32 = AtomicU32::new(0);
 static OS_SOCKET_SEND_CALLS: AtomicU32 = AtomicU32::new(0);
 static OS_SOCKET_SENDTO_CALLS: AtomicU32 = AtomicU32::new(0);
 static OS_SOCKET_RECV_CALLS: AtomicU32 = AtomicU32::new(0);
+static OS_TIMED_READ_CALLS: AtomicU32 = AtomicU32::new(0);
+static LAST_TIMED_READ_TIMEOUT: AtomicI32 = AtomicI32::new(0);
 static OS_SOCKET_RECVFROM_CALLS: AtomicU32 = AtomicU32::new(0);
 static OS_CLOSE_CALLS: AtomicU32 = AtomicU32::new(0);
 static SIMULATE_SOCKET_FAIL: AtomicBool = AtomicBool::new(false);
@@ -564,8 +566,10 @@ pub unsafe extern "C" fn OS_TimedRead(
     filedes: cfe_sys::osal_id_t,
     buffer: *mut core::ffi::c_void,
     nbytes: usize,
-    _timeout: i32,
+    timeout: i32,
 ) -> i32 {
+    OS_TIMED_READ_CALLS.fetch_add(1, Ordering::SeqCst);
+    LAST_TIMED_READ_TIMEOUT.store(timeout, Ordering::SeqCst);
     // SAFETY: caller guarantees filedes and buffer are valid for OS_read.
     unsafe { OS_read(filedes, buffer, nbytes) }
 }
@@ -868,6 +872,9 @@ fn test_osal_tcp_stream() {
     OS_SOCKET_OPEN_CALLS.store(0, Ordering::SeqCst);
     OS_SOCKET_CONNECT_CALLS.store(0, Ordering::SeqCst);
     OS_SOCKET_SEND_CALLS.store(0, Ordering::SeqCst);
+    OS_SOCKET_RECV_CALLS.store(0, Ordering::SeqCst);
+    OS_TIMED_READ_CALLS.store(0, Ordering::SeqCst);
+    LAST_TIMED_READ_TIMEOUT.store(0, Ordering::SeqCst);
     OS_CLOSE_CALLS.store(0, Ordering::SeqCst);
 
     let mut stream = TcpStream::connect("127.0.0.1", 1234).unwrap();
@@ -885,16 +892,27 @@ fn test_osal_tcp_stream() {
         .unwrap();
     assert_eq!(recvd, 4);
     assert_eq!(&recv_bytes[..4], &[1, 2, 3, 4]);
+    assert_eq!(OS_TIMED_READ_CALLS.load(Ordering::SeqCst), 1);
+    assert_eq!(LAST_TIMED_READ_TIMEOUT.load(Ordering::SeqCst), 1000);
+    assert_eq!(OS_SOCKET_RECV_CALLS.load(Ordering::SeqCst), 1);
     assert_eq!(
         stream.recv(&mut recv_bytes, osal::Timeout::Poll).unwrap(),
         4
     );
+    assert_eq!(OS_TIMED_READ_CALLS.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        LAST_TIMED_READ_TIMEOUT.load(Ordering::SeqCst),
+        cfe_sys::OS_CHECK.cast_signed()
+    );
+    assert_eq!(OS_SOCKET_RECV_CALLS.load(Ordering::SeqCst), 2);
     assert_eq!(
         stream
             .recv(&mut recv_bytes, osal::Timeout::PendForever)
             .unwrap(),
         4
     );
+    assert_eq!(OS_TIMED_READ_CALLS.load(Ordering::SeqCst), 2);
+    assert_eq!(OS_SOCKET_RECV_CALLS.load(Ordering::SeqCst), 3);
 
     // Test read_exact with chunked recv
     RECV_CHUNK_MODE.store(1, Ordering::SeqCst);

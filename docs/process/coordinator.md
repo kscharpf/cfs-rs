@@ -20,8 +20,10 @@ For the coordinator (`gemini-4-hydrogen-high`, Hydrogen with high effort): the m
 ## Review
 
 - **Review with the reviewer agent.** Dispatch `reviewer` (`gemini-4-hydrogen-xhigh`), fresh, given the PR number and head commit only — never your conclusions or the implementer's report.
-- **At most three reviews** by `reviewer` per PR. A review with no blocking finding does not start a fix round of its own; fold non-blocking findings/nits into a final fix round or open follow-up issues. After the third review, open remaining non-blocking findings/nits as GitHub issues; if a blocking finding remains, ask the maintainer.
-- **Answer every review.** Every review gets a point-by-point reply on the PR quoting the fix commit (at least 7 hex chars) and ending with the marker of [AGENTS.md](../../AGENTS.md).
+- **Resolve in-PR, not via follow-up issues.** When Review 1 has no blocking findings, do **not** open a follow-up GitHub issue for non-blocking findings or nits. Instead, either apply worthwhile non-blocking fixes and nits in a single in-PR polish commit (and decline speculative or disproportionate suggestions in the review reply with a brief rationale), or ready the PR as-is after replying point-by-point.
+- **At most three reviews** by `reviewer` per PR. If Review 1 had no blocking findings and the polish commit touches only localized non-blocking/nit items (no new `unsafe` blocks, FFI ABI signature changes, or `replaced.cmake` changes) with `make check` and `make rs` passing, the coordinator may verify the diff against Review 1 directly and post a comment naming both heads instead of dispatching a second review round.
+- **Strict bar for follow-up GitHub issues.** Never open a GitHub issue for nits or single-module cleanups. Only open a follow-up issue when a finding requires genuine out-of-scope architectural work or a maintainer decision.
+- **Answer every review.** Every review gets a point-by-point reply on the PR quoting the fix commit (at least 7 hex chars, or stating why a non-blocking suggestion is declined) and ending with the marker of [AGENTS.md](../../AGENTS.md).
 - **Comments-only fix round:** If `git diff <reviewed head> <new head>` changes only comments/doc comments or non-normative prose (no code, tests, `unsafe`, `replaced.cmake`, or FFI signatures), the coordinator may read the diff directly instead of dispatching `reviewer`, and post a comment naming both heads.
 
 ## Verification and merge readiness

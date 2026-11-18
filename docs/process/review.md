@@ -40,7 +40,7 @@ Every statement about the implementation must cite `path:line` and quote the rel
 ## Review rounds
 
 - **Review 1:** Full review of all changed files.
-- **Reviews 2 and 3:** Check only (i) whether earlier findings were fixed and (ii) defects in lines changed since the previous reviewed head.
+- **Reviews 2 and 3 (only when triggered by a blocking finding or `unsafe`/ABI changes in a fix commit):** Check only (i) whether earlier findings were fixed and (ii) blocking defects in lines changed since the previous reviewed head. Do not introduce new non-blocking findings or nits in Reviews 2 and 3.
 
 ## Method and posting
 
