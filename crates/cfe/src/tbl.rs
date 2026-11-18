@@ -181,11 +181,18 @@ impl Table {
 
     /// Loads the table contents from a cFE table image file (`CFE_TBL_SRC_FILE`).
     ///
+    /// Only `CFE_SUCCESS` (`0`) is accepted as `Ok(())`. Positive cFE warning
+    /// statuses such as `CFE_TBL_WARN_SHORT_FILE` and `CFE_TBL_WARN_PARTIAL_LOAD`
+    /// are treated as errors (`Err(Status)`) so truncated or partial table loads
+    /// are rejected (note that cFE may still have updated the underlying table
+    /// buffer when returning a warning status).
+    ///
     /// # Errors
     ///
     /// Returns `Err(Status)` if `path` is empty, contains interior null bytes,
-    /// exceeds [`MAX_PATH_LEN`] - 1 bytes, or if `CFE_TBL_Load` returns a non-success
-    /// status code.
+    /// exceeds [`MAX_PATH_LEN`] - 1 bytes, or if `CFE_TBL_Load` returns any
+    /// non-success status code (including warning statuses such as
+    /// `CFE_TBL_WARN_SHORT_FILE` and `CFE_TBL_WARN_PARTIAL_LOAD`).
     pub fn load_from_file(&mut self, path: &str) -> Result<(), Status> {
         if path.is_empty() || path.as_bytes().contains(&0) {
             return Err(Status::from_raw(cfe_sys::CFE_TBL_BAD_ARGUMENT));
