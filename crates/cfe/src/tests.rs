@@ -27,7 +27,9 @@ use core::net::Ipv4Addr;
 use core::num::NonZeroUsize;
 use std::collections::HashSet;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU16, AtomicU32, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicI64, AtomicU16, AtomicU32, AtomicUsize, Ordering,
+};
 
 static RUN_LOOP_CALLS: AtomicU32 = AtomicU32::new(0);
 static WAIT_SYNC_MS: AtomicU32 = AtomicU32::new(0);
@@ -63,6 +65,7 @@ static SIMULATE_ALLOC_FAIL: AtomicBool = AtomicBool::new(false);
 static RELEASE_CALLS: AtomicU32 = AtomicU32::new(0);
 static TRANSMIT_BUFFER_CALLS: AtomicU32 = AtomicU32::new(0);
 static TRANSMIT_MSG_CALLS: AtomicU32 = AtomicU32::new(0);
+static LAST_INIT_SIZE: AtomicUsize = AtomicUsize::new(0);
 static RECV_CHUNK_MODE: AtomicU32 = AtomicU32::new(0);
 static SEND_CHUNK_MODE: AtomicU32 = AtomicU32::new(0);
 static DUMMY_USER_DATA: [u8; 16] = [0xAA; 16];
@@ -316,14 +319,27 @@ pub unsafe extern "C" fn CFE_SB_TransmitBuffer(
 pub unsafe extern "C" fn CFE_MSG_Init(
     MsgPtr: *mut cfe_sys::CFE_MSG_Message_t,
     MsgId: cfe_sys::CFE_SB_MsgId_t,
-    _Size: cfe_sys::CFE_MSG_Size_t,
+    Size: cfe_sys::CFE_MSG_Size_t,
 ) -> cfe_sys::CFE_Status_t {
     if MsgPtr.is_null() {
-        cfe_sys::CFE_MSG_BAD_ARGUMENT
-    } else {
-        SUBSCRIBED_MID.store(MsgId.Value, Ordering::SeqCst);
-        0
+        return cfe_sys::CFE_MSG_BAD_ARGUMENT;
     }
+    LAST_INIT_SIZE.store(Size, Ordering::SeqCst);
+    // Mirror real cFE `memset(MsgPtr, 0, Size)` so tests exercise full-buffer writability.
+    // SAFETY: Caller guarantees `MsgPtr` points to at least `Size` writable bytes.
+    unsafe {
+        core::ptr::write_bytes(MsgPtr.cast::<u8>(), 0, Size);
+    }
+    SUBSCRIBED_MID.store(MsgId.Value, Ordering::SeqCst);
+    if !(7..=65_542).contains(&Size) {
+        return cfe_sys::CFE_MSG_BAD_ARGUMENT;
+    }
+    let len_field = u16::try_from(Size - 7).unwrap().to_be_bytes();
+    // SAFETY: `Size >= 7 > size_of::<CFE_MSG_Message_t>()`.
+    unsafe {
+        (*MsgPtr).CCSDS.Pri.Length = len_field;
+    }
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -334,8 +350,15 @@ pub unsafe extern "C" fn CFE_MSG_GetSize(
     if MsgPtr.is_null() || Size.is_null() {
         cfe_sys::CFE_MSG_BAD_ARGUMENT
     } else {
+        // SAFETY: MsgPtr and Size are checked non-null.
+        let raw_len = unsafe { u16::from_be_bytes((*MsgPtr).CCSDS.Pri.Length) };
+        let decoded = if raw_len == 0 {
+            64
+        } else {
+            usize::from(raw_len) + 7
+        };
         // SAFETY: Size is checked non-null.
-        unsafe { *Size = 64 };
+        unsafe { *Size = decoded };
         0
     }
 }
@@ -343,11 +366,16 @@ pub unsafe extern "C" fn CFE_MSG_GetSize(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn CFE_MSG_SetSize(
     MsgPtr: *mut cfe_sys::CFE_MSG_Message_t,
-    _Size: cfe_sys::CFE_MSG_Size_t,
+    Size: cfe_sys::CFE_MSG_Size_t,
 ) -> cfe_sys::CFE_Status_t {
-    if MsgPtr.is_null() {
+    if MsgPtr.is_null() || !(7..=65_542).contains(&Size) {
         cfe_sys::CFE_MSG_BAD_ARGUMENT
     } else {
+        let len_field = u16::try_from(Size - 7).unwrap().to_be_bytes();
+        // SAFETY: MsgPtr is checked non-null.
+        unsafe {
+            (*MsgPtr).CCSDS.Pri.Length = len_field;
+        }
         0
     }
 }
@@ -781,17 +809,47 @@ fn test_sb_wrappers() {
     );
     SIMULATE_RECEIVE_ERROR.store(false, Ordering::SeqCst);
 
-    // transmit_msg takes &CFE_MSG_Message_t
-    let msg_dummy = cfe_sys::CFE_MSG_Message_t {
-        CCSDS: cfe_sys::CCSDS_SpacePacket_t {
-            Pri: cfe_sys::CCSDS_PrimaryHeader {
-                StreamId: [0, 0],
-                Sequence: [0, 0],
-                Length: [0, 0],
+    // transmit_msg takes a typed CfeMessage and enforces encoded size <= size_of::<M>()
+    let mut cmd_hdr = cfe_sys::CFE_MSG_CommandHeader_t {
+        Msg: cfe_sys::CFE_MSG_Message_t {
+            CCSDS: cfe_sys::CCSDS_SpacePacket_t {
+                Pri: cfe_sys::CCSDS_PrimaryHeader {
+                    StreamId: [0, 0],
+                    Sequence: [0, 0],
+                    Length: [0, 0],
+                },
             },
         },
+        Sec: cfe_sys::CFE_MSG_CommandSecondaryHeader_t {
+            FunctionCode: 0,
+            Checksum: 0,
+        },
     };
-    assert!(sb::transmit_msg(&msg_dummy, true).is_ok());
+    assert!(msg::init(&mut cmd_hdr, mid).is_ok());
+    assert!(sb::transmit_msg(&cmd_hdr, true).is_ok());
+
+    // Oversized header in transmit_msg is rejected before calling CFE_SB_TransmitMsg
+    assert!(msg::set_size(&mut cmd_hdr.Msg, 64).is_ok());
+    let before_tx = TRANSMIT_MSG_CALLS.load(Ordering::SeqCst);
+    assert_eq!(
+        sb::transmit_msg(&cmd_hdr, true),
+        Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT))
+    );
+    assert_eq!(TRANSMIT_MSG_CALLS.load(Ordering::SeqCst), before_tx);
+
+    // transmit_bytes rejects short buffers and buffers shorter than the encoded header size
+    let short_buf = [0u8; 5];
+    assert_eq!(
+        sb::transmit_bytes(&short_buf, true),
+        Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT))
+    );
+    let mut wire = [0u8; 16];
+    assert!(msg::init_bytes(&mut wire, mid).is_ok());
+    assert!(sb::transmit_bytes(&wire, true).is_ok());
+    assert_eq!(
+        sb::transmit_bytes(&wire[..8], true),
+        Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT))
+    );
 
     // MessageBuffer allocation, inspection, and transmit_buffer
     let mut alloc_buf = sb::allocate_message_buffer(128).unwrap();
@@ -841,28 +899,67 @@ fn test_sb_wrappers() {
 
 #[test]
 fn test_msg_wrappers() {
-    let mut msg_dummy = cfe_sys::CFE_MSG_Message_t {
-        CCSDS: cfe_sys::CCSDS_SpacePacket_t {
-            Pri: cfe_sys::CCSDS_PrimaryHeader {
-                StreamId: [0, 0],
-                Sequence: [0, 0],
-                Length: [0, 0],
+    let mut cmd_hdr = cfe_sys::CFE_MSG_CommandHeader_t {
+        Msg: cfe_sys::CFE_MSG_Message_t {
+            CCSDS: cfe_sys::CCSDS_SpacePacket_t {
+                Pri: cfe_sys::CCSDS_PrimaryHeader {
+                    StreamId: [0xFF, 0xFF],
+                    Sequence: [0xFF, 0xFF],
+                    Length: [0xFF, 0xFF],
+                },
             },
+        },
+        Sec: cfe_sys::CFE_MSG_CommandSecondaryHeader_t {
+            FunctionCode: 0xAA,
+            Checksum: 0x55,
         },
     };
 
     let mid = MsgId::from_u32(0x1904);
-    assert!(msg::init(&mut msg_dummy, mid, 32).is_ok());
+    assert!(msg::init(&mut cmd_hdr, mid).is_ok());
+    assert_eq!(
+        LAST_INIT_SIZE.load(Ordering::SeqCst),
+        core::mem::size_of::<cfe_sys::CFE_MSG_CommandHeader_t>()
+    );
+    assert_eq!(cmd_hdr.Sec.FunctionCode, 0);
+    assert_eq!(cmd_hdr.Sec.Checksum, 0);
 
-    let size = msg::get_size(&msg_dummy).unwrap();
-    assert_eq!(size, 64);
+    let size = msg::get_size(msg::CfeMessage::as_header(&cmd_hdr)).unwrap();
+    assert_eq!(size, 8);
 
-    assert!(msg::set_size(&mut msg_dummy, 48).is_ok());
+    let mut tlm_hdr = cfe_sys::CFE_MSG_TelemetryHeader_t {
+        Msg: cmd_hdr.Msg,
+        Sec: cfe_sys::CFE_MSG_TelemetrySecondaryHeader_t { Time: [0xFF; 6] },
+        Spare: [0xFF; 4],
+    };
+    assert!(msg::init(&mut tlm_hdr, mid).is_ok());
+    assert_eq!(
+        LAST_INIT_SIZE.load(Ordering::SeqCst),
+        core::mem::size_of::<cfe_sys::CFE_MSG_TelemetryHeader_t>()
+    );
+    assert_eq!(tlm_hdr.Sec.Time, [0; 6]);
+    assert_eq!(tlm_hdr.Spare, [0; 4]);
 
-    let got_mid = msg::get_msg_id(&msg_dummy).unwrap();
+    // init_bytes rejects buffers shorter than a primary header and zeroes valid buffers
+    let mut short = [0xAAu8; 5];
+    assert_eq!(
+        msg::init_bytes(&mut short, mid),
+        Err(Status::from_raw(cfe_sys::CFE_MSG_BAD_ARGUMENT))
+    );
+    assert_eq!(short, [0xAA; 5]);
+
+    let mut wire = [0xBBu8; 24];
+    assert!(msg::init_bytes(&mut wire, mid).is_ok());
+    assert_eq!(LAST_INIT_SIZE.load(Ordering::SeqCst), 24);
+    assert_eq!(&wire[6..], &[0u8; 18]);
+
+    assert!(msg::set_size(&mut cmd_hdr.Msg, 48).is_ok());
+    assert_eq!(msg::get_size(&cmd_hdr.Msg).unwrap(), 48);
+
+    let got_mid = msg::get_msg_id(&cmd_hdr.Msg).unwrap();
     assert_eq!(got_mid.as_u32(), 0x1901);
 
-    assert!(msg::set_msg_id(&mut msg_dummy, MsgId::from_u32(0x1902)).is_ok());
+    assert!(msg::set_msg_id(&mut cmd_hdr.Msg, MsgId::from_u32(0x1902)).is_ok());
     assert_eq!(SUBSCRIBED_MID.load(Ordering::SeqCst), 0x1902);
 }
 

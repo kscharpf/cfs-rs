@@ -394,14 +394,63 @@ impl Pipe {
     }
 }
 
-/// Transmits a message on the Software Bus.
+/// Transmits a typed message on the Software Bus.
+///
+/// Verifies that the size encoded in the message header does not exceed `size_of::<M>()`
+/// before passing the message to `CFE_SB_TransmitMsg`.
 ///
 /// # Errors
 ///
-/// Returns `Err(Status)` if `CFE_SB_TransmitMsg` fails.
-pub fn transmit_msg(msg: &cfe_sys::CFE_MSG_Message_t, is_origination: bool) -> Result<(), Status> {
-    // SAFETY: msg is a valid reference and guaranteed non-null.
-    let status = unsafe { cfe_sys::CFE_SB_TransmitMsg(core::ptr::from_ref(msg), is_origination) };
+/// Returns `Err(Status)` with `CFE_SB_BAD_ARGUMENT` if the encoded message size exceeds
+/// `size_of::<M>()`, or if `CFE_MSG_GetSize` / `CFE_SB_TransmitMsg` fails.
+pub fn transmit_msg<M: crate::msg::CfeMessage>(
+    msg: &M,
+    is_origination: bool,
+) -> Result<(), Status> {
+    let header = core::ptr::from_ref(msg).cast::<cfe_sys::CFE_MSG_Message_t>();
+    let mut msg_size: cfe_sys::CFE_MSG_Size_t = 0;
+    // SAFETY: `M: CfeMessage` guarantees `header` points to a valid `CFE_MSG_Message_t` at
+    // offset 0 of `msg`, and `msg_size` is a valid local out-pointer.
+    let size_status =
+        Status::from_raw(unsafe { cfe_sys::CFE_MSG_GetSize(header, &raw mut msg_size) });
+    size_status.result()?;
+    if msg_size > core::mem::size_of::<M>() {
+        return Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT));
+    }
+    // SAFETY: `M: CfeMessage` guarantees `msg` has `size_of::<M>()` initialized bytes starting
+    // with `CFE_MSG_Message_t` at offset 0, and we verified `msg_size <= size_of::<M>()`.
+    let status = unsafe { cfe_sys::CFE_SB_TransmitMsg(header, is_origination) };
+    Status::from_raw(status).result()
+}
+
+/// Transmits a message stored in a raw byte slice on the Software Bus.
+///
+/// Verifies that `buf` is at least `size_of::<CFE_MSG_Message_t>()` bytes and that the size
+/// encoded in the message header does not exceed `buf.len()`.
+///
+/// # Errors
+///
+/// Returns `Err(Status)` with `CFE_SB_BAD_ARGUMENT` if `buf` is shorter than a primary header
+/// or shorter than the encoded message size, or if `CFE_MSG_GetSize` / `CFE_SB_TransmitMsg` fails.
+pub fn transmit_bytes(buf: &[u8], is_origination: bool) -> Result<(), Status> {
+    const _: () = assert!(core::mem::align_of::<cfe_sys::CFE_MSG_Message_t>() == 1);
+    if buf.len() < core::mem::size_of::<cfe_sys::CFE_MSG_Message_t>() {
+        return Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT));
+    }
+    let header = buf.as_ptr().cast::<cfe_sys::CFE_MSG_Message_t>();
+    let mut msg_size: cfe_sys::CFE_MSG_Size_t = 0;
+    // SAFETY: `align_of::<CFE_MSG_Message_t>() == 1` (asserted above) and
+    // `buf.len() >= size_of::<CFE_MSG_Message_t>()`, so `header` points to a valid
+    // `CFE_MSG_Message_t`; `msg_size` is a valid local out-pointer.
+    let size_status =
+        Status::from_raw(unsafe { cfe_sys::CFE_MSG_GetSize(header, &raw mut msg_size) });
+    size_status.result()?;
+    if msg_size > buf.len() {
+        return Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT));
+    }
+    // SAFETY: `header` points to `buf.len()` initialized bytes with alignment 1, and we verified
+    // `msg_size <= buf.len()`.
+    let status = unsafe { cfe_sys::CFE_SB_TransmitMsg(header, is_origination) };
     Status::from_raw(status).result()
 }
 
@@ -488,22 +537,14 @@ pub fn check_pipe_depth(depth: u16, test_mid: MsgId) -> Result<(), Status> {
             Checksum: 0,
         },
     };
-    // SAFETY: Initializing command header with test_mid and valid size >= 7.
-    let init_status = unsafe {
-        cfe_sys::CFE_MSG_Init(
-            &raw mut cmd_msg.Msg,
-            test_mid.to_raw(),
-            core::mem::size_of::<cfe_sys::CFE_MSG_CommandHeader_t>(),
-        )
-    };
-    if init_status != cfe_sys::CFE_SUCCESS.cast_signed() {
+    if let Err(e) = crate::msg::init(&mut cmd_msg, test_mid) {
         let _ = pipe.delete();
-        return Err(Status::from_raw(init_status));
+        return Err(e);
     }
 
     let mut send_err = None;
     for _ in 0..depth {
-        let tx_status = transmit_msg(&cmd_msg.Msg, true);
+        let tx_status = transmit_msg(&cmd_msg, true);
         if let Err(e) = tx_status {
             send_err = Some(e);
             break;

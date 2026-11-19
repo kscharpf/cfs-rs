@@ -8,9 +8,9 @@
 )]
 
 use step_lab_core::msg::{
-    CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, LinkLevel, MAX_EVENT_ARGS, MAX_UNIT_LEN, RecordKind,
-    RecordMsg, ScnPayloadMode, ScnStatus, ScnStatusMsg, StartMsg, TlmPacketMsg, UnitMsg,
-    WakeCmdMsg, WakeRxMsg, WakeTurn, WakeTxMsg,
+    CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, LinkLevel, MAX_EVENT_ARGS, MAX_SB_MSG_LEN,
+    MAX_UNIT_LEN, RecordKind, RecordMsg, ScnPayloadMode, ScnStatus, ScnStatusMsg, StartMsg,
+    TlmPacketMsg, UnitMsg, WakeCmdMsg, WakeRxMsg, WakeTurn, WakeTxMsg,
 };
 use step_lab_core::proto::{EventArgs, NodeOutput};
 
@@ -369,4 +369,66 @@ fn test_record_msg_packet_in_round_trip() {
     } else {
         panic!("expected PacketIn");
     }
+}
+
+#[test]
+fn test_encode_into_matches_repr_c_layout() {
+    fn check<T>(msg: &T, encode: impl Fn(&T, &mut [u8]) -> Option<usize>) {
+        let size = core::mem::size_of::<T>();
+        let mut short = [0u8; MAX_SB_MSG_LEN];
+        assert_eq!(
+            encode(msg, short.get_mut(..size.saturating_sub(1)).unwrap()),
+            None
+        );
+
+        let mut buf = [0xAAu8; MAX_SB_MSG_LEN];
+        let written = encode(msg, &mut buf).unwrap();
+        assert_eq!(written, size);
+        // SAFETY: All node SB message structs are `#[repr(C)]` with explicit zeroed padding.
+        let expected =
+            unsafe { core::slice::from_raw_parts(core::ptr::from_ref(msg).cast::<u8>(), size) };
+        assert_eq!(buf.get(..written).unwrap(), expected);
+    }
+
+    check(&StartMsg::new(LinkLevel::Cop1), StartMsg::encode_into);
+    check(
+        &WakeRxMsg::new(123_456, &[1, 2, 3, 4]).unwrap(),
+        WakeRxMsg::encode_into,
+    );
+    check(&WakeTxMsg::new(789_000, true), WakeTxMsg::encode_into);
+    check(&DoneMsg::new(Some(42)), DoneMsg::encode_into);
+    check(&WakeCmdMsg::new(99_000), WakeCmdMsg::encode_into);
+    check(
+        &ScnStatusMsg::new(ScnStatus {
+            commands_executed: 5,
+            commands_rejected: 1,
+            queue_occupancy: 2,
+            table_id: 3,
+            table_crc: 0xBEEF,
+            dumps_completed: 4,
+            payload_mode: ScnPayloadMode::Off,
+        }),
+        ScnStatusMsg::encode_into,
+    );
+    check(
+        &CmdPacketMsg::new(55_000, &[0x18, 0x01, 0xC0, 0x00, 0x00, 0x01, 0x00, 0x00]).unwrap(),
+        CmdPacketMsg::encode_into,
+    );
+    check(&CmdPacketDoneMsg::new(), CmdPacketDoneMsg::encode_into);
+    check(
+        &TlmPacketMsg::new(&[0x08, 0x10, 0xC0, 0x00, 0x00, 0x01, 0xAA]).unwrap(),
+        TlmPacketMsg::encode_into,
+    );
+    check(
+        &UnitMsg::new(&[0xDE, 0xAD, 0xBE, 0xEF]).unwrap(),
+        UnitMsg::encode_into,
+    );
+    check(
+        &RecordMsg::new_event(20, &[10, 20, 30]).unwrap(),
+        RecordMsg::encode_into,
+    );
+    check(
+        &RecordMsg::new_packet_out(16, &[0x08, 0x10, 0xC0]).unwrap(),
+        RecordMsg::encode_into,
+    );
 }

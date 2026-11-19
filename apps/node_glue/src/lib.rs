@@ -6,11 +6,11 @@
 #![forbid(unsafe_code)]
 
 use cfe::evs::{self, EventType};
-use cfe::sb::{MsgId, transmit_msg};
+use cfe::sb::{MsgId, transmit_bytes};
 use cfe::status::Status;
 use step_lab_core::msg::{
-    CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, RecordMsg, ScnStatusMsg, StartMsg, TlmPacketMsg,
-    UnitMsg, WakeCmdMsg, WakeHkMsg, WakePlMsg, WakeRxMsg, WakeTurn, WakeTxMsg,
+    CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, MAX_SB_MSG_LEN, RecordMsg, ScnStatusMsg, StartMsg,
+    TlmPacketMsg, UnitMsg, WakeCmdMsg, WakeHkMsg, WakePlMsg, WakeRxMsg, WakeTurn, WakeTxMsg,
 };
 
 /// Shared EVS event IDs used by [`node_glue`](crate) helpers (kept above per-app EIDs).
@@ -33,6 +33,9 @@ pub trait SbMessage: Sized {
 
     /// Returns a mutable reference to the generic cFE message header.
     fn msg_mut(&mut self) -> &mut cfe_sys::CFE_MSG_Message_t;
+
+    /// Encodes this message (header and payload) into `dst`, returning the number of bytes written.
+    fn encode_into(&self, dst: &mut [u8]) -> Option<usize>;
 }
 
 macro_rules! impl_sb_message {
@@ -46,6 +49,10 @@ macro_rules! impl_sb_message {
 
             fn msg_mut(&mut self) -> &mut cfe_sys::CFE_MSG_Message_t {
                 Self::msg_mut(self)
+            }
+
+            fn encode_into(&self, dst: &mut [u8]) -> Option<usize> {
+                Self::encode_into(self, dst)
             }
         }
     };
@@ -91,7 +98,16 @@ pub fn send_sb_msg<M: SbMessage>(
         let _ = evs::send_event(init_eid, EventType::Critical, init_err);
         return Err(err);
     }
-    if let Err(err) = transmit_msg(msg.msg(), true) {
+    let mut wire = [0u8; MAX_SB_MSG_LEN];
+    let Some(len) = msg.encode_into(&mut wire) else {
+        let _ = evs::send_event(init_eid, EventType::Critical, init_err);
+        return Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT));
+    };
+    let Some(bytes) = wire.get(..len) else {
+        let _ = evs::send_event(init_eid, EventType::Critical, init_err);
+        return Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT));
+    };
+    if let Err(err) = transmit_bytes(bytes, true) {
         let _ = evs::send_event(tx_eid, EventType::Critical, tx_err);
         return Err(err);
     }
