@@ -38,6 +38,7 @@ static EVS_REGISTER_CALLS: AtomicU32 = AtomicU32::new(0);
 static LAST_EVENT_ID: AtomicU16 = AtomicU16::new(0);
 static LAST_EVENT_TYPE: AtomicU16 = AtomicU16::new(0);
 static PIPE_CREATE_CALLS: AtomicU32 = AtomicU32::new(0);
+static PIPE_DELETE_CALLS: AtomicU32 = AtomicU32::new(0);
 static SUBSCRIBED_MID: AtomicU32 = AtomicU32::new(0);
 static SUBSCRIBED_LIMIT: AtomicU16 = AtomicU16::new(0);
 static SOCKET_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -169,6 +170,7 @@ pub unsafe extern "C" fn CFE_SB_CreatePipe(
 pub unsafe extern "C" fn CFE_SB_DeletePipe(
     _PipeId: cfe_sys::CFE_SB_PipeId_t,
 ) -> cfe_sys::CFE_Status_t {
+    PIPE_DELETE_CALLS.fetch_add(1, Ordering::SeqCst);
     0
 }
 
@@ -757,11 +759,25 @@ fn test_evs_wrappers() {
     // Exactly MAX_EVENT_MESSAGE_LEN bytes succeeds
     let max_msg = "B".repeat(evs::MAX_EVENT_MESSAGE_LEN);
     assert!(evs::send_event(103, EventType::Information, &max_msg).is_ok());
+
+    // Interior NUL byte is rejected with CFE_EVS_INVALID_PARAMETER
+    assert_eq!(
+        evs::send_event(104, EventType::Error, "bad\0msg"),
+        Err(Status::from_raw(cfe_sys::CFE_EVS_INVALID_PARAMETER))
+    );
 }
 
 #[test]
 fn test_sb_wrappers() {
-    // Pipe creation name limit check
+    // Pipe creation rejects empty, interior-NUL, and overlong names
+    assert_eq!(
+        Pipe::create(8, "").unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT)
+    );
+    assert_eq!(
+        Pipe::create(8, "BAD\0PIPE").unwrap_err(),
+        Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT)
+    );
     let too_long_name = "THIS_PIPE_NAME_IS_TOO_LONG_FOR_CFS";
     let bad_pipe = Pipe::create(8, too_long_name);
     assert_eq!(
@@ -921,7 +937,20 @@ fn test_sb_wrappers() {
 
     assert!(sb::check_pipe_depth(4, MsgId::from_u32(0x190F)).is_ok());
 
+    // Explicit delete calls CFE_SB_DeletePipe exactly once (Drop does not double-delete)
+    let before_explicit = PIPE_DELETE_CALLS.load(Ordering::SeqCst);
     assert!(pipe.delete().is_ok());
+    assert_eq!(
+        PIPE_DELETE_CALLS.load(Ordering::SeqCst),
+        before_explicit + 1
+    );
+
+    // Dropping a Pipe without calling delete() automatically calls CFE_SB_DeletePipe once
+    let before_drop = PIPE_DELETE_CALLS.load(Ordering::SeqCst);
+    {
+        let _auto_pipe = Pipe::create(4, "DROP_PIPE").unwrap();
+    }
+    assert_eq!(PIPE_DELETE_CALLS.load(Ordering::SeqCst), before_drop + 1);
 }
 
 #[test]

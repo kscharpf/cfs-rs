@@ -361,7 +361,6 @@ fn init_app() -> Result<(Pipe, Table, LinkConfig), ()> {
     };
 
     let Some(table_size) = core::num::NonZeroUsize::new(LinkConfig::TABLE_SIZE) else {
-        let _ = pipe.delete();
         return Err(());
     };
     let Ok(mut table) = Table::register(LINK_CFG_TABLE_NAME, table_size, TableOptions::Default)
@@ -371,7 +370,6 @@ fn init_app() -> Result<(Pipe, Table, LinkConfig), ()> {
             EventType::Critical,
             "LINK_LAB: Failed to register LinkCfg table",
         );
-        let _ = pipe.delete();
         return Err(());
     };
 
@@ -381,8 +379,6 @@ fn init_app() -> Result<(Pipe, Table, LinkConfig), ()> {
             EventType::Critical,
             "LINK_LAB: Failed to load /cf/link_lab_cfg.tbl",
         );
-        let _ = table.unregister();
-        let _ = pipe.delete();
         return Err(());
     }
 
@@ -392,14 +388,10 @@ fn init_app() -> Result<(Pipe, Table, LinkConfig), ()> {
             EventType::Critical,
             "LINK_LAB: Failed to manage LinkCfg table",
         );
-        let _ = table.unregister();
-        let _ = pipe.delete();
         return Err(());
     }
 
     let Ok(config) = read_link_config(&mut table) else {
-        let _ = table.unregister();
-        let _ = pipe.delete();
         return Err(());
     };
 
@@ -413,8 +405,6 @@ fn init_app() -> Result<(Pipe, Table, LinkConfig), ()> {
             EventType::Critical,
             "LINK_LAB: Failed to subscribe to pipe MIDs",
         );
-        let _ = table.unregister();
-        let _ = pipe.delete();
         return Err(());
     }
 
