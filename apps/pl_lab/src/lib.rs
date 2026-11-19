@@ -93,7 +93,6 @@ fn init_app() -> Result<Pipe, ()> {
             EventType::Critical,
             "PL_LAB: Failed to subscribe to turns",
         );
-        let _ = pipe.delete();
         return Err(());
     }
 

@@ -496,7 +496,6 @@ fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
     .is_err()
     {
         let _ = stream.close();
-        let _ = pipe.delete();
         return;
     }
     // Wait for DONE from link_lab, cmd_lab, hk_lab, and pl_lab
