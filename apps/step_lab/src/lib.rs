@@ -3,11 +3,11 @@
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
 
-use cfe::es::{self, RunStatus};
+use cfe::es::{self, ExitStatus, RunStatus};
 use cfe::evs::{self, EventType};
-use cfe::osal::TcpStream;
-use cfe::sb::{MsgId, Pipe, Qos, Timeout, check_pipe_depth};
-use node_glue::{send_sb_msg, send_wake_turn};
+use cfe::osal::{self, TcpStream};
+use cfe::sb::{MsgId, Pipe, Qos, check_pipe_depth};
+use node_glue::{PeerWaitGuard, RecvAction, send_sb_msg, send_wake_turn};
 use step_lab_core::msg::{
     DoneMsg, LinkLevel, RecordMsg, StartMsg, UnitMsg, WakeRxMsg, WakeTurn, WakeTxMsg,
 };
@@ -217,24 +217,50 @@ impl StepCollector {
     }
 }
 
+/// Poll interval for harness TCP reads so `es::run_loop` stays responsive while idle.
+const HARNESS_POLL_TIMEOUT: osal::Timeout = osal::Timeout::Millis(500);
+
+/// Reads `buf.len()` bytes from `stream`, polling `es::run_loop` across idle socket timeouts.
+fn read_exact_polling(
+    stream: &mut TcpStream,
+    mut buf: &mut [u8],
+    run_status: &mut RunStatus,
+) -> Result<(), CodecError> {
+    while !buf.is_empty() {
+        let n = match stream.recv(buf, HARNESS_POLL_TIMEOUT) {
+            Ok(0) => return Err(CodecError::UnexpectedEof),
+            Ok(n) => n,
+            Err(status) if osal::is_timeout(status) => {
+                if !es::run_loop(run_status) {
+                    return Err(CodecError::UnexpectedEof);
+                }
+                continue;
+            }
+            Err(_) => return Err(CodecError::UnexpectedEof),
+        };
+        let Some(rest) = buf.get_mut(n..) else {
+            return Err(CodecError::BufferTooSmall);
+        };
+        buf = rest;
+    }
+    Ok(())
+}
+
 /// Reads one framed message from the TCP stream.
 fn read_msg_frame<'a>(
     stream: &mut TcpStream,
     buf: &'a mut [u8; FRAME_BUF_LEN],
+    run_status: &mut RunStatus,
 ) -> Result<Message<'a>, CodecError> {
     let mut len_bytes = [0u8; 4];
-    stream
-        .read_exact(&mut len_bytes)
-        .map_err(|_| CodecError::UnexpectedEof)?;
+    read_exact_polling(stream, &mut len_bytes, run_status)?;
     let body_len =
         usize::try_from(u32::from_be_bytes(len_bytes)).map_err(|_| CodecError::CountOverflow)?;
     if body_len == 0 || body_len > proto::MAX_BODY {
         return Err(CodecError::InvalidBodyLength(body_len));
     }
     let body_slice = buf.get_mut(..body_len).ok_or(CodecError::BufferTooSmall)?;
-    stream
-        .read_exact(body_slice)
-        .map_err(|_| CodecError::UnexpectedEof)?;
+    read_exact_polling(stream, body_slice, run_status)?;
     decode_body(body_slice)
 }
 
@@ -251,82 +277,112 @@ fn write_msg_frame(
         .map_err(|_| CodecError::UnexpectedEof)
 }
 
-/// Waits on the input pipe until a `DONE` message arrives, collecting outputs.
-fn wait_collect_turn(
-    pipe: &mut Pipe,
-    collector: &mut StepCollector,
-    earliest_deadline: &mut Option<u64>,
-) -> Result<(), ()> {
-    while let Ok(buf) = pipe.receive_buffer(Timeout::PendForever) {
-        let Ok(mid) = buf.msg_id() else {
-            continue;
-        };
-        match mid.as_u32() {
-            cfe_sys::NODE_RECORD_MID => {
-                let Some(record) = RecordMsg::from_bytes(buf.as_bytes()) else {
-                    let _ = evs::send_event(
-                        22,
-                        EventType::Error,
-                        "STEP_LAB: Malformed RecordMsg received",
-                    );
-                    return Err(());
-                };
-                if !collector.push_record(&record) {
-                    let _ = evs::send_event(
-                        20,
-                        EventType::Critical,
-                        "STEP_LAB: Failed to push record (collector overflow)",
-                    );
-                    return Err(());
-                }
+/// Handles a single `RecordMsg` or `UnitMsg` during turn collection.
+fn handle_collected_msg(mid: u32, bytes: &[u8], collector: &mut StepCollector) -> Result<(), ()> {
+    match mid {
+        cfe_sys::NODE_RECORD_MID => {
+            let Some(record) = RecordMsg::from_bytes(bytes) else {
+                let _ = evs::send_event(
+                    22,
+                    EventType::Error,
+                    "STEP_LAB: Malformed RecordMsg received",
+                );
+                return Err(());
+            };
+            if !collector.push_record(&record) {
+                let _ = evs::send_event(
+                    20,
+                    EventType::Critical,
+                    "STEP_LAB: Failed to push record (collector overflow)",
+                );
+                return Err(());
             }
-            cfe_sys::NODE_UNIT_MID => {
-                let Some(unit_msg) = UnitMsg::from_bytes(buf.as_bytes()) else {
-                    let _ = evs::send_event(
-                        23,
-                        EventType::Error,
-                        "STEP_LAB: Malformed UnitMsg received",
-                    );
-                    return Err(());
-                };
-                if !collector.push_unit(unit_msg.unit_bytes()) {
-                    let _ = evs::send_event(
-                        21,
-                        EventType::Critical,
-                        "STEP_LAB: Failed to push unit (collector overflow)",
-                    );
-                    return Err(());
-                }
-            }
-            cfe_sys::NODE_DONE_MID => {
-                if let Some(done) = DoneMsg::from_bytes(buf.as_bytes())
-                    && let Some(d) = done.deadline()
-                {
-                    *earliest_deadline = Some(earliest_deadline.map_or(d, |prev| prev.min(d)));
-                }
-                return Ok(());
-            }
-            _ => {}
         }
+        cfe_sys::NODE_UNIT_MID => {
+            let Some(unit_msg) = UnitMsg::from_bytes(bytes) else {
+                let _ =
+                    evs::send_event(23, EventType::Error, "STEP_LAB: Malformed UnitMsg received");
+                return Err(());
+            };
+            if !collector.push_unit(unit_msg.unit_bytes()) {
+                let _ = evs::send_event(
+                    21,
+                    EventType::Critical,
+                    "STEP_LAB: Failed to push unit (collector overflow)",
+                );
+                return Err(());
+            }
+        }
+        _ => {}
     }
-    Err(())
+    Ok(())
 }
 
-/// Waits on the input pipe until a `DONE` message arrives, updating `earliest_deadline`.
-fn wait_for_done(pipe: &mut Pipe, earliest_deadline: &mut Option<u64>) {
-    while let Ok(buf) = pipe.receive_buffer(Timeout::PendForever) {
+/// Waits on the input pipe until a `DONE` message arrives, optionally collecting turn outputs.
+fn wait_turn_done(
+    pipe: &mut Pipe,
+    mut collector: Option<&mut StepCollector>,
+    earliest_deadline: &mut Option<u64>,
+    run_status: &mut RunStatus,
+) -> Result<(), ()> {
+    let mut wait_guard = PeerWaitGuard::new();
+    while es::run_loop(run_status) {
+        let buf = match pipe.receive_buffer(PeerWaitGuard::POLL_TIMEOUT) {
+            Ok(buf) => {
+                wait_guard.on_ok();
+                buf
+            }
+            Err(status) => {
+                if wait_guard.on_err(
+                    status,
+                    25,
+                    "STEP_LAB: Timed out waiting for peer DONE",
+                    26,
+                    "STEP_LAB: Pipe error waiting for peer DONE",
+                ) == RecvAction::Abort
+                {
+                    *run_status = RunStatus::AppError;
+                    return Err(());
+                }
+                continue;
+            }
+        };
         let Ok(mid) = buf.msg_id() else {
             continue;
         };
-        if mid.as_u32() == cfe_sys::NODE_DONE_MID {
+        let raw_mid = mid.as_u32();
+        if raw_mid == cfe_sys::NODE_DONE_MID {
             if let Some(done) = DoneMsg::from_bytes(buf.as_bytes())
                 && let Some(d) = done.deadline()
             {
                 *earliest_deadline = Some(earliest_deadline.map_or(d, |prev| prev.min(d)));
             }
-            break;
+            return Ok(());
+        }
+        if let Some(c) = collector.as_deref_mut() {
+            handle_collected_msg(raw_mid, buf.as_bytes(), c)?;
         }
     }
+    Err(())
+}
+
+/// Waits on the input pipe until a `DONE` message arrives, collecting outputs.
+fn wait_collect_turn(
+    pipe: &mut Pipe,
+    collector: &mut StepCollector,
+    earliest_deadline: &mut Option<u64>,
+    run_status: &mut RunStatus,
+) -> Result<(), ()> {
+    wait_turn_done(pipe, Some(collector), earliest_deadline, run_status)
+}
+
+/// Waits on the input pipe until a `DONE` message arrives, updating `earliest_deadline`.
+fn wait_for_done(
+    pipe: &mut Pipe,
+    earliest_deadline: &mut Option<u64>,
+    run_status: &mut RunStatus,
+) -> Result<(), ()> {
+    wait_turn_done(pipe, None, earliest_deadline, run_status)
 }
 
 /// Connects to harness over loopback TCP with retries.
@@ -345,9 +401,12 @@ fn perform_handshake(
     stream: &mut TcpStream,
     rx_buf: &mut [u8; FRAME_BUF_LEN],
     tx_buf: &mut [u8; FRAME_BUF_LEN],
+    run_status: &mut RunStatus,
 ) -> Result<LinkLevel, ()> {
-    let Ok(hello_msg) = read_msg_frame(stream, rx_buf) else {
-        let _ = evs::send_event(5, EventType::Critical, "STEP_LAB: Failed to read HELLO");
+    let Ok(hello_msg) = read_msg_frame(stream, rx_buf, run_status) else {
+        if *run_status == RunStatus::AppRun {
+            let _ = evs::send_event(5, EventType::Critical, "STEP_LAB: Failed to read HELLO");
+        }
         return Err(());
     };
 
@@ -406,6 +465,7 @@ fn wake_time_turn(
     earliest_deadline: &mut Option<u64>,
     now: u64,
     turn: WakeTurn,
+    run_status: &mut RunStatus,
 ) -> Result<(), ()> {
     send_wake_turn(
         turn,
@@ -416,7 +476,7 @@ fn wake_time_turn(
         "STEP_LAB: Failed to transmit WakeTimeMsg",
     )
     .map_err(|_| ())?;
-    wait_collect_turn(pipe, collector, earliest_deadline)
+    wait_collect_turn(pipe, collector, earliest_deadline, run_status)
 }
 
 /// Handles a single STEP from the harness according to docs/design/link-lab.md §4.5.
@@ -427,6 +487,7 @@ fn handle_step(
     tx_slot: bool,
     units: UnitsIter<'_>,
     tx_buf: &mut [u8; FRAME_BUF_LEN],
+    run_status: &mut RunStatus,
 ) -> Result<(), ()> {
     let mut earliest_deadline = None;
     let mut collector = StepCollector::new();
@@ -449,12 +510,19 @@ fn handle_step(
             "STEP_LAB: Failed to transmit WakeRxMsg",
         )
         .map_err(|_| ())?;
-        wait_collect_turn(pipe, &mut collector, &mut earliest_deadline)?;
+        wait_collect_turn(pipe, &mut collector, &mut earliest_deadline, run_status)?;
     }
 
     // 2–4. WAKE_CMD -> cmd_lab, WAKE_HK -> hk_lab, WAKE_PL -> pl_lab in exact §4.5 order.
     for turn in WakeTurn::ORDER {
-        wake_time_turn(pipe, &mut collector, &mut earliest_deadline, now, turn)?;
+        wake_time_turn(
+            pipe,
+            &mut collector,
+            &mut earliest_deadline,
+            now,
+            turn,
+            run_status,
+        )?;
     }
 
     // 5. WAKE_TX to link_lab -> collect until DONE.
@@ -467,7 +535,7 @@ fn handle_step(
         "STEP_LAB: Failed to transmit WakeTxMsg",
     )
     .map_err(|_| ())?;
-    wait_collect_turn(pipe, &mut collector, &mut earliest_deadline)?;
+    wait_collect_turn(pipe, &mut collector, &mut earliest_deadline, run_status)?;
 
     // 6. Reply STEP_RESULT with all outputs in arrival order and earliest next_deadline.
     let mut output_storage = [NodeOutput::Unit(&[]); MAX_OUTPUTS];
@@ -479,8 +547,13 @@ fn handle_step(
     write_msg_frame(stream, &result_msg, tx_buf).map_err(|_| ())
 }
 
-/// Runs the main sequencer loop after handshake.
-fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
+/// Runs the main sequencer loop after handshake and returns the final [`ExitStatus`].
+fn run_sequencer(
+    mut stream: TcpStream,
+    mut pipe: Pipe,
+    level: LinkLevel,
+    mut run_status: RunStatus,
+) -> ExitStatus {
     let mut rx_buf = [0u8; FRAME_BUF_LEN];
     let mut tx_buf = [0u8; FRAME_BUF_LEN];
 
@@ -496,17 +569,27 @@ fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
     .is_err()
     {
         let _ = stream.close();
-        return;
+        let _ = pipe.delete();
+        return ExitStatus::AppError;
     }
+
     // Wait for DONE from link_lab, cmd_lab, hk_lab, and pl_lab
     let mut unused_deadline = None;
     for _ in 0..4 {
-        wait_for_done(&mut pipe, &mut unused_deadline);
+        if wait_for_done(&mut pipe, &mut unused_deadline, &mut run_status).is_err() {
+            let _ = stream.close();
+            let _ = pipe.delete();
+            return ExitStatus::from_run_status(run_status);
+        }
     }
 
-    let mut run_status = RunStatus::AppRun;
     while es::run_loop(&mut run_status) {
-        let Ok(msg) = read_msg_frame(&mut stream, &mut rx_buf) else {
+        let Ok(msg) = read_msg_frame(&mut stream, &mut rx_buf, &mut run_status) else {
+            if run_status == RunStatus::AppRun {
+                let _ =
+                    evs::send_event(27, EventType::Error, "STEP_LAB: Harness frame read failed");
+                run_status = RunStatus::AppError;
+            }
             break;
         };
 
@@ -517,30 +600,58 @@ fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
                 units,
                 ..
             } => {
-                if handle_step(&mut stream, &mut pipe, now, tx_slot, units, &mut tx_buf).is_err() {
+                if handle_step(
+                    &mut stream,
+                    &mut pipe,
+                    now,
+                    tx_slot,
+                    units,
+                    &mut tx_buf,
+                    &mut run_status,
+                )
+                .is_err()
+                {
+                    if run_status == RunStatus::AppRun {
+                        run_status = RunStatus::AppError;
+                    }
                     break;
                 }
             }
             Message::End => {
-                let _ = write_msg_frame(&mut stream, &Message::EndAck, &mut tx_buf);
+                if write_msg_frame(&mut stream, &Message::EndAck, &mut tx_buf).is_err() {
+                    let _ = evs::send_event(
+                        27,
+                        EventType::Error,
+                        "STEP_LAB: Failed to write EndAck frame",
+                    );
+                    run_status = RunStatus::AppError;
+                } else {
+                    run_status = RunStatus::AppExit;
+                }
                 break;
             }
             Message::Hello { .. }
             | Message::HelloAck { .. }
             | Message::StepResult { .. }
-            | Message::EndAck => break,
+            | Message::EndAck => {
+                let _ =
+                    evs::send_event(27, EventType::Error, "STEP_LAB: Unexpected harness message");
+                run_status = RunStatus::AppError;
+                break;
+            }
         }
     }
 
     let _ = stream.close();
     let _ = pipe.delete();
+    ExitStatus::from_run_status(run_status)
 }
 
 /// Runs the `step_lab` initialization, harness handshake, and sequencer loop.
 fn app_main() {
     // 1. Register with EVS.
     if evs::register().is_err() {
-        es::exit_app(RunStatus::AppError);
+        es::exit_app(ExitStatus::AppError);
         return;
     }
 
@@ -551,14 +662,14 @@ fn app_main() {
             EventType::Critical,
             "STEP_LAB: Pipe depth check failed: OSAL queue truncation detected",
         );
-        es::exit_app(RunStatus::AppError);
+        es::exit_app(ExitStatus::AppError);
         return;
     }
 
     // 3. Create Software Bus input pipe.
     let Ok(pipe) = Pipe::create(32, "STEP_LAB_PIPE") else {
         let _ = evs::send_event(3, EventType::Critical, "STEP_LAB: Failed to create SB pipe");
-        es::exit_app(RunStatus::AppError);
+        es::exit_app(ExitStatus::AppError);
         return;
     };
 
@@ -578,7 +689,7 @@ fn app_main() {
             "STEP_LAB: Failed to subscribe to node messages",
         );
         let _ = pipe.delete();
-        es::exit_app(RunStatus::AppError);
+        es::exit_app(ExitStatus::AppError);
         return;
     }
 
@@ -597,7 +708,7 @@ fn app_main() {
             "STEP_LAB: Failed to connect to harness over TCP",
         );
         let _ = pipe.delete();
-        es::exit_app(RunStatus::AppError);
+        es::exit_app(ExitStatus::AppError);
         return;
     };
 
@@ -605,17 +716,19 @@ fn app_main() {
     let mut tx_buf = [0u8; FRAME_BUF_LEN];
 
     // 6. HELLO / HELLO_ACK handshake.
-    let Ok(level) = perform_handshake(&mut stream, &mut rx_buf, &mut tx_buf) else {
+    let mut run_status = RunStatus::AppRun;
+    let Ok(level) = perform_handshake(&mut stream, &mut rx_buf, &mut tx_buf, &mut run_status)
+    else {
         let _ = stream.close();
         let _ = pipe.delete();
-        es::exit_app(RunStatus::AppError);
+        es::exit_app(ExitStatus::from_run_status(run_status));
         return;
     };
 
     // 7. Sequencing loop.
-    run_sequencer(stream, pipe, level);
+    let exit_status = run_sequencer(stream, pipe, level, run_status);
 
-    es::exit_app(RunStatus::AppRun);
+    es::exit_app(exit_status);
 }
 
 /// Application entry point exported to cFE.
@@ -627,6 +740,9 @@ pub extern "C" fn STEP_LAB_AppMain() {
 
 #[cfg(not(test))]
 #[panic_handler]
-const fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    loop {}
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    es::exit_app(ExitStatus::AppError);
+    loop {
+        core::hint::spin_loop();
+    }
 }

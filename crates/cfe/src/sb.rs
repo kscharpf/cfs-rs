@@ -105,6 +105,14 @@ impl Timeout {
     }
 }
 
+/// Returns `true` if `status` indicates a non-fatal pipe receive timeout or empty poll
+/// (`CFE_SB_TIME_OUT` or `CFE_SB_NO_MESSAGE`).
+#[must_use]
+pub const fn is_pipe_timeout(status: Status) -> bool {
+    let raw = status.as_raw();
+    raw == cfe_sys::CFE_SB_TIME_OUT || raw == cfe_sys::CFE_SB_NO_MESSAGE
+}
+
 /// A borrowed view of a buffer received from a Software Bus pipe.
 ///
 /// The buffer is valid until the mutable borrow of the [`Pipe`] ends.

@@ -16,7 +16,7 @@
 
 extern crate std;
 
-use crate::es::{self, RunStatus};
+use crate::es::{self, ExitStatus, RunStatus};
 use crate::evs::{self, EventType};
 use crate::msg;
 use crate::osal::{self, TcpStream, UdpSocket, local_time_us};
@@ -711,16 +711,74 @@ fn test_es_wrappers() {
     es::wait_for_startup_sync(500);
     assert_eq!(WAIT_SYNC_MS.load(Ordering::SeqCst), 500);
 
-    es::exit_app(RunStatus::SysDelete);
+    es::exit_app(ExitStatus::AppExit);
     assert_eq!(
         EXIT_APP_STATUS.load(Ordering::SeqCst),
-        RunStatus::SysDelete.to_raw()
+        ExitStatus::AppExit.to_raw()
     );
 
-    es::exit_app(RunStatus::CoreAppRuntimeError);
+    es::exit_app(ExitStatus::CoreAppRuntimeError);
     assert_eq!(
         EXIT_APP_STATUS.load(Ordering::SeqCst),
-        RunStatus::CoreAppRuntimeError.to_raw()
+        ExitStatus::CoreAppRuntimeError.to_raw()
+    );
+
+    assert_eq!(
+        ExitStatus::AppExit.to_raw(),
+        cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_EXIT
+    );
+    assert_eq!(
+        ExitStatus::AppError.to_raw(),
+        cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_ERROR
+    );
+    assert_eq!(
+        ExitStatus::CoreAppInitError.to_raw(),
+        cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_INIT_ERROR
+    );
+    assert_eq!(
+        ExitStatus::CoreAppRuntimeError.to_raw(),
+        cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_RUNTIME_ERROR
+    );
+
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::AppExit),
+        ExitStatus::AppExit
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::SysRestart),
+        ExitStatus::AppExit
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::SysReload),
+        ExitStatus::AppExit
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::SysDelete),
+        ExitStatus::AppExit
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::AppError),
+        ExitStatus::AppError
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::SysException),
+        ExitStatus::AppError
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::Undefined),
+        ExitStatus::AppError
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::AppRun),
+        ExitStatus::AppError
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::CoreAppInitError),
+        ExitStatus::CoreAppInitError
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::CoreAppRuntimeError),
+        ExitStatus::CoreAppRuntimeError
     );
 
     // Test all RunStatus enum variants and from_raw / to_raw round-trip
@@ -772,6 +830,43 @@ fn test_evs_wrappers() {
     // Interior NUL byte is rejected with CFE_EVS_INVALID_PARAMETER
     assert_eq!(
         evs::send_event(104, EventType::Error, "bad\0msg"),
+        Err(Status::from_raw(cfe_sys::CFE_EVS_INVALID_PARAMETER))
+    );
+
+    // format_event_with_status formats exact uppercase 32-bit hex without core::fmt
+    let mut buf = [0xAAu8; evs::MAX_EVENT_MESSAGE_LEN + 1];
+    let len_ok = evs::format_event_with_status("APP: OK", Status::SUCCESS, &mut buf).unwrap();
+    assert_eq!(&buf[..len_ok], b"APP: OK (status=0x00000000)");
+    assert_eq!(buf[len_ok], 0);
+
+    let len_neg =
+        evs::format_event_with_status("APP: Fail", Status::from_raw(-1), &mut buf).unwrap();
+    assert_eq!(&buf[..len_neg], b"APP: Fail (status=0xFFFFFFFF)");
+    assert_eq!(buf[len_neg], 0);
+
+    let bad_arg = Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT);
+    let expected_hex = std::format!(
+        "APP: BadArg (status=0x{:08X})",
+        bad_arg.as_raw().cast_unsigned()
+    );
+    let len_sb = evs::format_event_with_status("APP: BadArg", bad_arg, &mut buf).unwrap();
+    assert_eq!(&buf[..len_sb], expected_hex.as_bytes());
+    assert_eq!(buf[len_sb], 0);
+
+    // send_event_with_status accepts MAX_STATUS_PREFIX_LEN and rejects +1 or interior NUL
+    let max_prefix = "P".repeat(evs::MAX_STATUS_PREFIX_LEN);
+    buf.fill(0xAA);
+    let max_len = evs::format_event_with_status(&max_prefix, bad_arg, &mut buf).unwrap();
+    assert_eq!(max_len, evs::MAX_EVENT_MESSAGE_LEN);
+    assert_eq!(buf[max_len], 0);
+    assert!(evs::send_event_with_status(105, EventType::Error, &max_prefix, bad_arg).is_ok());
+    let too_long_prefix = "P".repeat(evs::MAX_STATUS_PREFIX_LEN + 1);
+    assert_eq!(
+        evs::send_event_with_status(106, EventType::Error, &too_long_prefix, bad_arg),
+        Err(Status::from_raw(cfe_sys::CFE_EVS_INVALID_PARAMETER))
+    );
+    assert_eq!(
+        evs::send_event_with_status(107, EventType::Error, "bad\0prefix", bad_arg),
         Err(Status::from_raw(cfe_sys::CFE_EVS_INVALID_PARAMETER))
     );
 }
@@ -982,6 +1077,18 @@ fn test_sb_wrappers() {
         PIPE_DELETE_CALLS.load(Ordering::SeqCst),
         before_err_drop + 1
     );
+
+    // is_pipe_timeout classifies only CFE_SB_TIME_OUT and CFE_SB_NO_MESSAGE as timeouts
+    assert!(sb::is_pipe_timeout(Status::from_raw(
+        cfe_sys::CFE_SB_TIME_OUT
+    )));
+    assert!(sb::is_pipe_timeout(Status::from_raw(
+        cfe_sys::CFE_SB_NO_MESSAGE
+    )));
+    assert!(!sb::is_pipe_timeout(Status::SUCCESS));
+    assert!(!sb::is_pipe_timeout(Status::from_raw(
+        cfe_sys::CFE_SB_PIPE_RD_ERR
+    )));
 }
 
 #[test]
@@ -1104,6 +1211,13 @@ fn test_osal_tcp_stream() {
     );
     assert_eq!(OS_TIMED_READ_CALLS.load(Ordering::SeqCst), 2);
     assert_eq!(OS_SOCKET_RECV_CALLS.load(Ordering::SeqCst), 3);
+
+    // osal::is_timeout distinguishes OS_ERROR_TIMEOUT from success and other OSAL errors
+    assert!(osal::is_timeout(Status::from_raw(
+        cfe_sys::OS_ERROR_TIMEOUT
+    )));
+    assert!(!osal::is_timeout(Status::SUCCESS));
+    assert!(!osal::is_timeout(Status::from_raw(cfe_sys::OS_ERROR)));
 
     // Test read_exact with chunked recv
     RECV_CHUNK_MODE.store(1, Ordering::SeqCst);

@@ -441,3 +441,9 @@ pub fn task_delay(millisecond: u32) -> Result<(), Status> {
         Err(status)
     }
 }
+
+/// Returns `true` if `status` indicates an OSAL read/receive timeout (`OS_ERROR_TIMEOUT`).
+#[must_use]
+pub const fn is_timeout(status: Status) -> bool {
+    status.as_raw() == cfe_sys::OS_ERROR_TIMEOUT
+}

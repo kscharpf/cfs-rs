@@ -5,10 +5,12 @@
 
 use aldis::core::ErrorKind;
 use aldis::spp::{PacketType, SequenceFlags, SpacePacket};
-use cfe::es::{self, RunStatus};
+use cfe::es::{self, ExitStatus, RunStatus};
 use cfe::evs::{self, EventType};
-use cfe::sb::{MsgId, Pipe, Qos, Timeout};
-use node_glue::{send_done, send_record_event, send_sb_msg, send_tlm_packet};
+use cfe::sb::{MsgId, Pipe, Qos};
+use node_glue::{
+    PipeRecvGuard, RecvAction, send_done, send_record_event, send_sb_msg, send_tlm_packet,
+};
 use refapp_flight::command::{self, Call, Command, Reject, Timing};
 use refapp_flight::dump::Dump;
 use refapp_flight::event::{APP_CMD_RECEIVED, APP_PACKET_REJECTED, APP_TABLE_RECEIVED, Event};
@@ -274,14 +276,14 @@ fn reject_unit(out: &mut dyn Output, kind: ErrorKind) {
 fn app_main() {
     // 1. Register with EVS.
     if evs::register().is_err() {
-        es::exit_app(RunStatus::AppError);
+        es::exit_app(ExitStatus::AppError);
         return;
     }
 
     // 2. Create Software Bus input pipe.
     let Ok(mut pipe) = Pipe::create(32, "CMD_LAB_PIPE") else {
         let _ = evs::send_event(2, EventType::Critical, "CMD_LAB: Failed to create SB pipe");
-        es::exit_app(RunStatus::AppError);
+        es::exit_app(ExitStatus::AppError);
         return;
     };
 
@@ -306,7 +308,7 @@ fn app_main() {
             "CMD_LAB: Failed to subscribe to turns",
         );
         let _ = pipe.delete();
-        es::exit_app(RunStatus::AppError);
+        es::exit_app(ExitStatus::AppError);
         return;
     }
 
@@ -322,9 +324,20 @@ fn app_main() {
 
     // 6. Run ES loop, pending on the pipe.
     let mut run_status = RunStatus::AppRun;
+    let mut pipe_guard = PipeRecvGuard::new();
     while es::run_loop(&mut run_status) {
-        let Ok(buf) = pipe.receive_buffer(Timeout::PendForever) else {
-            continue;
+        let buf = match pipe.receive_buffer(PipeRecvGuard::RECV_TIMEOUT) {
+            Ok(buf) => {
+                pipe_guard.on_ok();
+                buf
+            }
+            Err(status) => {
+                if pipe_guard.on_err(status, "CMD_LAB: Pipe receive failed") == RecvAction::Abort {
+                    run_status = RunStatus::AppError;
+                    break;
+                }
+                continue;
+            }
         };
 
         let Ok(mid) = buf.msg_id() else {
@@ -374,7 +387,7 @@ fn app_main() {
     }
 
     let _ = pipe.delete();
-    es::exit_app(run_status);
+    es::exit_app(ExitStatus::from_run_status(run_status));
 }
 
 /// Application entry point exported to cFE.
@@ -386,6 +399,9 @@ pub extern "C" fn CMD_LAB_AppMain() {
 
 #[cfg(not(test))]
 #[panic_handler]
-const fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    loop {}
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    es::exit_app(ExitStatus::AppError);
+    loop {
+        core::hint::spin_loop();
+    }
 }
