@@ -154,8 +154,10 @@ impl ReceivedBuffer<'_> {
         if status != cfe_sys::CFE_SUCCESS.cast_signed() || total_size == 0 {
             return &[];
         }
-        let ptr = core::ptr::from_ref(self.msg()).cast::<u8>();
-        // SAFETY: CFE_MSG_GetSize returned a valid size and msg points to at least total_size initialized bytes.
+        let ptr = self.ptr.cast::<u8>();
+        // SAFETY: `self.ptr` points to the full SB buffer allocation (without narrowing
+        // provenance to `CFE_MSG_Message_t`), and `CFE_MSG_GetSize` returned `total_size`
+        // initialized bytes within that buffer.
         unsafe { core::slice::from_raw_parts(ptr, total_size) }
     }
 

@@ -70,16 +70,25 @@ static RECV_CHUNK_MODE: AtomicU32 = AtomicU32::new(0);
 static SEND_CHUNK_MODE: AtomicU32 = AtomicU32::new(0);
 static DUMMY_USER_DATA: [u8; 16] = [0xAA; 16];
 
-static mut STATIC_BUFFER: cfe_sys::CFE_SB_Buffer_t = cfe_sys::CFE_SB_Buffer_t {
-    Msg: cfe_sys::CFE_MSG_Message {
-        CCSDS: cfe_sys::CCSDS_SpacePacket_t {
-            Pri: cfe_sys::CCSDS_PrimaryHeader {
-                StreamId: [0, 0],
-                Sequence: [0, 0],
-                Length: [0, 0],
+#[repr(C)]
+struct MockSbBuffer {
+    buf: cfe_sys::CFE_SB_Buffer_t,
+    payload: [u8; 122],
+}
+
+static mut STATIC_BUFFER: MockSbBuffer = MockSbBuffer {
+    buf: cfe_sys::CFE_SB_Buffer_t {
+        Msg: cfe_sys::CFE_MSG_Message {
+            CCSDS: cfe_sys::CCSDS_SpacePacket_t {
+                Pri: cfe_sys::CCSDS_PrimaryHeader {
+                    StreamId: [0, 0],
+                    Sequence: [0, 0],
+                    Length: [0, 0],
+                },
             },
         },
     },
+    payload: [0; 122],
 };
 
 #[unsafe(no_mangle)]
@@ -199,7 +208,7 @@ pub unsafe extern "C" fn CFE_SB_ReceiveBuffer(
     }
     // SAFETY: BufPtr is checked non-null and points to valid storage.
     unsafe {
-        *BufPtr = core::ptr::addr_of_mut!(STATIC_BUFFER);
+        *BufPtr = core::ptr::addr_of_mut!(STATIC_BUFFER).cast::<cfe_sys::CFE_SB_Buffer_t>();
     }
     0
 }
@@ -286,7 +295,7 @@ pub unsafe extern "C" fn CFE_SB_AllocateMessageBuffer(
     if SIMULATE_ALLOC_FAIL.load(Ordering::SeqCst) {
         core::ptr::null_mut()
     } else {
-        core::ptr::addr_of_mut!(STATIC_BUFFER)
+        core::ptr::addr_of_mut!(STATIC_BUFFER).cast::<cfe_sys::CFE_SB_Buffer_t>()
     }
 }
 

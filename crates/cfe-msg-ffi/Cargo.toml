@@ -10,9 +10,8 @@ publish.workspace = true
 
 [lib]
 crate-type = ["staticlib"]
-# No tests here: behaviour is tested in `cfe-msg` and, through the C names, by the cFE test
-# suites. The panic handler is compiled out under `cfg(test)`, which `clippy --all-targets` uses.
-test = false
+# Unit tests exercise pointer/provenance safety of the FFI layer (including under Miri);
+# behavioural equivalence against C is also verified by the cFE `coverage-msg-ALL` suite.
 doctest = false
 
 [dependencies]

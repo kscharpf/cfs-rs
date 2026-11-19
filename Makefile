@@ -3,13 +3,17 @@ CONTAINER ?= podman
 IMAGE     ?= cfs-rs-build
 RUN        = $(CONTAINER) run --rm --sysctl fs.mqueue.msg_max=64 -v "$(CURDIR)":/work -v cfs-rs-cargo:/cargo $(IMAGE)
 
-.PHONY: check image stock rs node realtime shell clean
+.PHONY: check miri image stock rs node realtime shell clean
 
 # Rust only: format, lints, unit tests.
 check:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets -- -D warnings
 	cargo test --workspace
+
+# Miri UB checks on the unsafe FFI crates (`cfe` and `cfe-msg-ffi`).
+miri:
+	cargo +$$(cat tooling-nightly) miri test --locked -p cfe -p cfe-msg-ffi
 
 image:
 	$(CONTAINER) build -t $(IMAGE) -f Containerfile .
