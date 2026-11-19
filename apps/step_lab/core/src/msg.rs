@@ -119,6 +119,30 @@ fn copy_tlm_header(header: &mut cfe_sys::CFE_MSG_TelemetryHeader_t, bytes: &[u8]
     }
 }
 
+/// Copies `src` into `dst[offset..offset + src.len()]`, returning `None` if out of bounds.
+fn write_slice(dst: &mut [u8], offset: usize, src: &[u8]) -> Option<()> {
+    let end = offset.checked_add(src.len())?;
+    dst.get_mut(offset..end)?.copy_from_slice(src);
+    Some(())
+}
+
+/// Writes an 8-byte `CFE_MSG_CommandHeader_t` into `dst[0..8]`.
+fn write_cmd_header(dst: &mut [u8], header: cfe_sys::CFE_MSG_CommandHeader_t) -> Option<()> {
+    write_slice(dst, 0, &header.Msg.CCSDS.Pri.StreamId)?;
+    write_slice(dst, 2, &header.Msg.CCSDS.Pri.Sequence)?;
+    write_slice(dst, 4, &header.Msg.CCSDS.Pri.Length)?;
+    write_slice(dst, 6, &[header.Sec.FunctionCode, header.Sec.Checksum])
+}
+
+/// Writes a 16-byte `CFE_MSG_TelemetryHeader_t` into `dst[0..16]`.
+fn write_tlm_header(dst: &mut [u8], header: &cfe_sys::CFE_MSG_TelemetryHeader_t) -> Option<()> {
+    write_slice(dst, 0, &header.Msg.CCSDS.Pri.StreamId)?;
+    write_slice(dst, 2, &header.Msg.CCSDS.Pri.Sequence)?;
+    write_slice(dst, 4, &header.Msg.CCSDS.Pri.Length)?;
+    write_slice(dst, 6, &header.Sec.Time)?;
+    write_slice(dst, 12, &header.Spare)
+}
+
 /// `START`: `step_lab` -> all apps: informs apps of the scenario link level.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -171,6 +195,17 @@ impl StartMsg {
             copy_cmd_header(&mut msg.header, src);
         }
         Some(msg)
+    }
+
+    /// Encodes this `StartMsg` into `dst`, returning the number of bytes written.
+    #[must_use]
+    pub fn encode_into(&self, dst: &mut [u8]) -> Option<usize> {
+        let size = core::mem::size_of::<Self>();
+        let out = dst.get_mut(..size)?;
+        write_cmd_header(out, self.header)?;
+        write_slice(out, 8, &[self.level])?;
+        write_slice(out, 9, &self.pad)?;
+        Some(size)
     }
 
     /// Returns a reference to the generic message header.
@@ -253,6 +288,19 @@ impl WakeRxMsg {
         self.unit.get(..usize::from(self.unit_len)).unwrap_or(&[])
     }
 
+    /// Encodes this `WakeRxMsg` into `dst`, returning the number of bytes written.
+    #[must_use]
+    pub fn encode_into(&self, dst: &mut [u8]) -> Option<usize> {
+        let size = core::mem::size_of::<Self>();
+        let out = dst.get_mut(..size)?;
+        write_cmd_header(out, self.header)?;
+        write_slice(out, 8, &self.now.to_ne_bytes())?;
+        write_slice(out, 16, &self.unit_len.to_ne_bytes())?;
+        write_slice(out, 18, &self.pad)?;
+        write_slice(out, 24, &self.unit)?;
+        Some(size)
+    }
+
     /// Returns a reference to the generic message header.
     #[must_use]
     pub const fn msg(&self) -> &cfe_sys::CFE_MSG_Message_t {
@@ -320,6 +368,18 @@ impl WakeTxMsg {
     #[must_use]
     pub const fn is_tx_slot(&self) -> bool {
         self.tx_slot == 1
+    }
+
+    /// Encodes this `WakeTxMsg` into `dst`, returning the number of bytes written.
+    #[must_use]
+    pub fn encode_into(&self, dst: &mut [u8]) -> Option<usize> {
+        let size = core::mem::size_of::<Self>();
+        let out = dst.get_mut(..size)?;
+        write_cmd_header(out, self.header)?;
+        write_slice(out, 8, &self.now.to_ne_bytes())?;
+        write_slice(out, 16, &[self.tx_slot])?;
+        write_slice(out, 17, &self.pad)?;
+        Some(size)
     }
 
     /// Returns a reference to the generic message header.
@@ -391,6 +451,16 @@ impl DoneMsg {
         }
     }
 
+    /// Encodes this `DoneMsg` into `dst`, returning the number of bytes written.
+    #[must_use]
+    pub fn encode_into(&self, dst: &mut [u8]) -> Option<usize> {
+        let size = core::mem::size_of::<Self>();
+        let out = dst.get_mut(..size)?;
+        write_tlm_header(out, &self.header)?;
+        write_slice(out, 16, &self.next_deadline.to_ne_bytes())?;
+        Some(size)
+    }
+
     /// Returns a reference to the generic message header.
     #[must_use]
     pub const fn msg(&self) -> &cfe_sys::CFE_MSG_Message_t {
@@ -450,6 +520,16 @@ impl<const MID: u32> WakeTimeMsg<MID> {
             copy_cmd_header(&mut msg.header, src);
         }
         Some(msg)
+    }
+
+    /// Encodes this `WakeTimeMsg` into `dst`, returning the number of bytes written.
+    #[must_use]
+    pub fn encode_into(&self, dst: &mut [u8]) -> Option<usize> {
+        let size = core::mem::size_of::<Self>();
+        let out = dst.get_mut(..size)?;
+        write_cmd_header(out, self.header)?;
+        write_slice(out, 8, &self.now.to_ne_bytes())?;
+        Some(size)
     }
 
     /// Returns a reference to the generic message header.
@@ -640,6 +720,29 @@ impl ScnStatusMsg {
         Some(msg)
     }
 
+    /// Encodes this `ScnStatusMsg` into `dst`, returning the number of bytes written.
+    #[must_use]
+    pub fn encode_into(&self, dst: &mut [u8]) -> Option<usize> {
+        let size = core::mem::size_of::<Self>();
+        let out = dst.get_mut(..size)?;
+        write_tlm_header(out, &self.header)?;
+        write_slice(out, 16, &self.commands_executed.to_ne_bytes())?;
+        write_slice(out, 18, &self.commands_rejected.to_ne_bytes())?;
+        write_slice(out, 20, &self.table_crc.to_ne_bytes())?;
+        write_slice(out, 22, &self.dumps_completed.to_ne_bytes())?;
+        write_slice(
+            out,
+            24,
+            &[
+                self.queue_occupancy,
+                self.table_id,
+                self.payload_mode,
+                self.pad,
+            ],
+        )?;
+        Some(size)
+    }
+
     /// Returns a reference to the generic message header.
     #[must_use]
     pub const fn msg(&self) -> &cfe_sys::CFE_MSG_Message_t {
@@ -729,6 +832,19 @@ impl CmdPacketMsg {
             .unwrap_or(&[])
     }
 
+    /// Encodes this `CmdPacketMsg` into `dst`, returning the number of bytes written.
+    #[must_use]
+    pub fn encode_into(&self, dst: &mut [u8]) -> Option<usize> {
+        let size = core::mem::size_of::<Self>();
+        let out = dst.get_mut(..size)?;
+        write_cmd_header(out, self.header)?;
+        write_slice(out, 8, &self.now.to_ne_bytes())?;
+        write_slice(out, 16, &self.packet_len.to_ne_bytes())?;
+        write_slice(out, 18, &self.pad)?;
+        write_slice(out, 24, &self.packet)?;
+        Some(size)
+    }
+
     /// Returns a reference to the generic message header.
     #[must_use]
     pub const fn msg(&self) -> &cfe_sys::CFE_MSG_Message_t {
@@ -779,6 +895,15 @@ impl CmdPacketDoneMsg {
             copy_cmd_header(&mut msg.header, src);
         }
         Some(msg)
+    }
+
+    /// Encodes this `CmdPacketDoneMsg` into `dst`, returning the number of bytes written.
+    #[must_use]
+    pub fn encode_into(&self, dst: &mut [u8]) -> Option<usize> {
+        let size = core::mem::size_of::<Self>();
+        let out = dst.get_mut(..size)?;
+        write_cmd_header(out, self.header)?;
+        Some(size)
     }
 
     /// Returns a reference to the generic message header.
@@ -857,6 +982,18 @@ impl TlmPacketMsg {
             .unwrap_or(&[])
     }
 
+    /// Encodes this `TlmPacketMsg` into `dst`, returning the number of bytes written.
+    #[must_use]
+    pub fn encode_into(&self, dst: &mut [u8]) -> Option<usize> {
+        let size = core::mem::size_of::<Self>();
+        let out = dst.get_mut(..size)?;
+        write_tlm_header(out, &self.header)?;
+        write_slice(out, 16, &self.packet_len.to_ne_bytes())?;
+        write_slice(out, 18, &self.pad)?;
+        write_slice(out, 24, &self.packet)?;
+        Some(size)
+    }
+
     /// Returns a reference to the generic message header.
     #[must_use]
     pub const fn msg(&self) -> &cfe_sys::CFE_MSG_Message_t {
@@ -931,6 +1068,18 @@ impl UnitMsg {
     #[must_use]
     pub fn unit_bytes(&self) -> &[u8] {
         self.unit.get(..usize::from(self.unit_len)).unwrap_or(&[])
+    }
+
+    /// Encodes this `UnitMsg` into `dst`, returning the number of bytes written.
+    #[must_use]
+    pub fn encode_into(&self, dst: &mut [u8]) -> Option<usize> {
+        let size = core::mem::size_of::<Self>();
+        let out = dst.get_mut(..size)?;
+        write_tlm_header(out, &self.header)?;
+        write_slice(out, 16, &self.unit_len.to_ne_bytes())?;
+        write_slice(out, 18, &self.pad)?;
+        write_slice(out, 24, &self.unit)?;
+        Some(size)
     }
 
     /// Returns a reference to the generic message header.
@@ -1159,6 +1308,24 @@ impl RecordMsg {
         }
     }
 
+    /// Encodes this `RecordMsg` into `dst`, returning the number of bytes written.
+    #[must_use]
+    pub fn encode_into(&self, dst: &mut [u8]) -> Option<usize> {
+        let size = core::mem::size_of::<Self>();
+        let out = dst.get_mut(..size)?;
+        write_tlm_header(out, &self.header)?;
+        write_slice(out, 16, &[self.kind, self.arg_count])?;
+        write_slice(out, 18, &self.code_or_apid.to_ne_bytes())?;
+        write_slice(out, 20, &self.data_len.to_ne_bytes())?;
+        write_slice(out, 22, &self.pad)?;
+        for (i, arg) in self.args.iter().enumerate() {
+            let offset = 24usize.checked_add(i.checked_mul(8)?)?;
+            write_slice(out, offset, &arg.to_ne_bytes())?;
+        }
+        write_slice(out, 88, &self.data)?;
+        Some(size)
+    }
+
     /// Returns a reference to the generic message header.
     #[must_use]
     pub const fn msg(&self) -> &cfe_sys::CFE_MSG_Message_t {
@@ -1172,5 +1339,25 @@ impl RecordMsg {
 }
 const _: () = assert!(core::mem::size_of::<RecordMsg>() == 1112);
 const _: () = assert!(core::mem::offset_of!(RecordMsg, kind) == 16);
+const _: () = assert!(core::mem::offset_of!(RecordMsg, arg_count) == 17);
+const _: () = assert!(core::mem::offset_of!(RecordMsg, code_or_apid) == 18);
+const _: () = assert!(core::mem::offset_of!(RecordMsg, data_len) == 20);
+const _: () = assert!(core::mem::offset_of!(RecordMsg, pad) == 22);
 const _: () = assert!(core::mem::offset_of!(RecordMsg, args) == 24);
 const _: () = assert!(core::mem::offset_of!(RecordMsg, data) == 88);
+
+/// Maximum encoded byte length across all internal node Software Bus message types.
+pub const MAX_SB_MSG_LEN: usize = core::mem::size_of::<RecordMsg>();
+const _: () = {
+    assert!(core::mem::size_of::<StartMsg>() <= MAX_SB_MSG_LEN);
+    assert!(core::mem::size_of::<WakeRxMsg>() <= MAX_SB_MSG_LEN);
+    assert!(core::mem::size_of::<WakeTxMsg>() <= MAX_SB_MSG_LEN);
+    assert!(core::mem::size_of::<DoneMsg>() <= MAX_SB_MSG_LEN);
+    assert!(core::mem::size_of::<WakeCmdMsg>() <= MAX_SB_MSG_LEN);
+    assert!(core::mem::size_of::<ScnStatusMsg>() <= MAX_SB_MSG_LEN);
+    assert!(core::mem::size_of::<CmdPacketMsg>() <= MAX_SB_MSG_LEN);
+    assert!(core::mem::size_of::<CmdPacketDoneMsg>() <= MAX_SB_MSG_LEN);
+    assert!(core::mem::size_of::<TlmPacketMsg>() <= MAX_SB_MSG_LEN);
+    assert!(core::mem::size_of::<UnitMsg>() <= MAX_SB_MSG_LEN);
+    assert!(core::mem::size_of::<RecordMsg>() <= MAX_SB_MSG_LEN);
+};
