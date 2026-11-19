@@ -68,9 +68,10 @@ pub const MAX_EVENT_MESSAGE_LEN: usize = EVS_MAX_MESSAGE_LENGTH - 1;
 /// # Errors
 ///
 /// Returns `Err(Status)` with `CFE_EVS_INVALID_PARAMETER` if `message` exceeds
-/// [`MAX_EVENT_MESSAGE_LEN`] bytes, or if cFE EVS fails to deliver the event message.
+/// [`MAX_EVENT_MESSAGE_LEN`] bytes or contains interior null bytes, or if cFE EVS fails to
+/// deliver the event message.
 pub fn send_event(event_id: u16, event_type: EventType, message: &str) -> Result<(), Status> {
-    if message.len() > MAX_EVENT_MESSAGE_LEN {
+    if message.len() > MAX_EVENT_MESSAGE_LEN || message.as_bytes().contains(&0) {
         return Err(Status::from_raw(cfe_sys::CFE_EVS_INVALID_PARAMETER));
     }
     let mut buf = [0u8; EVS_MAX_MESSAGE_LENGTH];

@@ -248,9 +248,15 @@ impl Drop for MessageBuffer {
 }
 
 /// A Software Bus pipe.
+///
+/// Automatically deletes the pipe via `CFE_SB_DeletePipe` when dropped, unless
+/// [`Pipe::delete`] is called explicitly.
 #[derive(Debug)]
 pub struct Pipe {
     id: PipeId,
+    // cFE SB pipes are owned by the creating application task and `CFE_SB_ReceiveBuffer`
+    // is not safe to race across threads, so `Pipe` is `!Send + !Sync`.
+    _marker: core::marker::PhantomData<*const ()>,
 }
 
 /// Maximum length of an OSAL API name including the null terminator.
@@ -265,10 +271,10 @@ impl Pipe {
     ///
     /// # Errors
     ///
-    /// Returns `Err(Status)` with `CFE_SB_BAD_ARGUMENT` if `name` is longer than
-    /// `OS_MAX_API_NAME - 1` bytes, or if cFE pipe creation fails.
+    /// Returns `Err(Status)` with `CFE_SB_BAD_ARGUMENT` if `name` is empty, contains interior
+    /// null bytes, is longer than `OS_MAX_API_NAME - 1` bytes, or if cFE pipe creation fails.
     pub fn create(depth: u16, name: &str) -> Result<Self, Status> {
-        if name.len() >= OS_MAX_API_NAME {
+        if name.is_empty() || name.len() >= OS_MAX_API_NAME || name.as_bytes().contains(&0) {
             return Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT));
         }
 
@@ -277,15 +283,18 @@ impl Pipe {
             dest.copy_from_slice(name.as_bytes());
         }
 
-        let mut raw_id = 0u32;
+        let mut raw_id = cfe_sys::CFE_SB_INVALID_PIPE;
         // SAFETY: PipeIdPtr is a valid out-pointer; name_buf is null-terminated and bounded by OS_MAX_API_NAME.
         let status =
             unsafe { cfe_sys::CFE_SB_CreatePipe(&raw mut raw_id, depth, name_buf.as_ptr().cast()) };
         let status = Status::from_raw(status);
-        if status.is_success() {
+        if status.is_success() && raw_id != cfe_sys::CFE_SB_INVALID_PIPE {
             Ok(Self {
                 id: PipeId::from_raw(raw_id),
+                _marker: core::marker::PhantomData,
             })
+        } else if status.is_success() {
+            Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT))
         } else {
             Err(status)
         }
@@ -385,15 +394,28 @@ impl Pipe {
         core::str::from_utf8(slice).map_err(|_| Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT))
     }
 
-    /// Deletes this pipe.
+    /// Deletes this pipe explicitly.
     ///
     /// # Errors
     ///
     /// Returns `Err(Status)` if pipe deletion fails.
-    pub fn delete(self) -> Result<(), Status> {
-        // SAFETY: PipeId is valid.
-        let status = unsafe { cfe_sys::CFE_SB_DeletePipe(self.id.to_raw()) };
+    pub fn delete(mut self) -> Result<(), Status> {
+        let id = self.id;
+        self.id = PipeId::from_raw(cfe_sys::CFE_SB_INVALID_PIPE);
+        // SAFETY: `id` is a valid pipe ID not yet deleted.
+        let status = unsafe { cfe_sys::CFE_SB_DeletePipe(id.to_raw()) };
         Status::from_raw(status).result()
+    }
+}
+
+impl Drop for Pipe {
+    fn drop(&mut self) {
+        if self.id.to_raw() != cfe_sys::CFE_SB_INVALID_PIPE {
+            // SAFETY: `self.id` is a valid pipe ID not yet explicitly deleted.
+            unsafe {
+                let _ = cfe_sys::CFE_SB_DeletePipe(self.id.to_raw());
+            }
+        }
     }
 }
 
@@ -519,11 +541,8 @@ pub fn transmit_buffer(mut buf: MessageBuffer, is_origination: bool) -> Result<(
 ///
 /// Returns `Err(Status)` if pipe creation, subscription, or message transmission fails.
 pub fn check_pipe_depth(depth: u16, test_mid: MsgId) -> Result<(), Status> {
-    let pipe = Pipe::create(depth, "DEPTH_TEST_PIPE")?;
-    if let Err(e) = pipe.subscribe_ex(test_mid, Qos::DEFAULT, depth) {
-        let _ = pipe.delete();
-        return Err(e);
-    }
+    let mut pipe = Pipe::create(depth, "DEPTH_TEST_PIPE")?;
+    pipe.subscribe_ex(test_mid, Qos::DEFAULT, depth)?;
 
     let mut cmd_msg = cfe_sys::CFE_MSG_CommandHeader_t {
         Msg: cfe_sys::CFE_MSG_Message_t {
@@ -540,10 +559,7 @@ pub fn check_pipe_depth(depth: u16, test_mid: MsgId) -> Result<(), Status> {
             Checksum: 0,
         },
     };
-    if let Err(e) = crate::msg::init(&mut cmd_msg, test_mid) {
-        let _ = pipe.delete();
-        return Err(e);
-    }
+    crate::msg::init(&mut cmd_msg, test_mid)?;
 
     let mut send_err = None;
     for _ in 0..depth {
@@ -554,12 +570,10 @@ pub fn check_pipe_depth(depth: u16, test_mid: MsgId) -> Result<(), Status> {
         }
     }
 
-    // Drain all queued messages
-    let mut drain_pipe = pipe;
+    // Drain all queued messages; `pipe` is deleted automatically on drop.
     for _ in 0..depth {
-        let _ = drain_pipe.receive_buffer(Timeout::Poll);
+        let _ = pipe.receive_buffer(Timeout::Poll);
     }
-    let _ = drain_pipe.delete();
 
     send_err.map_or(Ok(()), Err)
 }
