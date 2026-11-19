@@ -137,7 +137,12 @@ pub fn send_event(event_id: u16, event_type: EventType, message: &str) -> Result
 
     // SAFETY: %s specifier with a valid null-terminated string buffer.
     let status = unsafe {
-        cfe_sys::CFE_EVS_SendEvent(event_id, event_type.to_raw(), c"%s".as_ptr(), buf.as_ptr())
+        cfe_sys::CFE_EVS_SendEvent(
+            event_id,
+            event_type.to_raw(),
+            c"%s".as_ptr(),
+            buf.as_ptr().cast::<core::ffi::c_char>(),
+        )
     };
     Status::from_raw(status).result()
 }
@@ -161,7 +166,12 @@ pub fn send_event_with_status(
     // SAFETY: %s specifier with a valid null-terminated string buffer populated by
     // `format_event_with_status`.
     let raw_status = unsafe {
-        cfe_sys::CFE_EVS_SendEvent(event_id, event_type.to_raw(), c"%s".as_ptr(), buf.as_ptr())
+        cfe_sys::CFE_EVS_SendEvent(
+            event_id,
+            event_type.to_raw(),
+            c"%s".as_ptr(),
+            buf.as_ptr().cast::<core::ffi::c_char>(),
+        )
     };
     Status::from_raw(raw_status).result()
 }

@@ -4,7 +4,7 @@
 #![deny(unsafe_code)]
 
 use aldis::spp::SequenceFlags;
-use cfe::es::{self, RunStatus};
+use cfe::es::{self, ExitStatus, RunStatus};
 use cfe::evs::{self, EventType};
 use cfe::sb::{MsgId, Pipe, Qos};
 use node_glue::{PipeRecvGuard, RecvAction, send_done, send_record_event, send_tlm_packet};
@@ -108,7 +108,7 @@ fn init_app() -> Result<Pipe, ()> {
 /// Runs the `pl_lab` initialization, Software Bus dispatch loop, and teardown.
 fn app_main() {
     let Ok(mut pipe) = init_app() else {
-        es::exit_app(RunStatus::AppError);
+        es::exit_app(ExitStatus::AppError);
         return;
     };
 
@@ -193,7 +193,7 @@ fn app_main() {
     }
 
     let _ = pipe.delete();
-    es::exit_app(run_status);
+    es::exit_app(ExitStatus::from_run_status(run_status));
 }
 
 /// Application entry point exported to cFE.
@@ -206,7 +206,7 @@ pub extern "C" fn PL_LAB_AppMain() {
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    es::exit_app(RunStatus::AppError);
+    es::exit_app(ExitStatus::AppError);
     loop {
         core::hint::spin_loop();
     }

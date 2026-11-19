@@ -16,7 +16,7 @@
 
 extern crate std;
 
-use crate::es::{self, RunStatus};
+use crate::es::{self, ExitStatus, RunStatus};
 use crate::evs::{self, EventType};
 use crate::msg;
 use crate::osal::{self, TcpStream, UdpSocket, local_time_us};
@@ -711,16 +711,74 @@ fn test_es_wrappers() {
     es::wait_for_startup_sync(500);
     assert_eq!(WAIT_SYNC_MS.load(Ordering::SeqCst), 500);
 
-    es::exit_app(RunStatus::SysDelete);
+    es::exit_app(ExitStatus::AppExit);
     assert_eq!(
         EXIT_APP_STATUS.load(Ordering::SeqCst),
-        RunStatus::SysDelete.to_raw()
+        ExitStatus::AppExit.to_raw()
     );
 
-    es::exit_app(RunStatus::CoreAppRuntimeError);
+    es::exit_app(ExitStatus::CoreAppRuntimeError);
     assert_eq!(
         EXIT_APP_STATUS.load(Ordering::SeqCst),
-        RunStatus::CoreAppRuntimeError.to_raw()
+        ExitStatus::CoreAppRuntimeError.to_raw()
+    );
+
+    assert_eq!(
+        ExitStatus::AppExit.to_raw(),
+        cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_EXIT
+    );
+    assert_eq!(
+        ExitStatus::AppError.to_raw(),
+        cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_ERROR
+    );
+    assert_eq!(
+        ExitStatus::CoreAppInitError.to_raw(),
+        cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_INIT_ERROR
+    );
+    assert_eq!(
+        ExitStatus::CoreAppRuntimeError.to_raw(),
+        cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_RUNTIME_ERROR
+    );
+
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::AppExit),
+        ExitStatus::AppExit
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::SysRestart),
+        ExitStatus::AppExit
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::SysReload),
+        ExitStatus::AppExit
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::SysDelete),
+        ExitStatus::AppExit
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::AppError),
+        ExitStatus::AppError
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::SysException),
+        ExitStatus::AppError
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::Undefined),
+        ExitStatus::AppError
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::AppRun),
+        ExitStatus::AppError
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::CoreAppInitError),
+        ExitStatus::CoreAppInitError
+    );
+    assert_eq!(
+        ExitStatus::from_run_status(RunStatus::CoreAppRuntimeError),
+        ExitStatus::CoreAppRuntimeError
     );
 
     // Test all RunStatus enum variants and from_raw / to_raw round-trip
@@ -797,6 +855,10 @@ fn test_evs_wrappers() {
 
     // send_event_with_status accepts MAX_STATUS_PREFIX_LEN and rejects +1 or interior NUL
     let max_prefix = "P".repeat(evs::MAX_STATUS_PREFIX_LEN);
+    buf.fill(0xAA);
+    let max_len = evs::format_event_with_status(&max_prefix, bad_arg, &mut buf).unwrap();
+    assert_eq!(max_len, evs::MAX_EVENT_MESSAGE_LEN);
+    assert_eq!(buf[max_len], 0);
     assert!(evs::send_event_with_status(105, EventType::Error, &max_prefix, bad_arg).is_ok());
     let too_long_prefix = "P".repeat(evs::MAX_STATUS_PREFIX_LEN + 1);
     assert_eq!(
@@ -1149,6 +1211,13 @@ fn test_osal_tcp_stream() {
     );
     assert_eq!(OS_TIMED_READ_CALLS.load(Ordering::SeqCst), 2);
     assert_eq!(OS_SOCKET_RECV_CALLS.load(Ordering::SeqCst), 3);
+
+    // osal::is_timeout distinguishes OS_ERROR_TIMEOUT from success and other OSAL errors
+    assert!(osal::is_timeout(Status::from_raw(
+        cfe_sys::OS_ERROR_TIMEOUT
+    )));
+    assert!(!osal::is_timeout(Status::SUCCESS));
+    assert!(!osal::is_timeout(Status::from_raw(cfe_sys::OS_ERROR)));
 
     // Test read_exact with chunked recv
     RECV_CHUNK_MODE.store(1, Ordering::SeqCst);

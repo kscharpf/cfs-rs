@@ -90,6 +90,73 @@ impl PipeRecvGuard {
     }
 }
 
+/// Bounds waiting for a peer response with periodic timeout polling so `es::run_loop` stays responsive.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PeerWaitGuard {
+    timeouts: u32,
+}
+
+impl PeerWaitGuard {
+    /// Poll timeout for peer response waits (`500 ms`).
+    pub const POLL_TIMEOUT: Timeout = Timeout::Millis(500);
+
+    /// Maximum number of consecutive [`POLL_TIMEOUT`](Self::POLL_TIMEOUT) intervals before aborting (`10 s`).
+    pub const MAX_TIMEOUTS: u32 = 20;
+
+    /// Creates a new [`PeerWaitGuard`] with zero recorded timeouts.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { timeouts: 0 }
+    }
+
+    /// Resets the consecutive timeout counter after receiving any pipe message.
+    pub const fn on_ok(&mut self) {
+        self.timeouts = 0;
+    }
+
+    /// Classifies a pipe receive error during a peer wait as retryable or terminal.
+    pub const fn classify_error(&mut self, is_timeout: bool) -> RecvAction {
+        if is_timeout {
+            self.timeouts = self.timeouts.saturating_add(1);
+            if self.timeouts < Self::MAX_TIMEOUTS {
+                RecvAction::Continue
+            } else {
+                RecvAction::Abort
+            }
+        } else {
+            RecvAction::Abort
+        }
+    }
+
+    /// Handles a `Pipe::receive_buffer` error during a bounded peer wait, emitting a critical
+    /// status-bearing EVS event when returning [`RecvAction::Abort`].
+    pub fn on_err(
+        &mut self,
+        status: Status,
+        timeout_eid: u16,
+        timeout_msg: &str,
+        err_eid: u16,
+        err_msg: &str,
+    ) -> RecvAction {
+        let is_timeout = cfe::sb::is_pipe_timeout(status);
+        let action = self.classify_error(is_timeout);
+        if action == RecvAction::Abort {
+            let (eid, msg) = if is_timeout {
+                (timeout_eid, timeout_msg)
+            } else {
+                (err_eid, err_msg)
+            };
+            let _ = evs::send_event_with_status(eid, EventType::Critical, msg, status);
+        }
+        action
+    }
+}
+
+const _: () = {
+    assert!(PipeRecvGuard::MAX_CONSECUTIVE_ERRORS >= 2);
+    assert!(PeerWaitGuard::MAX_TIMEOUTS > 0);
+};
+
 /// A Software Bus message struct bound at compile time to its [`MsgId`] and byte size (`size_of::<Self>()`).
 pub trait SbMessage: Sized {
     /// The Software Bus [`MsgId`] for this message type.
@@ -355,5 +422,28 @@ mod tests {
             guard.classify_error(false),
             (Some(EventType::Critical), RecvAction::Abort)
         );
+    }
+
+    #[test]
+    fn peer_wait_guard_tracks_timeouts_and_aborts() {
+        let mut guard = PeerWaitGuard::new();
+
+        // Consecutive timeouts below MAX_TIMEOUTS return Continue.
+        for _ in 0..PeerWaitGuard::MAX_TIMEOUTS - 1 {
+            assert_eq!(guard.classify_error(true), RecvAction::Continue);
+        }
+
+        // Any ok message resets the consecutive timeout counter.
+        guard.on_ok();
+        for _ in 0..PeerWaitGuard::MAX_TIMEOUTS - 1 {
+            assert_eq!(guard.classify_error(true), RecvAction::Continue);
+        }
+
+        // Reaching MAX_TIMEOUTS consecutive timeouts returns Abort.
+        assert_eq!(guard.classify_error(true), RecvAction::Abort);
+
+        // Non-timeout pipe errors abort immediately even with zero prior timeouts.
+        guard.on_ok();
+        assert_eq!(guard.classify_error(false), RecvAction::Abort);
     }
 }

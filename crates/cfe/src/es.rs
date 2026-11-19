@@ -93,9 +93,59 @@ pub fn wait_for_startup_sync(timeout_ms: u32) {
     }
 }
 
-/// Exits the calling application with the specified status.
-pub fn exit_app(status: RunStatus) {
-    // SAFETY: CFE_ES_ExitApp takes an exit status integer.
+/// Valid exit status values accepted by `CFE_ES_ExitApp`.
+///
+/// Mirrors the subset of `CFE_ES_RunStatus` documented for `ExitStatus` in `cfe_es.h`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum ExitStatus {
+    /// Normal exit request (`CFE_ES_RunStatus_APP_EXIT`).
+    AppExit = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_EXIT,
+    /// Application encountered an error (`CFE_ES_RunStatus_APP_ERROR`).
+    AppError = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_ERROR,
+    /// Core application initialization error (`CFE_ES_RunStatus_CORE_APP_INIT_ERROR`).
+    CoreAppInitError = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_INIT_ERROR,
+    /// Core application runtime error (`CFE_ES_RunStatus_CORE_APP_RUNTIME_ERROR`).
+    CoreAppRuntimeError = cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_RUNTIME_ERROR,
+}
+
+impl ExitStatus {
+    /// Converts this exit status to the raw `uint32` expected by `CFE_ES_ExitApp`.
+    #[must_use]
+    pub const fn to_raw(self) -> u32 {
+        match self {
+            Self::AppExit => cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_EXIT,
+            Self::AppError => cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_APP_ERROR,
+            Self::CoreAppInitError => {
+                cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_INIT_ERROR
+            }
+            Self::CoreAppRuntimeError => {
+                cfe_sys::CFE_ES_RunStatus_CFE_ES_RunStatus_CORE_APP_RUNTIME_ERROR
+            }
+        }
+    }
+
+    /// Maps a terminal [`RunStatus`] from an application loop to a valid [`ExitStatus`].
+    #[must_use]
+    pub const fn from_run_status(status: RunStatus) -> Self {
+        match status {
+            RunStatus::AppExit
+            | RunStatus::SysRestart
+            | RunStatus::SysReload
+            | RunStatus::SysDelete => Self::AppExit,
+            RunStatus::AppError
+            | RunStatus::SysException
+            | RunStatus::Undefined
+            | RunStatus::AppRun => Self::AppError,
+            RunStatus::CoreAppInitError => Self::CoreAppInitError,
+            RunStatus::CoreAppRuntimeError => Self::CoreAppRuntimeError,
+        }
+    }
+}
+
+/// Exits the calling application with the specified exit status.
+pub fn exit_app(status: ExitStatus) {
+    // SAFETY: CFE_ES_ExitApp takes an exit status integer restricted to `ExitStatus`.
     unsafe {
         cfe_sys::CFE_ES_ExitApp(status.to_raw());
     }

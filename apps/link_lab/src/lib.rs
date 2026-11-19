@@ -5,7 +5,7 @@
 
 use core::net::Ipv4Addr;
 
-use cfe::es::{self, RunStatus};
+use cfe::es::{self, ExitStatus, RunStatus};
 use cfe::evs::{self, EventType};
 use cfe::osal::{self, UdpSocket};
 use cfe::sb::{MsgId, Pipe, Qos, Timeout};
@@ -14,7 +14,9 @@ use link_lab_core::{
     DownlinkSink, Instant, Level, Link, LinkConfig, LinkMode, MIN_COMMAND_PACKET_LEN,
     RealtimeConfig, TC_FRAME_AREA_LEN, UplinkSink, is_valid_command_packet, packet_apid,
 };
-use node_glue::{PipeRecvGuard, RecvAction, send_done, send_record_event, send_sb_msg};
+use node_glue::{
+    PeerWaitGuard, PipeRecvGuard, RecvAction, send_done, send_record_event, send_sb_msg,
+};
 use step_lab_core::msg::{
     CmdPacketMsg, LinkLevel, MAX_UNIT_LEN, RecordMsg, StartMsg, TlmPacketMsg, UnitMsg, WakeRxMsg,
     WakeTxMsg,
@@ -39,22 +41,23 @@ struct PendingTlm {
 }
 
 /// Sends a `CMD_PACKET` message to `cmd_lab`.
-fn send_cmd_packet(now: u64, packet: &[u8]) {
+fn send_cmd_packet(now: u64, packet: &[u8]) -> Result<(), ()> {
     let Some(mut msg) = CmdPacketMsg::new(now, packet) else {
         let _ = evs::send_event(
             6,
             EventType::Critical,
             "LINK_LAB: Packet too long for CmdPacketMsg",
         );
-        return;
+        return Err(());
     };
-    let _ = send_sb_msg(
+    send_sb_msg(
         &mut msg,
         7,
         "LINK_LAB: Failed to init CMD_PACKET msg",
         8,
         "LINK_LAB: Failed to transmit CMD_PACKET msg",
-    );
+    )
+    .map_err(|_| ())
 }
 
 /// Sends a `UNIT` message to `step_lab`.
@@ -108,12 +111,6 @@ impl DownlinkSink for LinkDownlinkSink {
     }
 }
 
-/// Poll interval when waiting on a peer reply so `es::run_loop` remains responsive.
-const PEER_POLL_TIMEOUT: Timeout = Timeout::Millis(500);
-
-/// Maximum number of consecutive [`PEER_POLL_TIMEOUT`] intervals before aborting a peer wait (10 s).
-const MAX_PEER_TIMEOUTS: u32 = 20;
-
 /// Uplink sink exchanging command packets with `cmd_lab`.
 struct LinkUplinkSink<'a> {
     pipe: &'a mut Pipe,
@@ -125,44 +122,44 @@ struct LinkUplinkSink<'a> {
 
 impl UplinkSink for LinkUplinkSink<'_> {
     fn command_packet(&mut self, packet: &[u8]) {
-        send_cmd_packet(self.now.as_micros(), packet);
-        let mut timeouts = 0_u32;
+        if *self.run_status != RunStatus::AppRun {
+            return;
+        }
+        if send_cmd_packet(self.now.as_micros(), packet).is_err() {
+            *self.run_status = RunStatus::AppError;
+            return;
+        }
+        let mut wait_guard = PeerWaitGuard::new();
+        let mut completed = false;
         while es::run_loop(self.run_status) {
-            let buf = match self.pipe.receive_buffer(PEER_POLL_TIMEOUT) {
+            let buf = match self.pipe.receive_buffer(PeerWaitGuard::POLL_TIMEOUT) {
                 Ok(buf) => {
-                    timeouts = 0;
+                    wait_guard.on_ok();
                     buf
                 }
-                Err(status) if cfe::sb::is_pipe_timeout(status) => {
-                    timeouts = timeouts.saturating_add(1);
-                    if timeouts >= MAX_PEER_TIMEOUTS {
-                        let _ = evs::send_event_with_status(
-                            38,
-                            EventType::Critical,
-                            "LINK_LAB: Timed out waiting for CMD_PACKET_DONE",
-                            status,
-                        );
+                Err(status) => {
+                    if wait_guard.on_err(
+                        status,
+                        38,
+                        "LINK_LAB: Timed out waiting for CMD_PACKET_DONE",
+                        39,
+                        "LINK_LAB: Pipe error waiting for CMD_PACKET_DONE",
+                    ) == RecvAction::Abort
+                    {
                         *self.run_status = RunStatus::AppError;
                         break;
                     }
                     continue;
-                }
-                Err(status) => {
-                    let _ = evs::send_event_with_status(
-                        39,
-                        EventType::Critical,
-                        "LINK_LAB: Pipe error waiting for CMD_PACKET_DONE",
-                        status,
-                    );
-                    *self.run_status = RunStatus::AppError;
-                    break;
                 }
             };
             let Ok(mid) = buf.msg_id() else {
                 continue;
             };
             match mid.as_u32() {
-                cfe_sys::NODE_CMD_PACKET_DONE_MID => break,
+                cfe_sys::NODE_CMD_PACKET_DONE_MID => {
+                    completed = true;
+                    break;
+                }
                 cfe_sys::NODE_TLM_PACKET_MID => {
                     handle_tlm_packet(buf.as_bytes(), self.pending_tlm, self.pending_count);
                 }
@@ -175,10 +172,15 @@ impl UplinkSink for LinkUplinkSink<'_> {
                 }
             }
         }
+        if !completed && *self.run_status == RunStatus::AppRun {
+            *self.run_status = RunStatus::AppError;
+        }
     }
 
     fn event(&mut self, code: u16, args: &[u64]) {
-        send_record_event(code, args);
+        if *self.run_status == RunStatus::AppRun {
+            send_record_event(code, args);
+        }
     }
 }
 
@@ -203,7 +205,9 @@ fn handle_wake_rx(
         };
         link.accept_unit(now, unit, &mut rx_sink);
     }
-    send_done(None);
+    if *run_status == RunStatus::AppRun {
+        send_done(None);
+    }
 }
 
 /// Handles incoming `TLM_PACKET` from scenario apps, buffering it for `WAKE_TX`.
@@ -510,7 +514,7 @@ fn handle_start(
 
 /// Runs the lockstep `step_lab` dispatch loop (`a0`–`a3`).
 #[inline(never)]
-fn run_lockstep(pipe: &mut Pipe, table: &mut Table, config: &mut LinkConfig) -> RunStatus {
+fn run_lockstep(pipe: &mut Pipe, table: &mut Table, config: &mut LinkConfig) -> ExitStatus {
     let mut link: Option<Link> = None;
     #[expect(
         clippy::large_stack_arrays,
@@ -585,7 +589,7 @@ fn run_lockstep(pipe: &mut Pipe, table: &mut Table, config: &mut LinkConfig) -> 
             }
         }
     }
-    run_status
+    ExitStatus::from_run_status(run_status)
 }
 
 const _: () =
@@ -670,10 +674,12 @@ fn drain_udp_uplink(
     link: &mut Link,
     now: Instant,
     up_sink: &mut RealtimeUplinkSink,
+    recv_err_logged: &mut bool,
 ) {
     for _ in 0..64 {
         match udp.recv_from(rx_buf, osal::Timeout::Poll) {
             Ok(Some(n)) if n > TC_FRAME_AREA_LEN => {
+                *recv_err_logged = false;
                 let _ = evs::send_event(
                     31,
                     EventType::Error,
@@ -681,18 +687,25 @@ fn drain_udp_uplink(
                 );
             }
             Ok(Some(n)) => {
+                *recv_err_logged = false;
                 if let Some(frame) = rx_buf.get(..n) {
                     link.accept_unit(now, frame, up_sink);
                 }
             }
-            Ok(None) => break,
+            Ok(None) => {
+                *recv_err_logged = false;
+                break;
+            }
             Err(status) => {
-                let _ = evs::send_event_with_status(
-                    36,
-                    EventType::Error,
-                    "LINK_LAB: UDP recv_from failed",
-                    status,
-                );
+                if !*recv_err_logged {
+                    *recv_err_logged = true;
+                    let _ = evs::send_event_with_status(
+                        36,
+                        EventType::Error,
+                        "LINK_LAB: UDP recv_from failed",
+                        status,
+                    );
+                }
                 break;
             }
         }
@@ -726,14 +739,14 @@ fn sample_monotonic_now(last_now: &mut Instant, time_err_logged: &mut bool) -> I
 
 /// Runs the native real-time UDP TM/TC dispatch loop.
 #[inline(never)]
-fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig, rt: RealtimeConfig) -> RunStatus {
+fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig, rt: RealtimeConfig) -> ExitStatus {
     let Ok(udp) = UdpSocket::bind("0.0.0.0", rt.rx_port.get()) else {
         let _ = evs::send_event(
             30,
             EventType::Critical,
             "LINK_LAB: Failed to bind UDP rx_port",
         );
-        return RunStatus::AppError;
+        return ExitStatus::AppError;
     };
 
     let Ok(mut link) = Link::new(Level::Frames, config) else {
@@ -742,7 +755,7 @@ fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig, rt: RealtimeConfig)
             EventType::Critical,
             "LINK_LAB: Failed to initialize Link",
         );
-        return RunStatus::AppError;
+        return ExitStatus::AppError;
     };
 
     let mut down_sink = RealtimeDownlinkSink {
@@ -754,6 +767,7 @@ fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig, rt: RealtimeConfig)
     let mut up_sink = RealtimeUplinkSink;
     let mut rx_buf = [0u8; RX_BUF_LEN];
     let mut time_err_logged = false;
+    let mut recv_err_logged = false;
     let mut last_now = Instant::from_micros(0);
 
     let mut run_status = RunStatus::AppRun;
@@ -779,7 +793,14 @@ fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig, rt: RealtimeConfig)
 
         match mid.as_u32() {
             cfe_sys::NODE_WAKE_TX_MID => {
-                drain_udp_uplink(&udp, &mut rx_buf, &mut link, now, &mut up_sink);
+                drain_udp_uplink(
+                    &udp,
+                    &mut rx_buf,
+                    &mut link,
+                    now,
+                    &mut up_sink,
+                    &mut recv_err_logged,
+                );
                 link.slot(now, true, &mut down_sink);
             }
             cfe_sys::CFE_EVS_LONG_EVENT_MSG_MID
@@ -794,24 +815,24 @@ fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig, rt: RealtimeConfig)
             _ => {}
         }
     }
-    run_status
+    ExitStatus::from_run_status(run_status)
 }
 
 /// Runs the `link_lab` initialization, Software Bus dispatch loop, and teardown.
 fn app_main() {
     let Ok((mut pipe, mut table, mut config)) = init_app() else {
-        es::exit_app(RunStatus::AppError);
+        es::exit_app(ExitStatus::AppError);
         return;
     };
 
-    let run_status = match config.mode {
+    let exit_status = match config.mode {
         LinkMode::Lockstep => run_lockstep(&mut pipe, &mut table, &mut config),
         LinkMode::NativeRealtime(rt) => run_native_realtime(&mut pipe, &config, rt),
     };
 
     let _ = table.unregister();
     let _ = pipe.delete();
-    es::exit_app(run_status);
+    es::exit_app(exit_status);
 }
 
 /// Application entry point exported to cFE.
@@ -824,7 +845,7 @@ pub extern "C" fn LINK_LAB_AppMain() {
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    es::exit_app(RunStatus::AppError);
+    es::exit_app(ExitStatus::AppError);
     loop {
         core::hint::spin_loop();
     }
