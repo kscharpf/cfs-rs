@@ -10,7 +10,7 @@
 use step_lab_core::msg::{
     CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, LinkLevel, MAX_EVENT_ARGS, MAX_SB_MSG_LEN,
     MAX_UNIT_LEN, RecordKind, RecordMsg, ScnPayloadMode, ScnStatus, ScnStatusMsg, StartMsg,
-    TlmPacketMsg, UnitMsg, WakeCmdMsg, WakeRxMsg, WakeTurn, WakeTxMsg,
+    TlmPacketMsg, UnitMsg, WakeCmdMsg, WakeHkMsg, WakePlMsg, WakeRxMsg, WakeTurn, WakeTxMsg,
 };
 use step_lab_core::proto::{EventArgs, NodeOutput};
 
@@ -398,6 +398,8 @@ fn test_encode_into_matches_repr_c_layout() {
     check(&WakeTxMsg::new(789_000, true), WakeTxMsg::encode_into);
     check(&DoneMsg::new(Some(42)), DoneMsg::encode_into);
     check(&WakeCmdMsg::new(99_000), WakeCmdMsg::encode_into);
+    check(&WakeHkMsg::new(100_000), WakeHkMsg::encode_into);
+    check(&WakePlMsg::new(101_000), WakePlMsg::encode_into);
     check(
         &ScnStatusMsg::new(ScnStatus {
             commands_executed: 5,

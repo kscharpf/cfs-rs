@@ -843,6 +843,11 @@ fn test_sb_wrappers() {
         sb::transmit_bytes(&short_buf, true),
         Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT))
     );
+    let six_byte_buf = [0u8; 6];
+    assert_eq!(
+        sb::transmit_bytes(&six_byte_buf, true),
+        Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT))
+    );
     let mut wire = [0u8; 16];
     assert!(msg::init_bytes(&mut wire, mid).is_ok());
     assert!(sb::transmit_bytes(&wire, true).is_ok());
@@ -940,13 +945,20 @@ fn test_msg_wrappers() {
     assert_eq!(tlm_hdr.Sec.Time, [0; 6]);
     assert_eq!(tlm_hdr.Spare, [0; 4]);
 
-    // init_bytes rejects buffers shorter than a primary header and zeroes valid buffers
+    // init_bytes rejects buffers shorter than the minimum CCSDS packet length (7 bytes) without mutation
     let mut short = [0xAAu8; 5];
     assert_eq!(
         msg::init_bytes(&mut short, mid),
         Err(Status::from_raw(cfe_sys::CFE_MSG_BAD_ARGUMENT))
     );
     assert_eq!(short, [0xAA; 5]);
+
+    let mut six = [0xCCu8; 6];
+    assert_eq!(
+        msg::init_bytes(&mut six, mid),
+        Err(Status::from_raw(cfe_sys::CFE_MSG_BAD_ARGUMENT))
+    );
+    assert_eq!(six, [0xCC; 6]);
 
     let mut wire = [0xBBu8; 24];
     assert!(msg::init_bytes(&mut wire, mid).is_ok());

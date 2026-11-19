@@ -40,6 +40,8 @@ pub trait SbMessage: Sized {
 
 macro_rules! impl_sb_message {
     ($ty:ty, $mid:expr) => {
+        const _: () = assert!(core::mem::size_of::<$ty>() <= MAX_SB_MSG_LEN);
+
         impl SbMessage for $ty {
             const MID: MsgId = MsgId::from_u32($mid);
 

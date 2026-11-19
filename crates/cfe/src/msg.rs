@@ -9,9 +9,16 @@ pub type Message = cfe_sys::CFE_MSG_Message_t;
 const _: () = {
     assert!(core::mem::align_of::<cfe_sys::CFE_MSG_Message_t>() == 1);
     assert!(core::mem::size_of::<cfe_sys::CFE_MSG_Message_t>() == 6);
+    assert!(core::mem::align_of::<cfe_sys::CFE_MSG_CommandHeader_t>() == 1);
+    assert!(core::mem::size_of::<cfe_sys::CFE_MSG_CommandHeader_t>() == 8);
     assert!(core::mem::offset_of!(cfe_sys::CFE_MSG_CommandHeader_t, Msg) == 0);
+    assert!(core::mem::align_of::<cfe_sys::CFE_MSG_TelemetryHeader_t>() == 1);
+    assert!(core::mem::size_of::<cfe_sys::CFE_MSG_TelemetryHeader_t>() == 16);
     assert!(core::mem::offset_of!(cfe_sys::CFE_MSG_TelemetryHeader_t, Msg) == 0);
 };
+
+/// Minimum valid CCSDS Space Packet length in octets (6-byte primary header + 1 data octet).
+const MIN_CCSDS_MSG_LEN: usize = core::mem::size_of::<cfe_sys::CFE_MSG_Message_t>() + 1;
 
 /// A `#[repr(C)]` cFE message type backed by a valid, zero-initializable buffer starting with
 /// [`cfe_sys::CFE_MSG_Message_t`] at byte offset `0`.
@@ -76,15 +83,16 @@ pub fn init<M: CfeMessage>(msg: &mut M, msg_id: MsgId) -> Result<(), Status> {
 ///
 /// # Errors
 ///
-/// Returns `Err(Status)` with `CFE_MSG_BAD_ARGUMENT` if `buf` is shorter than
-/// `size_of::<CFE_MSG_Message_t>()`, or if `CFE_MSG_Init` fails.
+/// Returns `Err(Status)` with `CFE_MSG_BAD_ARGUMENT` if `buf` is shorter than the minimum CCSDS
+/// packet length (7 bytes), leaving `buf` unmodified, or if `CFE_MSG_Init` fails.
 pub fn init_bytes(buf: &mut [u8], msg_id: MsgId) -> Result<(), Status> {
-    if buf.len() < core::mem::size_of::<cfe_sys::CFE_MSG_Message_t>() {
+    if buf.len() < MIN_CCSDS_MSG_LEN {
         return Err(Status::from_raw(cfe_sys::CFE_MSG_BAD_ARGUMENT));
     }
     let ptr = buf.as_mut_ptr().cast::<cfe_sys::CFE_MSG_Message_t>();
     // SAFETY: `align_of::<CFE_MSG_Message_t>() == 1` (asserted above), `buf` is writable for
-    // `buf.len() >= size_of::<CFE_MSG_Message_t>()` bytes, and `u8` has no invalid bit patterns.
+    // `buf.len() >= MIN_CCSDS_MSG_LEN > size_of::<CFE_MSG_Message_t>()` bytes, and `u8` has no
+    // invalid bit patterns.
     let status = unsafe { cfe_sys::CFE_MSG_Init(ptr, msg_id.to_raw(), buf.len()) };
     Status::from_raw(status).result()
 }

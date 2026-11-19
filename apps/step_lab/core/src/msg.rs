@@ -1339,6 +1339,10 @@ impl RecordMsg {
 }
 const _: () = assert!(core::mem::size_of::<RecordMsg>() == 1112);
 const _: () = assert!(core::mem::offset_of!(RecordMsg, kind) == 16);
+const _: () = assert!(core::mem::offset_of!(RecordMsg, arg_count) == 17);
+const _: () = assert!(core::mem::offset_of!(RecordMsg, code_or_apid) == 18);
+const _: () = assert!(core::mem::offset_of!(RecordMsg, data_len) == 20);
+const _: () = assert!(core::mem::offset_of!(RecordMsg, pad) == 22);
 const _: () = assert!(core::mem::offset_of!(RecordMsg, args) == 24);
 const _: () = assert!(core::mem::offset_of!(RecordMsg, data) == 88);
 
