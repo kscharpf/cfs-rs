@@ -6,7 +6,7 @@
 #![forbid(unsafe_code)]
 
 use cfe::evs::{self, EventType};
-use cfe::sb::{MsgId, transmit_bytes};
+use cfe::sb::{MsgId, Timeout, transmit_bytes};
 use cfe::status::Status;
 use step_lab_core::msg::{
     CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, MAX_SB_MSG_LEN, RecordMsg, ScnStatusMsg, StartMsg,
@@ -22,6 +22,73 @@ const EID_TLM_TX: u16 = 104;
 const EID_RECORD_ARGS: u16 = 105;
 const EID_RECORD_INIT: u16 = 106;
 const EID_RECORD_TX: u16 = 107;
+const EID_PIPE_RX_ERR: u16 = 108;
+
+/// Action returned by [`PipeRecvGuard`] after a pipe receive failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecvAction {
+    /// Continue the run loop (timeout or transient error below threshold).
+    Continue,
+    /// Persistent error threshold reached; exit the app with `RunStatus::AppError`.
+    Abort,
+}
+
+/// Tracks consecutive non-timeout Software Bus pipe receive errors with rate-limited EVS logging.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PipeRecvGuard {
+    consecutive_errors: u8,
+}
+
+impl PipeRecvGuard {
+    /// Poll timeout for main application Software Bus loops, allowing periodic `CFE_ES_RunLoop`
+    /// checks when idle.
+    pub const RECV_TIMEOUT: Timeout = Timeout::Millis(500);
+
+    /// Consecutive non-timeout pipe receive errors before aborting the application loop.
+    pub const MAX_CONSECUTIVE_ERRORS: u8 = 5;
+
+    /// Creates a new [`PipeRecvGuard`] with zero recorded errors.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            consecutive_errors: 0,
+        }
+    }
+
+    /// Resets the consecutive error counter after a successful pipe receive.
+    pub const fn on_ok(&mut self) {
+        self.consecutive_errors = 0;
+    }
+
+    /// Classifies a pipe receive error as a timeout or non-timeout failure, returning any EVS
+    /// severity to emit and whether the caller should continue or abort.
+    pub const fn classify_error(&mut self, is_timeout: bool) -> (Option<EventType>, RecvAction) {
+        if is_timeout {
+            self.consecutive_errors = 0;
+            return (None, RecvAction::Continue);
+        }
+        let prev = self.consecutive_errors;
+        self.consecutive_errors = prev.saturating_add(1);
+        if self.consecutive_errors >= Self::MAX_CONSECUTIVE_ERRORS {
+            (Some(EventType::Critical), RecvAction::Abort)
+        } else if prev == 0 {
+            (Some(EventType::Error), RecvAction::Continue)
+        } else {
+            (None, RecvAction::Continue)
+        }
+    }
+
+    /// Handles a `Pipe::receive_buffer` error, emitting rate-limited status-bearing EVS events
+    /// and returning [`RecvAction::Abort`] once [`MAX_CONSECUTIVE_ERRORS`](Self::MAX_CONSECUTIVE_ERRORS)
+    /// non-timeout errors occur consecutively.
+    pub fn on_err(&mut self, status: Status, msg: &str) -> RecvAction {
+        let (event_ty, action) = self.classify_error(cfe::sb::is_pipe_timeout(status));
+        if let Some(ty) = event_ty {
+            let _ = evs::send_event_with_status(EID_PIPE_RX_ERR, ty, msg, status);
+        }
+        action
+    }
+}
 
 /// A Software Bus message struct bound at compile time to its [`MsgId`] and byte size (`size_of::<Self>()`).
 pub trait SbMessage: Sized {
@@ -97,20 +164,21 @@ pub fn send_sb_msg<M: SbMessage>(
     tx_err: &str,
 ) -> Result<(), Status> {
     if let Err(err) = prepare_msg(msg) {
-        let _ = evs::send_event(init_eid, EventType::Critical, init_err);
+        let _ = evs::send_event_with_status(init_eid, EventType::Critical, init_err, err);
         return Err(err);
     }
     let mut wire = [0u8; MAX_SB_MSG_LEN];
+    let bad_arg = Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT);
     let Some(len) = msg.encode_into(&mut wire) else {
-        let _ = evs::send_event(init_eid, EventType::Critical, init_err);
-        return Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT));
+        let _ = evs::send_event_with_status(init_eid, EventType::Critical, init_err, bad_arg);
+        return Err(bad_arg);
     };
     let Some(bytes) = wire.get(..len) else {
-        let _ = evs::send_event(init_eid, EventType::Critical, init_err);
-        return Err(Status::from_raw(cfe_sys::CFE_SB_BAD_ARGUMENT));
+        let _ = evs::send_event_with_status(init_eid, EventType::Critical, init_err, bad_arg);
+        return Err(bad_arg);
     };
     if let Err(err) = transmit_bytes(bytes, true) {
-        let _ = evs::send_event(tx_eid, EventType::Critical, tx_err);
+        let _ = evs::send_event_with_status(tx_eid, EventType::Critical, tx_err, err);
         return Err(err);
     }
     Ok(())
@@ -249,6 +317,43 @@ mod tests {
         assert_eq!(
             <RecordMsg as SbMessage>::MID,
             MsgId::from_u32(cfe_sys::NODE_RECORD_MID)
+        );
+    }
+
+    #[test]
+    fn pipe_recv_guard_tracks_errors_and_resets() {
+        let mut guard = PipeRecvGuard::new();
+
+        // Timeouts reset state and emit nothing.
+        assert_eq!(guard.classify_error(true), (None, RecvAction::Continue));
+
+        // First non-timeout error logs Error and continues; intermediate errors are quiet.
+        assert_eq!(
+            guard.classify_error(false),
+            (Some(EventType::Error), RecvAction::Continue)
+        );
+        assert_eq!(guard.classify_error(false), (None, RecvAction::Continue));
+        assert_eq!(guard.classify_error(false), (None, RecvAction::Continue));
+
+        // Timeout or Ok resets consecutive error count.
+        guard.on_ok();
+        assert_eq!(
+            guard.classify_error(false),
+            (Some(EventType::Error), RecvAction::Continue)
+        );
+        assert_eq!(guard.classify_error(true), (None, RecvAction::Continue));
+
+        // Five consecutive non-timeout errors trigger Critical + Abort.
+        assert_eq!(
+            guard.classify_error(false),
+            (Some(EventType::Error), RecvAction::Continue)
+        );
+        for _ in 0..3 {
+            assert_eq!(guard.classify_error(false), (None, RecvAction::Continue));
+        }
+        assert_eq!(
+            guard.classify_error(false),
+            (Some(EventType::Critical), RecvAction::Abort)
         );
     }
 }

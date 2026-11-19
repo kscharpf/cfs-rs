@@ -6,8 +6,8 @@
 use aldis::spp::SequenceFlags;
 use cfe::es::{self, RunStatus};
 use cfe::evs::{self, EventType};
-use cfe::sb::{MsgId, Pipe, Qos, Timeout};
-use node_glue::{send_done, send_record_event, send_tlm_packet};
+use cfe::sb::{MsgId, Pipe, Qos};
+use node_glue::{PipeRecvGuard, RecvAction, send_done, send_record_event, send_tlm_packet};
 use refapp_flight::event::APP_PACKET_REJECTED;
 use refapp_flight::layout::{PayloadMode, Status, housekeeping};
 use refapp_flight::schedule::Periodic;
@@ -75,22 +75,17 @@ fn handle_wake_hk(
     Periodic::HOUSEKEEPING.at(*hk_slot).map(Instant::as_micros)
 }
 
-/// Runs the `hk_lab` initialization, Software Bus dispatch loop, and teardown.
-fn app_main() {
-    // 1. Register with EVS.
+/// Initializes `hk_lab`: registers with EVS, creates the SB pipe, subscribes, and emits startup event.
+fn init_app() -> Result<Pipe, ()> {
     if evs::register().is_err() {
-        es::exit_app(RunStatus::AppError);
-        return;
+        return Err(());
     }
 
-    // 2. Create Software Bus input pipe.
-    let Ok(mut pipe) = Pipe::create(32, "HK_LAB_PIPE") else {
+    let Ok(pipe) = Pipe::create(32, "HK_LAB_PIPE") else {
         let _ = evs::send_event(2, EventType::Critical, "HK_LAB: Failed to create SB pipe");
-        es::exit_app(RunStatus::AppError);
-        return;
+        return Err(());
     };
 
-    // 3. Subscribe to scenario turns and status updates.
     if pipe
         .subscribe_ex(MsgId::from_u32(cfe_sys::NODE_START_MID), Qos::DEFAULT, 4)
         .is_err()
@@ -110,28 +105,46 @@ fn app_main() {
             EventType::Critical,
             "HK_LAB: Failed to subscribe to turns",
         );
-        let _ = pipe.delete();
-        es::exit_app(RunStatus::AppError);
-        return;
+        return Err(());
     }
 
-    // 4. Send start-up event.
     let _ = evs::send_event(
         HK_LAB_STARTUP_EID,
         EventType::Information,
         "HK_LAB App Initialized. Version 0.1.0",
     );
 
-    // 5. Initialize housekeeping state.
+    Ok(pipe)
+}
+
+/// Runs the `hk_lab` initialization, Software Bus dispatch loop, and teardown.
+fn app_main() {
+    let Ok(mut pipe) = init_app() else {
+        es::exit_app(RunStatus::AppError);
+        return;
+    };
+
+    // Initialize housekeeping state.
     let mut downlink = Downlink::new();
     let mut status = Status::default();
     let mut hk_slot = 0_u32;
 
     // 6. Run ES loop, pending on the pipe.
     let mut run_status = RunStatus::AppRun;
+    let mut pipe_guard = PipeRecvGuard::new();
     while es::run_loop(&mut run_status) {
-        let Ok(buf) = pipe.receive_buffer(Timeout::PendForever) else {
-            continue;
+        let buf = match pipe.receive_buffer(PipeRecvGuard::RECV_TIMEOUT) {
+            Ok(buf) => {
+                pipe_guard.on_ok();
+                buf
+            }
+            Err(status) => {
+                if pipe_guard.on_err(status, "HK_LAB: Pipe receive failed") == RecvAction::Abort {
+                    run_status = RunStatus::AppError;
+                    break;
+                }
+                continue;
+            }
         };
 
         let Ok(mid) = buf.msg_id() else {
@@ -199,6 +212,9 @@ pub extern "C" fn HK_LAB_AppMain() {
 
 #[cfg(not(test))]
 #[panic_handler]
-const fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    loop {}
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    es::exit_app(RunStatus::AppError);
+    loop {
+        core::hint::spin_loop();
+    }
 }

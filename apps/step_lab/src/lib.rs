@@ -251,13 +251,60 @@ fn write_msg_frame(
         .map_err(|_| CodecError::UnexpectedEof)
 }
 
+/// Poll interval when waiting on a peer turn `DONE` message so `es::run_loop` stays responsive.
+const PEER_POLL_TIMEOUT: Timeout = Timeout::Millis(500);
+
+/// Maximum number of consecutive [`PEER_POLL_TIMEOUT`] intervals before aborting a peer wait (10 s).
+const MAX_PEER_TIMEOUTS: u32 = 20;
+
+/// Handles a `pipe.receive_buffer` error during a bounded peer `DONE` wait.
+fn handle_peer_wait_err(
+    status: cfe::status::Status,
+    run_status: &mut RunStatus,
+    timeouts: &mut u32,
+) -> Result<(), ()> {
+    if cfe::sb::is_pipe_timeout(status) {
+        *timeouts = timeouts.saturating_add(1);
+        if *timeouts < MAX_PEER_TIMEOUTS {
+            return Ok(());
+        }
+        let _ = evs::send_event_with_status(
+            25,
+            EventType::Critical,
+            "STEP_LAB: Timed out waiting for peer DONE",
+            status,
+        );
+    } else {
+        let _ = evs::send_event_with_status(
+            26,
+            EventType::Critical,
+            "STEP_LAB: Pipe error waiting for peer DONE",
+            status,
+        );
+    }
+    *run_status = RunStatus::AppError;
+    Err(())
+}
+
 /// Waits on the input pipe until a `DONE` message arrives, collecting outputs.
 fn wait_collect_turn(
     pipe: &mut Pipe,
     collector: &mut StepCollector,
     earliest_deadline: &mut Option<u64>,
+    run_status: &mut RunStatus,
 ) -> Result<(), ()> {
-    while let Ok(buf) = pipe.receive_buffer(Timeout::PendForever) {
+    let mut timeouts = 0_u32;
+    while es::run_loop(run_status) {
+        let buf = match pipe.receive_buffer(PEER_POLL_TIMEOUT) {
+            Ok(buf) => {
+                timeouts = 0;
+                buf
+            }
+            Err(status) => {
+                handle_peer_wait_err(status, run_status, &mut timeouts)?;
+                continue;
+            }
+        };
         let Ok(mid) = buf.msg_id() else {
             continue;
         };
@@ -313,8 +360,23 @@ fn wait_collect_turn(
 }
 
 /// Waits on the input pipe until a `DONE` message arrives, updating `earliest_deadline`.
-fn wait_for_done(pipe: &mut Pipe, earliest_deadline: &mut Option<u64>) {
-    while let Ok(buf) = pipe.receive_buffer(Timeout::PendForever) {
+fn wait_for_done(
+    pipe: &mut Pipe,
+    earliest_deadline: &mut Option<u64>,
+    run_status: &mut RunStatus,
+) -> Result<(), ()> {
+    let mut timeouts = 0_u32;
+    while es::run_loop(run_status) {
+        let buf = match pipe.receive_buffer(PEER_POLL_TIMEOUT) {
+            Ok(buf) => {
+                timeouts = 0;
+                buf
+            }
+            Err(status) => {
+                handle_peer_wait_err(status, run_status, &mut timeouts)?;
+                continue;
+            }
+        };
         let Ok(mid) = buf.msg_id() else {
             continue;
         };
@@ -324,9 +386,10 @@ fn wait_for_done(pipe: &mut Pipe, earliest_deadline: &mut Option<u64>) {
             {
                 *earliest_deadline = Some(earliest_deadline.map_or(d, |prev| prev.min(d)));
             }
-            break;
+            return Ok(());
         }
     }
+    Err(())
 }
 
 /// Connects to harness over loopback TCP with retries.
@@ -406,6 +469,7 @@ fn wake_time_turn(
     earliest_deadline: &mut Option<u64>,
     now: u64,
     turn: WakeTurn,
+    run_status: &mut RunStatus,
 ) -> Result<(), ()> {
     send_wake_turn(
         turn,
@@ -416,7 +480,7 @@ fn wake_time_turn(
         "STEP_LAB: Failed to transmit WakeTimeMsg",
     )
     .map_err(|_| ())?;
-    wait_collect_turn(pipe, collector, earliest_deadline)
+    wait_collect_turn(pipe, collector, earliest_deadline, run_status)
 }
 
 /// Handles a single STEP from the harness according to docs/design/link-lab.md §4.5.
@@ -427,6 +491,7 @@ fn handle_step(
     tx_slot: bool,
     units: UnitsIter<'_>,
     tx_buf: &mut [u8; FRAME_BUF_LEN],
+    run_status: &mut RunStatus,
 ) -> Result<(), ()> {
     let mut earliest_deadline = None;
     let mut collector = StepCollector::new();
@@ -449,12 +514,19 @@ fn handle_step(
             "STEP_LAB: Failed to transmit WakeRxMsg",
         )
         .map_err(|_| ())?;
-        wait_collect_turn(pipe, &mut collector, &mut earliest_deadline)?;
+        wait_collect_turn(pipe, &mut collector, &mut earliest_deadline, run_status)?;
     }
 
     // 2–4. WAKE_CMD -> cmd_lab, WAKE_HK -> hk_lab, WAKE_PL -> pl_lab in exact §4.5 order.
     for turn in WakeTurn::ORDER {
-        wake_time_turn(pipe, &mut collector, &mut earliest_deadline, now, turn)?;
+        wake_time_turn(
+            pipe,
+            &mut collector,
+            &mut earliest_deadline,
+            now,
+            turn,
+            run_status,
+        )?;
     }
 
     // 5. WAKE_TX to link_lab -> collect until DONE.
@@ -467,7 +539,7 @@ fn handle_step(
         "STEP_LAB: Failed to transmit WakeTxMsg",
     )
     .map_err(|_| ())?;
-    wait_collect_turn(pipe, &mut collector, &mut earliest_deadline)?;
+    wait_collect_turn(pipe, &mut collector, &mut earliest_deadline, run_status)?;
 
     // 6. Reply STEP_RESULT with all outputs in arrival order and earliest next_deadline.
     let mut output_storage = [NodeOutput::Unit(&[]); MAX_OUTPUTS];
@@ -479,8 +551,8 @@ fn handle_step(
     write_msg_frame(stream, &result_msg, tx_buf).map_err(|_| ())
 }
 
-/// Runs the main sequencer loop after handshake.
-fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
+/// Runs the main sequencer loop after handshake and returns the final [`RunStatus`].
+fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) -> RunStatus {
     let mut rx_buf = [0u8; FRAME_BUF_LEN];
     let mut tx_buf = [0u8; FRAME_BUF_LEN];
 
@@ -496,17 +568,29 @@ fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
     .is_err()
     {
         let _ = stream.close();
-        return;
-    }
-    // Wait for DONE from link_lab, cmd_lab, hk_lab, and pl_lab
-    let mut unused_deadline = None;
-    for _ in 0..4 {
-        wait_for_done(&mut pipe, &mut unused_deadline);
+        let _ = pipe.delete();
+        return RunStatus::AppError;
     }
 
     let mut run_status = RunStatus::AppRun;
+    // Wait for DONE from link_lab, cmd_lab, hk_lab, and pl_lab
+    let mut unused_deadline = None;
+    for _ in 0..4 {
+        if wait_for_done(&mut pipe, &mut unused_deadline, &mut run_status).is_err() {
+            let _ = stream.close();
+            let _ = pipe.delete();
+            return if run_status == RunStatus::AppRun {
+                RunStatus::AppError
+            } else {
+                run_status
+            };
+        }
+    }
+
     while es::run_loop(&mut run_status) {
         let Ok(msg) = read_msg_frame(&mut stream, &mut rx_buf) else {
+            let _ = evs::send_event(27, EventType::Error, "STEP_LAB: Harness frame read failed");
+            run_status = RunStatus::AppError;
             break;
         };
 
@@ -517,7 +601,20 @@ fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
                 units,
                 ..
             } => {
-                if handle_step(&mut stream, &mut pipe, now, tx_slot, units, &mut tx_buf).is_err() {
+                if handle_step(
+                    &mut stream,
+                    &mut pipe,
+                    now,
+                    tx_slot,
+                    units,
+                    &mut tx_buf,
+                    &mut run_status,
+                )
+                .is_err()
+                {
+                    if run_status == RunStatus::AppRun {
+                        run_status = RunStatus::AppError;
+                    }
                     break;
                 }
             }
@@ -528,12 +625,18 @@ fn run_sequencer(mut stream: TcpStream, mut pipe: Pipe, level: LinkLevel) {
             Message::Hello { .. }
             | Message::HelloAck { .. }
             | Message::StepResult { .. }
-            | Message::EndAck => break,
+            | Message::EndAck => {
+                let _ =
+                    evs::send_event(27, EventType::Error, "STEP_LAB: Unexpected harness message");
+                run_status = RunStatus::AppError;
+                break;
+            }
         }
     }
 
     let _ = stream.close();
     let _ = pipe.delete();
+    run_status
 }
 
 /// Runs the `step_lab` initialization, harness handshake, and sequencer loop.
@@ -613,9 +716,9 @@ fn app_main() {
     };
 
     // 7. Sequencing loop.
-    run_sequencer(stream, pipe, level);
+    let run_status = run_sequencer(stream, pipe, level);
 
-    es::exit_app(RunStatus::AppRun);
+    es::exit_app(run_status);
 }
 
 /// Application entry point exported to cFE.
@@ -627,6 +730,9 @@ pub extern "C" fn STEP_LAB_AppMain() {
 
 #[cfg(not(test))]
 #[panic_handler]
-const fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    loop {}
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    es::exit_app(RunStatus::AppError);
+    loop {
+        core::hint::spin_loop();
+    }
 }
