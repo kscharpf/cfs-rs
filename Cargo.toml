@@ -73,6 +73,7 @@ unnecessary_rest_pattern = "deny"
 shadow_same = "deny"
 excessive_nesting = "deny"
 else_if_without_else = "deny"
+large_stack_frames = "deny"
 
 # The C-export crate is a `no_std` static library: it cannot unwind into C.
 [profile.dev]

@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Rust fmt, clippy, and workspace tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain
+      - name: Run make check
+        run: make check
+
+  miri:
+    name: Miri (cfe & cfe-msg-ffi)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Miri nightly toolchain
+        run: |
+          NIGHTLY="$(cat tooling-nightly)"
+          echo "NIGHTLY=$NIGHTLY" >> "$GITHUB_ENV"
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src --component miri
+      - name: Run Miri on cfe and cfe-msg-ffi
+        run: make miri
+
+  cfs:
+    name: cFS build, MSG tests, node golden traces, and realtime UDP
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install native cFS build dependencies and bindgen-cli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake libclang-dev
+          rustup show active-toolchain
+          cargo install --locked bindgen-cli
+      - name: Configure POSIX mqueue limit for cFS SB pipes
+        run: sudo sysctl -w fs.mqueue.msg_max=64
+      - name: Build and verify Rust MSG module (coverage-msg-ALL + check-symbols)
+        run: scripts/cfs-build.sh rs
+      - name: Build and verify node apps (bindings freshness + app symbols + a0-a3 golden traces)
+        run: scripts/cfs-node.sh
+      - name: Build and verify NativeRealtime UDP TM/TC round-trip
+        run: scripts/cfs-realtime.sh

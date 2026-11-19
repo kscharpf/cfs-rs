@@ -834,3 +834,459 @@ unsafe extern "C" {
 fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
     abort()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::ptr;
+
+    #[unsafe(no_mangle)]
+    extern "C" fn CFE_SB_IsValidMsgId(msg_id: CfeSbMsgId) -> bool {
+        msg_id.value != 0 && msg_id.value <= 0x1FFF
+    }
+
+    #[test]
+    fn primary_header_null_pointers_return_bad_argument() {
+        let mut size: CfeMsgSize = 0;
+        let mut msg_type: CfeMsgType = 0;
+        let mut has_sec = false;
+        let mut version: CfeMsgHeaderVersion = 0;
+        let mut apid: CfeMsgApId = 0;
+        let mut seg_flag: CfeMsgSegmentationFlag = 0;
+        let mut seq_cnt: CfeMsgSequenceCount = 0;
+        let msg = CfeMsgMessage {
+            pri: [0; PRIMARY_HEADER_LEN],
+        };
+
+        // SAFETY: Every call below passes null pointers specifically to verify null-guard paths.
+        unsafe {
+            assert_eq!(
+                CFE_MSG_GetSize(ptr::null(), &raw mut size),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetSize(&raw const msg, ptr::null_mut()),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(CFE_MSG_SetSize(ptr::null_mut(), 8), CFE_MSG_BAD_ARGUMENT);
+            assert_eq!(
+                CFE_MSG_GetType(ptr::null(), &raw mut msg_type),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetType(&raw const msg, ptr::null_mut()),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_SetType(ptr::null_mut(), CFE_MSG_TYPE_CMD),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetHasSecondaryHeader(ptr::null(), &raw mut has_sec),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetHasSecondaryHeader(&raw const msg, ptr::null_mut()),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_SetHasSecondaryHeader(ptr::null_mut(), true),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetHeaderVersion(ptr::null(), &raw mut version),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetHeaderVersion(&raw const msg, ptr::null_mut()),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_SetHeaderVersion(ptr::null_mut(), 0),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetApId(ptr::null(), &raw mut apid),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetApId(&raw const msg, ptr::null_mut()),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(CFE_MSG_SetApId(ptr::null_mut(), 1), CFE_MSG_BAD_ARGUMENT);
+            assert_eq!(
+                CFE_MSG_GetSegmentationFlag(ptr::null(), &raw mut seg_flag),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetSegmentationFlag(&raw const msg, ptr::null_mut()),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_SetSegmentationFlag(ptr::null_mut(), CFE_MSG_SEG_FLAG_UNSEGMENTED),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetSequenceCount(ptr::null(), &raw mut seq_cnt),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetSequenceCount(&raw const msg, ptr::null_mut()),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_SetSequenceCount(ptr::null_mut(), 0),
+                CFE_MSG_BAD_ARGUMENT
+            );
+        }
+    }
+
+    #[test]
+    fn secondary_header_and_msgid_null_pointers_return_bad_argument() {
+        let mut msg_type: CfeMsgType = 0;
+        let mut fcn: CfeMsgFcnCode = 0;
+        let mut valid = false;
+        let mut time = CfeTimeSysTime {
+            seconds: 0,
+            subseconds: 0,
+        };
+        let mut mid = CfeSbMsgId { value: 0 };
+        let mut msg = CfeMsgMessage {
+            pri: [0; PRIMARY_HEADER_LEN],
+        };
+
+        // SAFETY: Every call below passes null pointers specifically to verify null-guard paths.
+        unsafe {
+            assert_eq!(
+                CFE_MSG_GetFcnCode(ptr::null(), &raw mut fcn),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetFcnCode(&raw const msg, ptr::null_mut()),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(CFE_MSG_SetFcnCode(ptr::null_mut(), 0), CFE_MSG_BAD_ARGUMENT);
+            assert_eq!(
+                CFE_MSG_GenerateChecksum(ptr::null_mut()),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_ValidateChecksum(ptr::null(), &raw mut valid),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_ValidateChecksum(&raw const msg, ptr::null_mut()),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetMsgTime(ptr::null(), &raw mut time),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetMsgTime(&raw const msg, ptr::null_mut()),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_SetMsgTime(ptr::null_mut(), time),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetMsgId(ptr::null(), &raw mut mid),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetMsgId(&raw const msg, ptr::null_mut()),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_SetMsgId(ptr::null_mut(), CfeSbMsgId { value: 0x1801 }),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_SetMsgId(&raw mut msg, CfeSbMsgId { value: 0 }),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetTypeFromMsgId(CfeSbMsgId { value: 0x1801 }, ptr::null_mut()),
+                CFE_MSG_BAD_ARGUMENT
+            );
+            assert_eq!(
+                CFE_MSG_GetTypeFromMsgId(CfeSbMsgId { value: 0 }, &raw mut msg_type),
+                CFE_MSG_BAD_ARGUMENT
+            );
+        }
+    }
+
+    #[test]
+    fn primary_header_and_msgid_round_trip() {
+        assert_eq!(CFE_MSG_GetNextSequenceCount(0x3FFF), 0);
+        assert_eq!(CFE_MSG_GetNextSequenceCount(41), 42);
+
+        let mut msg = CfeMsgMessage {
+            pri: [0; PRIMARY_HEADER_LEN],
+        };
+        let mut size: CfeMsgSize = 0;
+        let mut msg_type: CfeMsgType = 0;
+        let mut has_sec = false;
+        let mut version: CfeMsgHeaderVersion = 0;
+        let mut apid: CfeMsgApId = 0;
+        let mut seg_flag: CfeMsgSegmentationFlag = 0;
+        let mut seq_cnt: CfeMsgSequenceCount = 0;
+        let mut mid = CfeSbMsgId { value: 0 };
+
+        // SAFETY: All pointers reference valid local variables for the duration of each call.
+        unsafe {
+            assert_eq!(CFE_MSG_SetSize(&raw mut msg, 16), CFE_SUCCESS);
+            assert_eq!(CFE_MSG_GetSize(&raw const msg, &raw mut size), CFE_SUCCESS);
+            assert_eq!(size, 16);
+
+            assert_eq!(CFE_MSG_SetType(&raw mut msg, CFE_MSG_TYPE_CMD), CFE_SUCCESS);
+            assert_eq!(
+                CFE_MSG_GetType(&raw const msg, &raw mut msg_type),
+                CFE_SUCCESS
+            );
+            assert_eq!(msg_type, CFE_MSG_TYPE_CMD);
+            assert_eq!(CFE_MSG_SetType(&raw mut msg, 99), CFE_MSG_BAD_ARGUMENT);
+
+            assert_eq!(
+                CFE_MSG_SetHasSecondaryHeader(&raw mut msg, true),
+                CFE_SUCCESS
+            );
+            assert_eq!(
+                CFE_MSG_GetHasSecondaryHeader(&raw const msg, &raw mut has_sec),
+                CFE_SUCCESS
+            );
+            assert!(has_sec);
+
+            assert_eq!(CFE_MSG_SetHeaderVersion(&raw mut msg, 0), CFE_SUCCESS);
+            assert_eq!(
+                CFE_MSG_GetHeaderVersion(&raw const msg, &raw mut version),
+                CFE_SUCCESS
+            );
+            assert_eq!(version, 0);
+
+            assert_eq!(CFE_MSG_SetApId(&raw mut msg, 0x0123), CFE_SUCCESS);
+            assert_eq!(CFE_MSG_GetApId(&raw const msg, &raw mut apid), CFE_SUCCESS);
+            assert_eq!(apid, 0x0123);
+
+            assert_eq!(
+                CFE_MSG_SetSegmentationFlag(&raw mut msg, CFE_MSG_SEG_FLAG_UNSEGMENTED),
+                CFE_SUCCESS
+            );
+            assert_eq!(
+                CFE_MSG_GetSegmentationFlag(&raw const msg, &raw mut seg_flag),
+                CFE_SUCCESS
+            );
+            assert_eq!(seg_flag, CFE_MSG_SEG_FLAG_UNSEGMENTED);
+            assert_eq!(
+                CFE_MSG_SetSegmentationFlag(&raw mut msg, 99),
+                CFE_MSG_BAD_ARGUMENT
+            );
+
+            assert_eq!(CFE_MSG_SetSequenceCount(&raw mut msg, 0x1234), CFE_SUCCESS);
+            assert_eq!(
+                CFE_MSG_GetSequenceCount(&raw const msg, &raw mut seq_cnt),
+                CFE_SUCCESS
+            );
+            assert_eq!(seq_cnt, 0x1234);
+
+            assert_eq!(
+                CFE_MSG_SetMsgId(&raw mut msg, CfeSbMsgId { value: 0x1888 }),
+                CFE_SUCCESS
+            );
+            assert_eq!(CFE_MSG_GetMsgId(&raw const msg, &raw mut mid), CFE_SUCCESS);
+            assert_eq!(mid.value, 0x1888);
+
+            assert_eq!(
+                CFE_MSG_GetTypeFromMsgId(CfeSbMsgId { value: 0x1888 }, &raw mut msg_type),
+                CFE_SUCCESS
+            );
+            assert_eq!(msg_type, CFE_MSG_TYPE_CMD);
+            assert_eq!(
+                CFE_MSG_GetTypeFromMsgId(CfeSbMsgId { value: 0x0888 }, &raw mut msg_type),
+                CFE_SUCCESS
+            );
+            assert_eq!(msg_type, CFE_MSG_TYPE_TLM);
+        }
+    }
+
+    #[test]
+    fn command_and_telemetry_secondary_headers_and_checksum() {
+        #[repr(C)]
+        struct CmdPacket {
+            hdr: CfeMsgCommandHeader,
+            payload: [u8; 4],
+        }
+
+        let mut cmd_pkt = CmdPacket {
+            hdr: CfeMsgCommandHeader {
+                msg: CfeMsgMessage {
+                    pri: [0x18, 0x01, 0xC0, 0x00, 0x00, 0x05], // size = 12
+                },
+                sec: CfeMsgCommandSecondaryHeader {
+                    function_code: 0,
+                    checksum: 0,
+                },
+            },
+            payload: [0xAA, 0x55, 0x12, 0x34],
+        };
+        let cmd_ptr = core::ptr::from_mut(&mut cmd_pkt).cast::<CfeMsgMessage>();
+        let mut fcn: CfeMsgFcnCode = 99;
+        let mut valid = false;
+
+        // SAFETY: `cmd_ptr` points to a valid 12-byte `CmdPacket` starting with `CfeMsgCommandHeader`.
+        unsafe {
+            assert_eq!(CFE_MSG_SetFcnCode(cmd_ptr, 7), CFE_SUCCESS);
+            assert_eq!(CFE_MSG_GetFcnCode(cmd_ptr, &raw mut fcn), CFE_SUCCESS);
+            assert_eq!(fcn, 7);
+
+            assert_eq!(CFE_MSG_GenerateChecksum(cmd_ptr), CFE_SUCCESS);
+            assert_eq!(
+                CFE_MSG_ValidateChecksum(cmd_ptr, &raw mut valid),
+                CFE_SUCCESS
+            );
+            assert!(valid);
+
+            // Telemetry time fails with WRONG_MSG_TYPE and zeroes `time` out-param.
+            let mut time = CfeTimeSysTime {
+                seconds: 99,
+                subseconds: 88,
+            };
+            assert_eq!(
+                CFE_MSG_GetMsgTime(cmd_ptr, &raw mut time),
+                CFE_MSG_WRONG_MSG_TYPE
+            );
+            assert_eq!(time.seconds, 0);
+            assert_eq!(time.subseconds, 0);
+            assert_eq!(CFE_MSG_SetMsgTime(cmd_ptr, time), CFE_MSG_WRONG_MSG_TYPE);
+        }
+
+        let mut tlm_hdr = CfeMsgTelemetryHeader {
+            msg: CfeMsgMessage {
+                pri: [0x08, 0x01, 0xC0, 0x00, 0x00, 0x09], // size = 16
+            },
+            sec: CfeMsgTelemetrySecondaryHeader { time: [0; 6] },
+            spare: [0; 4],
+        };
+        let tlm_ptr = core::ptr::from_mut(&mut tlm_hdr).cast::<CfeMsgMessage>();
+        let set_time = CfeTimeSysTime {
+            seconds: 0x1122_3344,
+            subseconds: 0x5566_0000,
+        };
+        let mut got_time = CfeTimeSysTime {
+            seconds: 0,
+            subseconds: 0,
+        };
+
+        // SAFETY: `tlm_ptr` points to a valid 16-byte `CfeMsgTelemetryHeader`.
+        unsafe {
+            assert_eq!(CFE_MSG_SetMsgTime(tlm_ptr, set_time), CFE_SUCCESS);
+            assert_eq!(CFE_MSG_GetMsgTime(tlm_ptr, &raw mut got_time), CFE_SUCCESS);
+            assert_eq!(got_time.seconds, set_time.seconds);
+            assert_eq!(got_time.subseconds, set_time.subseconds);
+
+            // Command functions fail with WRONG_MSG_TYPE and `GetFcnCode` zeroes `fcn`.
+            assert_eq!(
+                CFE_MSG_GetFcnCode(tlm_ptr, &raw mut fcn),
+                CFE_MSG_WRONG_MSG_TYPE
+            );
+            assert_eq!(fcn, 0);
+            assert_eq!(CFE_MSG_SetFcnCode(tlm_ptr, 1), CFE_MSG_WRONG_MSG_TYPE);
+            assert_eq!(CFE_MSG_GenerateChecksum(tlm_ptr), CFE_MSG_WRONG_MSG_TYPE);
+            assert_eq!(
+                CFE_MSG_ValidateChecksum(tlm_ptr, &raw mut valid),
+                CFE_MSG_WRONG_MSG_TYPE
+            );
+        }
+    }
+
+    #[test]
+    fn checksum_edge_cases_and_bare_msg_wrong_type() {
+        #[repr(C)]
+        struct CmdPacket {
+            hdr: CfeMsgCommandHeader,
+            payload: [u8; 4],
+        }
+
+        let mut cmd_pkt = CmdPacket {
+            hdr: CfeMsgCommandHeader {
+                msg: CfeMsgMessage {
+                    pri: [0x18, 0x01, 0xC0, 0x00, 0x00, 0x05], // size = 12
+                },
+                sec: CfeMsgCommandSecondaryHeader {
+                    function_code: 0,
+                    checksum: 0,
+                },
+            },
+            payload: [0xAA, 0x55, 0x12, 0x34],
+        };
+        let mut valid = true;
+
+        // SAFETY: `cmd_pkt` is a valid 12-byte command packet; pointers are re-derived after mutation.
+        unsafe {
+            assert_eq!(
+                CFE_MSG_GenerateChecksum(core::ptr::from_mut(&mut cmd_pkt).cast::<CfeMsgMessage>()),
+                CFE_SUCCESS
+            );
+            cmd_pkt.payload[0] ^= 0xFF;
+            assert_eq!(
+                CFE_MSG_ValidateChecksum(
+                    core::ptr::from_ref(&cmd_pkt).cast::<CfeMsgMessage>(),
+                    &raw mut valid,
+                ),
+                CFE_SUCCESS
+            );
+            assert!(!valid);
+
+            // 8-byte CommandHeader with encoded size 7 exercises `.max(COMMAND_HEADER_LEN)`.
+            let mut min_cmd = CfeMsgCommandHeader {
+                msg: CfeMsgMessage {
+                    pri: [0x18, 0x01, 0xC0, 0x00, 0x00, 0x00], // size = 7
+                },
+                sec: CfeMsgCommandSecondaryHeader {
+                    function_code: 0,
+                    checksum: 0,
+                },
+            };
+            let min_cmd_ptr = core::ptr::from_mut(&mut min_cmd).cast::<CfeMsgMessage>();
+            assert_eq!(CFE_MSG_GenerateChecksum(min_cmd_ptr), CFE_SUCCESS);
+            assert_eq!(
+                CFE_MSG_ValidateChecksum(min_cmd_ptr, &raw mut valid),
+                CFE_SUCCESS
+            );
+            assert!(!valid);
+
+            // Wrong-type calls on a bare 6-byte CfeMsgMessage must not read past 6 bytes.
+            let mut bare_msg = CfeMsgMessage {
+                pri: [0x00, 0x01, 0xC0, 0x00, 0x00, 0x00], // tlm without secondary header
+            };
+            let bare_ptr = &raw mut bare_msg;
+            let mut fcn: CfeMsgFcnCode = 99;
+            assert_eq!(
+                CFE_MSG_GetFcnCode(bare_ptr, &raw mut fcn),
+                CFE_MSG_WRONG_MSG_TYPE
+            );
+            assert_eq!(fcn, 0);
+            assert_eq!(CFE_MSG_SetFcnCode(bare_ptr, 1), CFE_MSG_WRONG_MSG_TYPE);
+            assert_eq!(CFE_MSG_GenerateChecksum(bare_ptr), CFE_MSG_WRONG_MSG_TYPE);
+            assert_eq!(
+                CFE_MSG_ValidateChecksum(bare_ptr, &raw mut valid),
+                CFE_MSG_WRONG_MSG_TYPE
+            );
+            let mut bare_time = CfeTimeSysTime {
+                seconds: 1,
+                subseconds: 2,
+            };
+            assert_eq!(
+                CFE_MSG_GetMsgTime(bare_ptr, &raw mut bare_time),
+                CFE_MSG_WRONG_MSG_TYPE
+            );
+            assert_eq!(bare_time.seconds, 0);
+            assert_eq!(bare_time.subseconds, 0);
+            assert_eq!(
+                CFE_MSG_SetMsgTime(bare_ptr, bare_time),
+                CFE_MSG_WRONG_MSG_TYPE
+            );
+        }
+    }
+}

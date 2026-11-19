@@ -447,6 +447,7 @@ fn handle_start(
             None
         }
     };
+    *link = None;
     if let Some(lvl) = StartMsg::from_bytes(bytes).and_then(|m| m.link_level()) {
         let level = match lvl {
             LinkLevel::Packets => Level::Packets,
@@ -454,13 +455,12 @@ fn handle_start(
             LinkLevel::Cop1 => Level::Cop1,
         };
         let active_config = candidate.as_ref().unwrap_or(config);
-        if let Ok(new_link) = Link::new(level, active_config) {
+        *link = Link::new(level, active_config).ok();
+        if link.is_some() {
             if let Some(updated) = candidate {
                 *config = updated;
             }
-            *link = Some(new_link);
         } else {
-            *link = None;
             let _ = evs::send_event(
                 20,
                 EventType::Critical,
@@ -468,7 +468,6 @@ fn handle_start(
             );
         }
     } else {
-        *link = None;
         let _ = evs::send_event(
             24,
             EventType::Critical,
