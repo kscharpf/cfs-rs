@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -40,7 +40,7 @@ jobs:
           echo "NIGHTLY=$NIGHTLY" >> "$GITHUB_ENV"
           rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src --component miri
       - name: Run Miri on cfe and cfe-msg-ffi
-        run: cargo +"$NIGHTLY" miri test --locked -p cfe -p cfe-msg-ffi
+        run: make miri
 
   cfs:
     name: cFS build, MSG tests, node golden traces, and realtime UDP

@@ -164,15 +164,16 @@ impl ReceivedBuffer<'_> {
     /// Returns a slice of the message user data payload.
     #[must_use]
     pub fn user_data(&self) -> &[u8] {
-        let msg_ptr = core::ptr::from_ref(self.msg()).cast_mut();
-        // SAFETY: msg_ptr is non-null and points to a valid message.
+        let msg_ptr = self.ptr.cast::<cfe_sys::CFE_MSG_Message_t>().cast_mut();
+        // SAFETY: `msg_ptr` is derived from `self.ptr` (preserving full SB buffer provenance)
+        // and points to a valid received message.
         let data = unsafe { cfe_sys::CFE_SB_GetUserData(msg_ptr) };
-        // SAFETY: msg_ptr is non-null and points to a valid message.
-        let len = unsafe { cfe_sys::CFE_SB_GetUserDataLength(self.msg()) };
+        // SAFETY: `msg_ptr` is non-null and points to a valid received message.
+        let len = unsafe { cfe_sys::CFE_SB_GetUserDataLength(msg_ptr.cast_const()) };
         if data.is_null() || len == 0 {
             &[]
         } else {
-            // SAFETY: data points to len initialized payload bytes.
+            // SAFETY: `data` points to `len` initialized payload bytes within the SB buffer.
             unsafe { core::slice::from_raw_parts(data.cast::<u8>(), len) }
         }
     }

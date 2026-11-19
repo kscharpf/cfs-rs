@@ -1199,4 +1199,94 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn checksum_edge_cases_and_bare_msg_wrong_type() {
+        #[repr(C)]
+        struct CmdPacket {
+            hdr: CfeMsgCommandHeader,
+            payload: [u8; 4],
+        }
+
+        let mut cmd_pkt = CmdPacket {
+            hdr: CfeMsgCommandHeader {
+                msg: CfeMsgMessage {
+                    pri: [0x18, 0x01, 0xC0, 0x00, 0x00, 0x05], // size = 12
+                },
+                sec: CfeMsgCommandSecondaryHeader {
+                    function_code: 0,
+                    checksum: 0,
+                },
+            },
+            payload: [0xAA, 0x55, 0x12, 0x34],
+        };
+        let mut valid = true;
+
+        // SAFETY: `cmd_pkt` is a valid 12-byte command packet; pointers are re-derived after mutation.
+        unsafe {
+            assert_eq!(
+                CFE_MSG_GenerateChecksum(core::ptr::from_mut(&mut cmd_pkt).cast::<CfeMsgMessage>()),
+                CFE_SUCCESS
+            );
+            cmd_pkt.payload[0] ^= 0xFF;
+            assert_eq!(
+                CFE_MSG_ValidateChecksum(
+                    core::ptr::from_ref(&cmd_pkt).cast::<CfeMsgMessage>(),
+                    &raw mut valid,
+                ),
+                CFE_SUCCESS
+            );
+            assert!(!valid);
+
+            // 8-byte CommandHeader with encoded size 7 exercises `.max(COMMAND_HEADER_LEN)`.
+            let mut min_cmd = CfeMsgCommandHeader {
+                msg: CfeMsgMessage {
+                    pri: [0x18, 0x01, 0xC0, 0x00, 0x00, 0x00], // size = 7
+                },
+                sec: CfeMsgCommandSecondaryHeader {
+                    function_code: 0,
+                    checksum: 0,
+                },
+            };
+            let min_cmd_ptr = core::ptr::from_mut(&mut min_cmd).cast::<CfeMsgMessage>();
+            assert_eq!(CFE_MSG_GenerateChecksum(min_cmd_ptr), CFE_SUCCESS);
+            assert_eq!(
+                CFE_MSG_ValidateChecksum(min_cmd_ptr, &raw mut valid),
+                CFE_SUCCESS
+            );
+            assert!(!valid);
+
+            // Wrong-type calls on a bare 6-byte CfeMsgMessage must not read past 6 bytes.
+            let mut bare_msg = CfeMsgMessage {
+                pri: [0x00, 0x01, 0xC0, 0x00, 0x00, 0x00], // tlm without secondary header
+            };
+            let bare_ptr = &raw mut bare_msg;
+            let mut fcn: CfeMsgFcnCode = 99;
+            assert_eq!(
+                CFE_MSG_GetFcnCode(bare_ptr, &raw mut fcn),
+                CFE_MSG_WRONG_MSG_TYPE
+            );
+            assert_eq!(fcn, 0);
+            assert_eq!(CFE_MSG_SetFcnCode(bare_ptr, 1), CFE_MSG_WRONG_MSG_TYPE);
+            assert_eq!(CFE_MSG_GenerateChecksum(bare_ptr), CFE_MSG_WRONG_MSG_TYPE);
+            assert_eq!(
+                CFE_MSG_ValidateChecksum(bare_ptr, &raw mut valid),
+                CFE_MSG_WRONG_MSG_TYPE
+            );
+            let mut bare_time = CfeTimeSysTime {
+                seconds: 1,
+                subseconds: 2,
+            };
+            assert_eq!(
+                CFE_MSG_GetMsgTime(bare_ptr, &raw mut bare_time),
+                CFE_MSG_WRONG_MSG_TYPE
+            );
+            assert_eq!(bare_time.seconds, 0);
+            assert_eq!(bare_time.subseconds, 0);
+            assert_eq!(
+                CFE_MSG_SetMsgTime(bare_ptr, bare_time),
+                CFE_MSG_WRONG_MSG_TYPE
+            );
+        }
+    }
 }

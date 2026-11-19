@@ -1,0 +1,2 @@
+# Flag any single stack frame exceeding half of the 64 KiB cFS app task stack budget.
+stack-size-threshold = 32768
