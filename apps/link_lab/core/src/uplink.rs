@@ -141,16 +141,12 @@ pub(crate) fn build_tc_vc_table(
 ) -> Result<(PhysicalChannelConfig, TcVcId, VcTable<1, 2>)> {
     let bad = Error::new(ErrorKind::InvalidConfig);
     let scid = TcSpacecraftId::new(spacecraft_id).ok_or(bad)?;
-    let vc = TcVcId::new(tc::VCID).ok_or(bad)?;
+    let vc = TcVcId::from_const::<{ tc::VCID }>();
     let frame_len = usize::from(tc_max_frame_length);
     if frame_len > TC_FRAME_AREA_LEN {
         return Err(bad);
     }
-    let map = |id: u8| {
-        TcMapId::new(id)
-            .map(|map_id| MapConfig::new(scid, vc, map_id, SecurityLayout::NONE))
-            .ok_or(bad)
-    };
+    let map = |map_id: TcMapId| MapConfig::new(scid, vc, map_id, SecurityLayout::NONE);
     let header = if tc::SEGMENT_HEADER {
         SegmentHeaderUse::Present
     } else {
@@ -160,7 +156,10 @@ pub(crate) fn build_tc_vc_table(
     let table = VcTable::new(
         physical,
         &[VcConfig::new(scid, vc, frame_len, header)?],
-        &[map(tc::MAP_COMMANDS)?, map(tc::MAP_TABLE_UPLOAD)?],
+        &[
+            map(TcMapId::from_const::<{ tc::MAP_COMMANDS }>()),
+            map(TcMapId::from_const::<{ tc::MAP_TABLE_UPLOAD }>()),
+        ],
     )?;
     Ok((physical, vc, table))
 }
@@ -190,14 +189,13 @@ impl UplinkState {
             FrameSeqNum::new(config.farm_initial_vr),
         );
         let max_packet = usize::from(tc::MAX_PACKET_LENGTH);
-        let packets = |id: u8| {
-            TcMapId::new(id)
-                .ok_or(bad)
-                .and_then(|map_id| ReassemblerMap::packets(vc, map_id, max_packet))
-        };
+        let packets = |map_id: TcMapId| ReassemblerMap::packets(vc, map_id, max_packet);
         let reassembler_config = MapReassemblerConfig::new(
             TcReassemblerParams::with_segment_header(),
-            &[packets(tc::MAP_COMMANDS)?, packets(tc::MAP_TABLE_UPLOAD)?],
+            &[
+                packets(TcMapId::from_const::<{ tc::MAP_COMMANDS }>())?,
+                packets(TcMapId::from_const::<{ tc::MAP_TABLE_UPLOAD }>())?,
+            ],
         )?;
         let reassembler = MapReassembler::new(reassembler_config)?;
         Ok(Self {

@@ -85,14 +85,20 @@ echo "=== Checking app symbol visibility (rs) ==="
 
 # 5. Fetch Aldis repository at pinned release tag
 aldis_ref="v0.8.0-a4"
+aldis_expected_sha="c7889201b78efce378e2d77965588255a78ec57a"
 aldis_dir="$root/build/aldis-$aldis_ref"
 if [ ! -d "$aldis_dir/.git" ]; then
     echo "=== Fetching Aldis at $aldis_ref ==="
     git clone https://github.com/kscharpf/aldis.git "$aldis_dir"
 else
-    (cd "$aldis_dir" && git fetch --tags origin)
+    (cd "$aldis_dir" && git fetch --tags --force origin)
 fi
 (cd "$aldis_dir" && git checkout "$aldis_ref")
+aldis_actual_sha="$(git -C "$aldis_dir" rev-parse HEAD)"
+if [ "$aldis_actual_sha" != "$aldis_expected_sha" ]; then
+    echo "FAIL: Aldis $aldis_ref resolved to $aldis_actual_sha, expected $aldis_expected_sha" >&2
+    exit 1
+fi
 
 # 6. Run test cases via refapp-harness against core-cpu1 (twice per build)
 cases="

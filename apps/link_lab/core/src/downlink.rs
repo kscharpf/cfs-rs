@@ -97,10 +97,8 @@ fn make_mux(config: &LinkConfig) -> Result<TmMux> {
         )))
     };
     let vcs = [
-        vc(VcId::<3>::from_const::<{ tm::VCID_REALTIME }>())
-            .with_priority(mux_priority(tm::PRIORITY_REALTIME)),
-        vc(VcId::<3>::from_const::<{ tm::VCID_PAYLOAD }>())
-            .with_priority(mux_priority(tm::PRIORITY_PAYLOAD)),
+        vc(DataVc::Realtime.tm_vcid()).with_priority(mux_priority(tm::PRIORITY_REALTIME)),
+        vc(DataVc::Payload.tm_vcid()).with_priority(mux_priority(tm::PRIORITY_PAYLOAD)),
         vc(VcId::<3>::from_const::<{ tm::VCID_IDLE }>()),
     ];
     let mux_config = ChannelMuxConfig::<Tm, 3>::new(channel, MuxPolicy::FixedPriority, &vcs)?;
