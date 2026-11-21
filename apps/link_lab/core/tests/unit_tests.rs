@@ -1,7 +1,7 @@
 //! Unit tests for `link-lab-core`.
 //!
 //! Tests include:
-//! - Bound check on `Link` struct size (<= 8192 bytes)
+//! - Bound check on `Link` struct size (<= 9728 bytes)
 //! - Hand-built packets at `Level::Packets`
 //! - Hand-built frames at `Level::Frames` (Type-BD)
 //! - Hand-built frames and COP-1 sequence / lockout / unlock at `Level::Cop1` (Type-AD)
@@ -18,7 +18,9 @@
 use core::net::Ipv4Addr;
 use core::num::NonZeroU16;
 
+use aldis::aos::fhec as aos_fhec;
 use aldis::core::ErrorKind;
+use aldis::core::crc::crc16;
 use aldis::core::ids::FrameSeqNum;
 use aldis::core::security::SecurityLayout;
 use aldis::tc::{
@@ -27,15 +29,23 @@ use aldis::tc::{
     VcTable, encode,
 };
 use aldis::tm::{McFrameCount, TmFrame, TmPhysicalChannelConfig, VcFrameCount};
+use aldis::uslp::{
+    FrameKind as UslpFrameKind, MapConfig as UslpMapConfig, OcfUse,
+    PhysicalChannelConfig as UslpPhysicalChannelConfig, SourceOrDestination, TfdfHeader, TfdzRule,
+    TransferFrameType, Upid, UslpMapId, UslpSpacecraftId, UslpVcId, VcConfig as UslpVcConfig,
+    VcParams, VcTable as UslpVcTable, VcfCountLen,
+};
 use link_lab_core::{
     APP_DOWNLINK_REFUSED, APP_FARM1_STATE, APP_FARM1_UNLOCK, APP_FRAME_DISCARDED,
-    APP_FRAME_REJECTED, APP_PACKET_REJECTED, APP_SEQUENCE_VIOLATION, APP_UNKNOWN_MAP, ApidRoute,
-    DataVc, DownlinkSink, DownlinkState, Level, Link, LinkConfig, LinkMode, MAX_APID_ROUTES,
-    MIN_COMMAND_PACKET_LEN, RealtimeConfig, TC_FRAME_AREA_LEN, TC_REASSEMBLY_AREA_LEN,
-    TM_FRAME_LEN, UplinkBuffers, UplinkMode, UplinkSink, UplinkState, is_valid_command_packet,
+    APP_FRAME_REJECTED, APP_GAP_DISCARD, APP_PACKET_REJECTED, APP_SEQUENCE_VIOLATION,
+    APP_UNKNOWN_MAP, ApidRoute, DataVc, DownlinkSink, DownlinkState, Level, Link, LinkConfig,
+    LinkMode, MAX_APID_ROUTES, MAX_REASSEMBLY_AREA_LEN, MAX_UPLINK_FRAME_LEN,
+    MIN_COMMAND_PACKET_LEN, RealtimeConfig, TC_FDU_BUF_LEN, TC_FRAME_AREA_LEN, TM_FRAME_LEN,
+    USLP_MAX_FRAME_LEN, USLP_MAX_PACKET_LEN, UplinkBuffers, UplinkMode, UplinkSink, UplinkState,
+    Variant, is_valid_command_packet,
 };
 use refapp_scenario::Instant;
-use refapp_scenario::generated::{SPACECRAFT_ID, apid, tc, tm};
+use refapp_scenario::generated::{SPACECRAFT_ID, aos, apid, tc, tm, uslp_up};
 
 #[derive(Default)]
 struct TestUplinkSink {
@@ -162,7 +172,7 @@ fn build_tc_unlock(table: &VcTable<1, 2>) -> Vec<u8> {
 #[test]
 fn test_link_size_bounded() {
     let size = core::mem::size_of::<Link>();
-    assert!(size <= 8192, "Link size {size} exceeds 8192 bytes");
+    assert!(size <= 9728, "Link size {size} exceeds 9728 bytes");
 }
 
 #[test]
@@ -315,9 +325,9 @@ fn test_frames_mode_rejects_type_ad_and_bc_without_stepping_farm() {
     let table = build_tc_table();
     let t0 = Instant::from_micros(0);
     let mut up_sink = TestUplinkSink::default();
-    let mut frame_area = [0_u8; TC_FRAME_AREA_LEN];
-    let mut fdu_buf = [0_u8; TC_FRAME_AREA_LEN];
-    let mut reassembly_area = [0_u8; TC_REASSEMBLY_AREA_LEN];
+    let mut frame_area = [0_u8; MAX_UPLINK_FRAME_LEN];
+    let mut fdu_buf = [0_u8; TC_FDU_BUF_LEN];
+    let mut reassembly_area = [0_u8; MAX_REASSEMBLY_AREA_LEN];
 
     let initial_clcw = uplink.clcw();
 
@@ -651,13 +661,33 @@ fn test_link_config_from_table_bytes_validation_errors() {
     assert_invalid(|b| b[43] = 1);
     assert_invalid(|b| b[44..46].copy_from_slice(&apid::HOUSEKEEPING.to_ne_bytes()));
 
-    // NativeRealtime / UDP config validation: invalid mode, invalid default_vc, non-zero reserved2,
-    // and zero rx_port/tx_port in NativeRealtime mode.
+    // NativeRealtime / UDP config validation: invalid mode, invalid default_vc, invalid variant,
+    // non-zero reserved2/reserved3, invalid AOS/USLP fields, and zero rx_port/tx_port in NativeRealtime mode.
     assert_invalid(|b| b[80] = 2);
     assert_invalid(|b| b[81] = 2);
     assert_invalid(|b| b[81] = 7);
-    assert_invalid(|b| b[82] = 1);
-    assert_invalid(|b| b[87] = 1);
+    assert_invalid(|b| b[82] = 3);
+    assert_invalid(|b| b[83] = 1);
+    assert_invalid(|b| b[84..86].copy_from_slice(&222_u16.to_ne_bytes()));
+    assert_invalid(|b| b[86..88].copy_from_slice(&222_u16.to_ne_bytes()));
+    assert_invalid(|b| {
+        b[88..90].copy_from_slice(
+            &(u16::try_from(USLP_MAX_FRAME_LEN).expect("fits in u16") + 1).to_ne_bytes(),
+        );
+    });
+    assert_invalid(|b| b[90..92].copy_from_slice(&0_u16.to_ne_bytes()));
+    assert_invalid(|b| {
+        b[90..92].copy_from_slice(
+            &(u16::try_from(USLP_MAX_PACKET_LEN).expect("fits in u16") + 1).to_ne_bytes(),
+        );
+    });
+    assert_invalid(|b| b[92] = 0);
+    assert_invalid(|b| b[93] = 0);
+    assert_invalid(|b| b[94] = 0);
+    assert_invalid(|b| b[95] = 0);
+    assert_invalid(|b| b[96] = 2);
+    assert_invalid(|b| b[97] = 1);
+    assert_invalid(|b| b[103] = 1);
     assert_invalid(|b| {
         b[80] = 1;
         b[72..74].copy_from_slice(&0_u16.to_ne_bytes());
@@ -774,4 +804,426 @@ fn test_is_valid_command_packet() {
     // Idle packet (APID = 0x7FF) with Type = Telecommand and SecHdrFlag = 1 is invalid per CCSDS.
     let idle_with_sec_hdr = [0x1F, 0xFF, 0xC0, 0x00, 0x00, 0x01, 0x00, 0x00];
     assert!(!is_valid_command_packet(&idle_with_sec_hdr));
+}
+
+fn build_uslp_up_table() -> UslpVcTable<1, 1> {
+    let scid = UslpSpacecraftId::new(SPACECRAFT_ID).expect("valid uslp scid");
+    let vc = UslpVcId::new(uslp_up::VCID).expect("valid uslp vc");
+    let map = UslpMapId::new(uslp_up::MAP_ID).expect("valid uslp map");
+    let physical = UslpPhysicalChannelConfig::new(
+        TransferFrameType::Variable,
+        USLP_MAX_FRAME_LEN,
+        0,
+        uslp_up::FECF,
+    )
+    .expect("valid uslp physical");
+    let params = VcParams {
+        vcf_count_len_sequence: VcfCountLen::new(uslp_up::VCF_COUNT_LENGTH_SEQUENCE)
+            .expect("valid seq count len"),
+        vcf_count_len_expedited: VcfCountLen::new(uslp_up::VCF_COUNT_LENGTH_EXPEDITED)
+            .expect("valid exp count len"),
+        ocf: OcfUse::Absent,
+        ..VcParams::new(TransferFrameType::Variable)
+    };
+    UslpVcTable::new(
+        physical,
+        &[UslpVcConfig::new(scid, vc, params).expect("valid uslp vc config")],
+        &[UslpMapConfig::new(scid, vc, map, SecurityLayout::NONE)],
+    )
+    .expect("valid uslp table")
+}
+
+fn build_uslp_up_frame(
+    table: &UslpVcTable<1, 1>,
+    kind: UslpFrameKind,
+    vcf_count: u64,
+    rule: TfdzRule,
+    upid: Upid,
+    tfdz: &[u8],
+) -> Vec<u8> {
+    let scid = UslpSpacecraftId::new(SPACECRAFT_ID).expect("valid uslp scid");
+    let vc = UslpVcId::new(uslp_up::VCID).expect("valid uslp vc");
+    let map = UslpMapId::new(uslp_up::MAP_ID).expect("valid uslp map");
+    let fields = aldis::uslp::FrameFields {
+        spacecraft_id: scid,
+        source_or_destination: SourceOrDestination::Destination,
+        vc_id: vc,
+        map_id: map,
+        kind,
+        vcf_count,
+    };
+    let content = aldis::uslp::FrameContent {
+        tfdf: TfdfHeader { rule, upid },
+        insert_zone: &[],
+        ocf: None,
+    };
+    let mut out = vec![0_u8; USLP_MAX_FRAME_LEN];
+    let len = aldis::uslp::encode(table, fields, content, tfdz, &mut out).expect("encode uslp");
+    out.truncate(len);
+    out
+}
+
+#[test]
+fn test_invalid_level_variant_combinations() {
+    let config = LinkConfig::from_scenario();
+    for (level, variant) in [
+        (Level::Packets, Variant::Aos),
+        (Level::Packets, Variant::Uslp),
+        (Level::Frames, Variant::Uslp),
+    ] {
+        assert_eq!(
+            Link::new_with_variant(level, variant, &config)
+                .expect_err("invalid (Level, Variant) must fail")
+                .kind(),
+            ErrorKind::InvalidConfig
+        );
+    }
+    assert_eq!(
+        UplinkState::new_with_variant(Variant::Uslp, &config, UplinkMode::Frames)
+            .expect_err("USLP uplink requires Cop1 mode")
+            .kind(),
+        ErrorKind::InvalidConfig
+    );
+
+    // Valid combinations succeed and report level/variant accurately.
+    for (level, variant) in [
+        (Level::Packets, Variant::TmTc),
+        (Level::Frames, Variant::TmTc),
+        (Level::Cop1, Variant::TmTc),
+        (Level::Frames, Variant::Aos),
+        (Level::Cop1, Variant::Aos),
+        (Level::Cop1, Variant::Uslp),
+    ] {
+        let link = Link::new_with_variant(level, variant, &config).expect("valid combo");
+        assert_eq!(link.level(), level);
+        assert_eq!(link.variant(), variant);
+        assert_eq!(link.config().variant, variant);
+    }
+}
+
+#[test]
+fn test_aos_downlink_priority_fhec_fecf_and_vc_ocf() {
+    let config = LinkConfig::from_scenario();
+    let mut link = Link::new_with_variant(Level::Cop1, Variant::Aos, &config).expect("aos link");
+    let mut down_sink = TestDownlinkSink::default();
+
+    // Submit one packet on Payload (VC 1) and one on Realtime (VC 0) at t=0.
+    let pl_pkt = make_space_packet(apid::PAYLOAD, false, 1, &[0x11, 0x22, 0x33, 0x44]);
+    let hk_pkt = make_space_packet(apid::HOUSEKEEPING, false, 1, &[0xAA, 0xBB, 0xCC, 0xDD]);
+    link.accept_packet(Instant::from_micros(0), &pl_pkt, &mut down_sink);
+    link.accept_packet(Instant::from_micros(0), &hk_pkt, &mut down_sink);
+
+    // After both deadlines (2 s), 4 slots serve VC 0, then VC 1, then VC 7 (idle M_PDU), then VC 7.
+    for i in 0..4_u64 {
+        let now = Instant::from_micros(2_000_000 + i * config.frame_slot_us);
+        link.slot(now, true, &mut down_sink);
+    }
+    assert_eq!(down_sink.units.len(), 4);
+
+    let mut vcids = Vec::new();
+    for frame in &down_sink.units {
+        assert_eq!(frame.len(), TM_FRAME_LEN);
+        // FHEC over first 8 octets and FECF over whole frame must both verify.
+        let hdr: [u8; 8] = frame[..8].try_into().expect("8-byte header");
+        assert!(aos_fhec::decode(&hdr).is_ok());
+        assert_eq!(crc16(frame).get(), 0);
+        // TFVN = 01 (AOS Version 2) in top 2 bits of byte 0; VCID in bottom 6 bits of byte 1.
+        assert_eq!(frame[0] >> 6, 0b01);
+        vcids.push(frame[1] & 0x3F);
+        // VC_OCF is carried on every VC (0, 1, 7) at the 4 octets before FECF.
+        assert_eq!(
+            &frame[TM_FRAME_LEN - 6..TM_FRAME_LEN - 2],
+            &tm::OCF_INITIAL.to_be_bytes()
+        );
+    }
+    assert_eq!(
+        vcids,
+        vec![
+            aos::VCID_REALTIME,
+            aos::VCID_PAYLOAD,
+            aos::VCID_IDLE,
+            aos::VCID_IDLE
+        ]
+    );
+
+    // AOS config validation errors
+    let mutations: [fn(&mut LinkConfig); 4] = [
+        |c| c.aos_frame_length = 222,
+        |c| c.aos_fhec = false,
+        |c| c.aos_vc_ocf = false,
+        |c| c.aos_fecf = false,
+    ];
+    for mutate in mutations {
+        let mut bad = config;
+        mutate(&mut bad);
+        assert_eq!(
+            DownlinkState::new_with_variant(Variant::Aos, &bad)
+                .expect_err("invalid AOS config rejected")
+                .kind(),
+            ErrorKind::InvalidConfig
+        );
+    }
+}
+
+#[test]
+fn test_uslp_downlink_fixed_frame_oid_and_mc_ocf() {
+    let config = LinkConfig::from_scenario();
+    let mut link = Link::new_with_variant(Level::Cop1, Variant::Uslp, &config).expect("uslp link");
+    let mut down_sink = TestDownlinkSink::default();
+
+    // Slot with no data produces an OID frame on VCID 63 with MC OCF and FECF.
+    link.slot(Instant::from_micros(0), true, &mut down_sink);
+    assert_eq!(down_sink.units.len(), 1);
+    let oid = &down_sink.units[0];
+    assert_eq!(oid.len(), TM_FRAME_LEN);
+    assert_eq!(crc16(oid).get(), 0);
+    let oid_vcid = ((oid[2] & 0x07) << 3) | (oid[3] >> 5);
+    assert_eq!(oid_vcid, 63);
+    assert_eq!(oid[6], 0b1000_1000); // Expedited, OCF=1, VCF Count Len=0
+    assert_eq!(
+        &oid[TM_FRAME_LEN - 6..TM_FRAME_LEN - 2],
+        &tm::OCF_INITIAL.to_be_bytes()
+    );
+
+    // Submit a packet on VC 0 and release after deadline.
+    let hk_pkt = make_space_packet(apid::HOUSEKEEPING, false, 1, &[0xDE, 0xAD, 0xBE, 0xEF]);
+    link.accept_packet(Instant::from_micros(125_000), &hk_pkt, &mut down_sink);
+    link.slot(Instant::from_micros(1_000_000), true, &mut down_sink);
+    assert_eq!(down_sink.units.len(), 2);
+    let data = &down_sink.units[1];
+    assert_eq!(data.len(), TM_FRAME_LEN);
+    assert_eq!(crc16(data).get(), 0);
+    let data_vcid = ((data[2] & 0x07) << 3) | (data[3] >> 5);
+    assert_eq!(data_vcid, 0);
+    assert_eq!(data[2] & 0x08, 0); // SourceOrDestination::Source
+    assert_eq!(data[6], 0b1000_1001); // Expedited, OCF=1, VCF Count Len=1
+    assert_eq!(data[7], 0); // First expedited VCF count on VC 0
+    // TFDZ starts at byte 11: packet followed by Encapsulation Idle Packet (PVN 111, PID 000, LoL 01).
+    let tfdz = &data[11..TM_FRAME_LEN - 6];
+    assert_eq!(&tfdz[..hk_pkt.len()], hk_pkt.as_slice());
+    assert_eq!(tfdz[hk_pkt.len()], 0b1110_0001);
+
+    // USLP downlink config validation errors
+    let mutations: [fn(&mut LinkConfig); 2] = [
+        |c| c.uslp_down_frame_length = 222,
+        |c| c.uslp_down_fecf = false,
+    ];
+    for mutate in mutations {
+        let mut bad = config;
+        mutate(&mut bad);
+        assert_eq!(
+            DownlinkState::new_with_variant(Variant::Uslp, &bad)
+                .expect_err("invalid USLP downlink config rejected")
+                .kind(),
+            ErrorKind::InvalidConfig
+        );
+    }
+}
+
+#[test]
+fn test_uslp_uplink_farm1_ad_bd_lockout_and_unlock() {
+    assert_eq!(APP_GAP_DISCARD, 115);
+
+    let config = LinkConfig::from_scenario();
+    let mut link = Link::new_with_variant(Level::Cop1, Variant::Uslp, &config).expect("uslp link");
+    let table = build_uslp_up_table();
+    let t0 = Instant::from_micros(0);
+    let mut up_sink = TestUplinkSink::default();
+
+    // 1. Sequence-controlled (Type-AD) frame seq 0 delivers command packet and advances V(R) to 1.
+    let pkt0 = make_space_packet(apid::COMMANDS, true, 0, &[1, 2, 3, 4]);
+    let ad0 = build_uslp_up_frame(
+        &table,
+        UslpFrameKind::SequenceControlled,
+        0,
+        TfdzRule::NoSegmentation,
+        Upid::Packets,
+        &pkt0,
+    );
+    link.accept_unit(t0, &ad0, &mut up_sink);
+    assert_eq!(up_sink.packets, vec![pkt0]);
+    assert_eq!(up_sink.events.len(), 0);
+
+    // Verify CLCW in USLP downlink MC OCF reports V(R) = 1.
+    let mut down_sink = TestDownlinkSink::default();
+    link.slot(t0, true, &mut down_sink);
+    assert_eq!(down_sink.units[0][TM_FRAME_LEN - 3], 1);
+
+    // 2. Expedited (Type-BD) frame delivers packet without advancing V(R).
+    let pkt_bd = make_space_packet(apid::COMMANDS, true, 1, &[5, 6, 7]);
+    let bd = build_uslp_up_frame(
+        &table,
+        UslpFrameKind::Expedited,
+        0,
+        TfdzRule::NoSegmentation,
+        Upid::Packets,
+        &pkt_bd,
+    );
+    link.accept_unit(t0, &bd, &mut up_sink);
+    assert_eq!(up_sink.packets.len(), 2);
+    assert_eq!(up_sink.packets[1], pkt_bd);
+
+    // 3. Out-of-window Type-AD triggers Lockout (APP_FARM1_STATE), then valid Type-BC Unlock recovers.
+    let ad_far = build_uslp_up_frame(
+        &table,
+        UslpFrameKind::SequenceControlled,
+        50,
+        TfdzRule::NoSegmentation,
+        Upid::Packets,
+        &pkt_bd,
+    );
+    link.accept_unit(t0, &ad_far, &mut up_sink);
+    assert!(
+        up_sink
+            .events
+            .iter()
+            .any(|(code, args)| *code == APP_FARM1_STATE && args == &vec![3])
+    );
+
+    let bc_unlock = build_uslp_up_frame(
+        &table,
+        UslpFrameKind::ProtocolControl,
+        0,
+        TfdzRule::NoSegmentation,
+        Upid::Cop1ControlCommands,
+        &[0x00],
+    );
+    link.accept_unit(t0, &bc_unlock, &mut up_sink);
+    assert!(
+        up_sink
+            .events
+            .iter()
+            .any(|(code, _)| *code == APP_FARM1_UNLOCK)
+    );
+
+    // 4. Type-BC ControlCommand::SetVr(42) updates FARM-1 V(R) reported in CLCW MC OCF.
+    let bc_set_vr = build_uslp_up_frame(
+        &table,
+        UslpFrameKind::ProtocolControl,
+        0,
+        TfdzRule::NoSegmentation,
+        Upid::Cop1ControlCommands,
+        &[0x82, 0x00, 42],
+    );
+    link.accept_unit(t0, &bc_set_vr, &mut up_sink);
+    link.slot(
+        Instant::from_micros(config.frame_slot_us),
+        true,
+        &mut down_sink,
+    );
+    assert_eq!(
+        down_sink.units.last().expect("downlink frame")[TM_FRAME_LEN - 3],
+        42
+    );
+}
+
+#[test]
+fn test_uslp_uplink_fecf_and_bc_rejections() {
+    let config = LinkConfig::from_scenario();
+    let mut link = Link::new_with_variant(Level::Cop1, Variant::Uslp, &config).expect("uslp link");
+    let table = build_uslp_up_table();
+    let t0 = Instant::from_micros(0);
+    let mut up_sink = TestUplinkSink::default();
+
+    // 1. Corrupted FECF is rejected with APP_FRAME_REJECTED.
+    let pkt0 = make_space_packet(apid::COMMANDS, true, 0, &[1, 2, 3, 4]);
+    let mut bad_crc = build_uslp_up_frame(
+        &table,
+        UslpFrameKind::SequenceControlled,
+        0,
+        TfdzRule::NoSegmentation,
+        Upid::Packets,
+        &pkt0,
+    );
+    let last = bad_crc.len() - 1;
+    bad_crc[last] ^= 0xFF;
+    link.accept_unit(t0, &bad_crc, &mut up_sink);
+    assert_eq!(
+        up_sink.events.last().map(|(c, _)| *c),
+        Some(APP_FRAME_REJECTED)
+    );
+
+    // 2. Type-BC rejection: wrong UPID (Packets instead of Cop1ControlCommands).
+    let bc_wrong_upid = build_uslp_up_frame(
+        &table,
+        UslpFrameKind::ProtocolControl,
+        0,
+        TfdzRule::NoSegmentation,
+        Upid::Packets,
+        &[0x00],
+    );
+    link.accept_unit(t0, &bc_wrong_upid, &mut up_sink);
+    assert_eq!(
+        up_sink.events.last(),
+        Some(&(
+            APP_FRAME_REJECTED,
+            vec![u64::from(ErrorKind::ReservedValue.code())]
+        ))
+    );
+
+    // 3. Type-BC rejection: valid UPID (Cop1ControlCommands), but non-NoSegmentation TFDZ rule.
+    let bc_wrong_rule = build_uslp_up_frame(
+        &table,
+        UslpFrameKind::ProtocolControl,
+        0,
+        TfdzRule::StartingSegment,
+        Upid::Cop1ControlCommands,
+        &[0x00],
+    );
+    link.accept_unit(t0, &bc_wrong_rule, &mut up_sink);
+    assert_eq!(
+        up_sink.events.last(),
+        Some(&(
+            APP_FRAME_REJECTED,
+            vec![u64::from(ErrorKind::ReservedValue.code())]
+        ))
+    );
+
+    // 4. Type-BC rejection: valid UPID and rule, but unrecognized control command bytes.
+    let bc_bad_cmd = build_uslp_up_frame(
+        &table,
+        UslpFrameKind::ProtocolControl,
+        0,
+        TfdzRule::NoSegmentation,
+        Upid::Cop1ControlCommands,
+        &[0xAA, 0xBB],
+    );
+    link.accept_unit(t0, &bc_bad_cmd, &mut up_sink);
+    assert_eq!(
+        up_sink.events.last(),
+        Some(&(
+            APP_FRAME_REJECTED,
+            vec![u64::from(ErrorKind::ReservedValue.code())]
+        ))
+    );
+    assert_eq!(up_sink.packets.len(), 0);
+}
+
+#[test]
+fn test_link_config_extended_table_variants_round_trip() {
+    for variant in [Variant::TmTc, Variant::Aos, Variant::Uslp] {
+        let mut cfg = LinkConfig::from_scenario();
+        cfg.variant = variant;
+        let bytes = cfg.to_table_bytes();
+        assert_eq!(bytes.len(), LinkConfig::TABLE_SIZE);
+        let decoded = LinkConfig::from_table_bytes(&bytes).expect("valid variant table");
+        assert_eq!(decoded, cfg);
+        assert_eq!(decoded.variant, variant);
+    }
+
+    // uslp_up_max_packet_length exceeding uslp_up_max_frame_length - overhead (11 B with FECF, 9 B without)
+    let valid = LinkConfig::from_scenario().to_table_bytes();
+    for (frame_len, pkt_len, fecf, expect_ok) in [
+        (128_u16, 200_u16, true, false),
+        (128_u16, 118_u16, true, false),  // 118 + 11 = 129 > 128
+        (128_u16, 117_u16, true, true),   // 117 + 11 = 128
+        (128_u16, 120_u16, false, false), // 120 + 9 = 129 > 128
+        (128_u16, 119_u16, false, true),  // 119 + 9 = 128
+    ] {
+        let mut buf = valid;
+        buf[88..90].copy_from_slice(&frame_len.to_ne_bytes());
+        buf[90..92].copy_from_slice(&pkt_len.to_ne_bytes());
+        buf[96] = u8::from(fecf);
+        assert_eq!(LinkConfig::from_table_bytes(&buf).is_ok(), expect_ok);
+    }
 }

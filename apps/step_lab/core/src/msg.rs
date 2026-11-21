@@ -9,12 +9,76 @@ pub const MAX_UNIT_LEN: usize = 1024;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkLevel {
-    /// Packets level (`a1-*`).
+    /// Packets level.
     Packets = 0,
-    /// Frames level (`a2-*`).
+    /// Frames level.
     Frames = 1,
-    /// COP-1 level (`a3-*`).
+    /// COP-1 level.
     Cop1 = 2,
+}
+
+/// Link protocol variant for the scenario run.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkVariant {
+    /// TM downlink and TC uplink.
+    TmTc = 0,
+    /// AOS downlink and TC uplink.
+    Aos = 1,
+    /// USLP downlink and USLP uplink.
+    Uslp = 2,
+}
+
+impl LinkVariant {
+    /// Returns the raw `u8` value.
+    #[must_use]
+    pub const fn to_raw(self) -> u8 {
+        match self {
+            Self::TmTc => 0,
+            Self::Aos => 1,
+            Self::Uslp => 2,
+        }
+    }
+
+    /// Converts a raw `u8` wire value to a [`LinkVariant`], or `None` if invalid.
+    #[must_use]
+    pub const fn from_raw(val: u8) -> Option<Self> {
+        match val {
+            0 => Some(Self::TmTc),
+            1 => Some(Self::Aos),
+            2 => Some(Self::Uslp),
+            _ => None,
+        }
+    }
+}
+
+/// Returns `true` if `(level, variant)` is a valid APP-187 link combination.
+#[must_use]
+pub const fn is_valid_level_variant(level: LinkLevel, variant: LinkVariant) -> bool {
+    !matches!(
+        (level, variant),
+        (LinkLevel::Packets, LinkVariant::Aos | LinkVariant::Uslp)
+            | (LinkLevel::Frames, LinkVariant::Uslp)
+    )
+}
+
+/// Parses a scenario ASCII case ID into its `(LinkLevel, LinkVariant)`, or `None` if unknown.
+#[must_use]
+pub const fn parse_case_id(case_id: &str) -> Option<(LinkLevel, LinkVariant)> {
+    let bytes = case_id.as_bytes();
+    match bytes {
+        [b'a', b'0' | b'1', b'-', ..] | [b'a', b'0' | b'1'] => {
+            Some((LinkLevel::Packets, LinkVariant::TmTc))
+        }
+        [b'a', b'2', b'-', ..] | [b'a', b'2'] => Some((LinkLevel::Frames, LinkVariant::TmTc)),
+        [b'a', b'3', b'-', ..] | [b'a', b'3'] => Some((LinkLevel::Cop1, LinkVariant::TmTc)),
+        [b'a', b'4', b'-', b'a', b'o', b's', b'-', ..] | [b'a', b'4', b'-', b'a', b'o', b's'] => {
+            Some((LinkLevel::Cop1, LinkVariant::Aos))
+        }
+        [b'a', b'4', b'-', b'u', b's', b'l', b'p', b'-', ..]
+        | [b'a', b'4', b'-', b'u', b's', b'l', b'p'] => Some((LinkLevel::Cop1, LinkVariant::Uslp)),
+        _ => None,
+    }
 }
 
 impl LinkLevel {
@@ -31,12 +95,9 @@ impl LinkLevel {
     /// Determines the link level from the ASCII case ID prefix, or `None` if unknown.
     #[must_use]
     pub const fn from_case_id(case_id: &str) -> Option<Self> {
-        let bytes = case_id.as_bytes();
-        match bytes {
-            [b'a', b'0' | b'1', b'-', ..] | [b'a', b'0' | b'1'] => Some(Self::Packets),
-            [b'a', b'2', b'-', ..] | [b'a', b'2'] => Some(Self::Frames),
-            [b'a', b'3', b'-', ..] | [b'a', b'3'] => Some(Self::Cop1),
-            _ => None,
+        match parse_case_id(case_id) {
+            Some((level, _)) => Some(level),
+            None => None,
         }
     }
 }
@@ -143,7 +204,7 @@ fn write_tlm_header(dst: &mut [u8], header: &cfe_sys::CFE_MSG_TelemetryHeader_t)
     write_slice(dst, 12, &header.Spare)
 }
 
-/// `START`: `step_lab` -> all apps: informs apps of the scenario link level.
+/// `START`: `step_lab` -> all apps: informs apps of the scenario link level and variant.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct StartMsg {
@@ -151,18 +212,27 @@ pub struct StartMsg {
     pub header: cfe_sys::CFE_MSG_CommandHeader_t,
     /// Configured link level (`0` = Packets, `1` = Frames, `2` = Cop1).
     pub level: u8,
+    /// Configured link variant (`0` = `TmTc`, `1` = `Aos`, `2` = `Uslp`).
+    pub variant: u8,
     /// Alignment padding.
-    pub pad: [u8; 7],
+    pub pad: [u8; 6],
 }
 
 impl StartMsg {
-    /// Creates a new `StartMsg` with the given link level.
+    /// Creates a new `StartMsg` with the given link level and default `TmTc` variant.
     #[must_use]
     pub const fn new(level: LinkLevel) -> Self {
+        Self::new_with_variant(level, LinkVariant::TmTc)
+    }
+
+    /// Creates a new `StartMsg` with the given link level and variant.
+    #[must_use]
+    pub const fn new_with_variant(level: LinkLevel, variant: LinkVariant) -> Self {
         Self {
             header: default_cmd_header(),
             level: level.to_raw(),
-            pad: [0; 7],
+            variant: variant.to_raw(),
+            pad: [0; 6],
         }
     }
 
@@ -174,6 +244,20 @@ impl StartMsg {
             1 => Some(LinkLevel::Frames),
             2 => Some(LinkLevel::Cop1),
             _ => None,
+        }
+    }
+
+    /// Returns the link variant, or `None` if invalid or incompatible with `self.level`.
+    #[must_use]
+    pub const fn link_variant(&self) -> Option<LinkVariant> {
+        let (Some(level), Some(variant)) = (self.link_level(), LinkVariant::from_raw(self.variant))
+        else {
+            return None;
+        };
+        if is_valid_level_variant(level, variant) {
+            Some(variant)
+        } else {
+            None
         }
     }
 
@@ -190,7 +274,11 @@ impl StartMsg {
             2 => LinkLevel::Cop1,
             _ => return None,
         };
-        let mut msg = Self::new(level);
+        let variant = LinkVariant::from_raw(*bytes.get(9)?)?;
+        if !is_valid_level_variant(level, variant) {
+            return None;
+        }
+        let mut msg = Self::new_with_variant(level, variant);
         if let Some(src) = bytes.get(..8) {
             copy_cmd_header(&mut msg.header, src);
         }
@@ -203,8 +291,8 @@ impl StartMsg {
         let size = core::mem::size_of::<Self>();
         let out = dst.get_mut(..size)?;
         write_cmd_header(out, self.header)?;
-        write_slice(out, 8, &[self.level])?;
-        write_slice(out, 9, &self.pad)?;
+        write_slice(out, 8, &[self.level, self.variant])?;
+        write_slice(out, 10, &self.pad)?;
         Some(size)
     }
 
@@ -221,6 +309,7 @@ impl StartMsg {
 }
 const _: () = assert!(core::mem::size_of::<StartMsg>() == 16);
 const _: () = assert!(core::mem::offset_of!(StartMsg, level) == 8);
+const _: () = assert!(core::mem::offset_of!(StartMsg, variant) == 9);
 
 /// `WAKE_RX`: `step_lab` -> `link_lab`: deliver one received link unit.
 #[repr(C)]

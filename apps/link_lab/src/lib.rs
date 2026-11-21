@@ -1,4 +1,4 @@
-//! `link_lab`: cFS application carrying Space Packets over CCSDS TM and TC frames.
+//! `link_lab`: cFS application carrying Space Packets over CCSDS TM, AOS, and USLP frames with TC and USLP uplinks.
 
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
@@ -11,15 +11,16 @@ use cfe::osal::{self, UdpSocket};
 use cfe::sb::{MsgId, Pipe, Qos, Timeout};
 use cfe::tbl::{Table, TableOptions};
 use link_lab_core::{
-    DownlinkSink, Instant, Level, Link, LinkConfig, LinkMode, MIN_COMMAND_PACKET_LEN,
-    RealtimeConfig, TC_FRAME_AREA_LEN, UplinkSink, is_valid_command_packet, packet_apid,
+    DownlinkSink, Instant, Level, Link, LinkConfig, LinkMode, MAX_UPLINK_FRAME_LEN,
+    MIN_COMMAND_PACKET_LEN, RealtimeConfig, UplinkSink, Variant, is_valid_command_packet,
+    packet_apid,
 };
 use node_glue::{
     PeerWaitGuard, PipeRecvGuard, RecvAction, send_done, send_record_event, send_sb_msg,
 };
 use step_lab_core::msg::{
-    CmdPacketMsg, LinkLevel, MAX_UNIT_LEN, RecordMsg, StartMsg, TlmPacketMsg, UnitMsg, WakeRxMsg,
-    WakeTxMsg,
+    CmdPacketMsg, LinkLevel, LinkVariant, MAX_UNIT_LEN, RecordMsg, StartMsg, TlmPacketMsg, UnitMsg,
+    WakeRxMsg, WakeTxMsg,
 };
 
 /// Event ID for `link_lab` start-up event.
@@ -482,14 +483,21 @@ fn handle_start(
         }
     };
     *link = None;
-    if let Some(lvl) = StartMsg::from_bytes(bytes).and_then(|m| m.link_level()) {
+    if let Some((lvl, var)) =
+        StartMsg::from_bytes(bytes).and_then(|m| m.link_level().zip(m.link_variant()))
+    {
         let level = match lvl {
             LinkLevel::Packets => Level::Packets,
             LinkLevel::Frames => Level::Frames,
             LinkLevel::Cop1 => Level::Cop1,
         };
+        let variant = match var {
+            LinkVariant::TmTc => Variant::TmTc,
+            LinkVariant::Aos => Variant::Aos,
+            LinkVariant::Uslp => Variant::Uslp,
+        };
         let active_config = candidate.as_ref().unwrap_or(config);
-        *link = Link::new(level, active_config).ok();
+        *link = Link::new_with_variant(level, variant, active_config).ok();
         if link.is_some() {
             if let Some(updated) = candidate {
                 *config = updated;
@@ -512,7 +520,7 @@ fn handle_start(
     send_done(None);
 }
 
-/// Runs the lockstep `step_lab` dispatch loop (`a0`–`a3`).
+/// Runs the lockstep `step_lab` dispatch loop.
 #[inline(never)]
 fn run_lockstep(pipe: &mut Pipe, table: &mut Table, config: &mut LinkConfig) -> ExitStatus {
     let mut link: Option<Link> = None;
@@ -595,9 +603,9 @@ fn run_lockstep(pipe: &mut Pipe, table: &mut Table, config: &mut LinkConfig) -> 
 const _: () =
     assert!(MIN_COMMAND_PACKET_LEN == core::mem::size_of::<cfe_sys::CFE_MSG_CommandHeader_t>());
 
-const RX_BUF_LEN: usize = TC_FRAME_AREA_LEN.saturating_add(1);
-const _: () = assert!(RX_BUF_LEN == 129);
-const _: () = assert!(RX_BUF_LEN > TC_FRAME_AREA_LEN);
+const RX_BUF_LEN: usize = MAX_UPLINK_FRAME_LEN.saturating_add(1);
+const _: () = assert!(RX_BUF_LEN == 513);
+const _: () = assert!(RX_BUF_LEN > MAX_UPLINK_FRAME_LEN);
 
 struct RealtimeUplinkSink;
 
@@ -678,12 +686,12 @@ fn drain_udp_uplink(
 ) {
     for _ in 0..64 {
         match udp.recv_from(rx_buf, osal::Timeout::Poll) {
-            Ok(Some(n)) if n > TC_FRAME_AREA_LEN => {
+            Ok(Some(n)) if n > MAX_UPLINK_FRAME_LEN => {
                 *recv_err_logged = false;
                 let _ = evs::send_event(
                     31,
                     EventType::Error,
-                    "LINK_LAB: Rejected oversized UDP TC datagram",
+                    "LINK_LAB: Rejected oversized UDP uplink datagram",
                 );
             }
             Ok(Some(n)) => {
@@ -737,7 +745,7 @@ fn sample_monotonic_now(last_now: &mut Instant, time_err_logged: &mut bool) -> I
     *last_now
 }
 
-/// Runs the native real-time UDP TM/TC dispatch loop.
+/// Runs the native real-time UDP frame dispatch loop.
 #[inline(never)]
 fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig, rt: RealtimeConfig) -> ExitStatus {
     let Ok(udp) = UdpSocket::bind("0.0.0.0", rt.rx_port.get()) else {
@@ -749,7 +757,11 @@ fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig, rt: RealtimeConfig)
         return ExitStatus::AppError;
     };
 
-    let Ok(mut link) = Link::new(Level::Frames, config) else {
+    let level = match config.variant {
+        Variant::TmTc | Variant::Aos => Level::Frames,
+        Variant::Uslp => Level::Cop1,
+    };
+    let Ok(mut link) = Link::new_with_variant(level, config.variant, config) else {
         let _ = evs::send_event(
             20,
             EventType::Critical,

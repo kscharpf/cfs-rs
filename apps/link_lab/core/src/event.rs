@@ -21,6 +21,9 @@ pub const APP_SDU_TOO_LONG: u16 = 112;
 /// Code of the application event `downlink_refused` (§7.4): error code, and optionally VCID.
 pub const APP_DOWNLINK_REFUSED: u16 = 113;
 
+/// Code of the application event `gap_discard` (§7.4, APP-186): MAP ID (USLP only).
+pub const APP_GAP_DISCARD: u16 = 115;
+
 /// Code of the application event `farm1_state` (§7.4): the new state, 1 Open, 2 Wait, 3 Lockout.
 pub const APP_FARM1_STATE: u16 = 210;
 

@@ -29,11 +29,22 @@ typedef struct
     uint8                ground_ipv4[4];
     uint8                mode;
     uint8                default_vc;
-    uint8                reserved2[6];
+    uint8                variant;
+    uint8                reserved2;
+    uint16               aos_frame_length;
+    uint16               uslp_down_frame_length;
+    uint16               uslp_up_max_frame_length;
+    uint16               uslp_up_max_packet_length;
+    uint8                aos_fhec;
+    uint8                aos_vc_ocf;
+    uint8                aos_fecf;
+    uint8                uslp_down_fecf;
+    uint8                uslp_up_fecf;
+    uint8                reserved3[7];
 } LINK_LAB_CfgTbl_t;
 
 CompileTimeAssert(sizeof(LINK_LAB_ApidRoute_t) == 4, LinkLabApidRouteSize);
-CompileTimeAssert(sizeof(LINK_LAB_CfgTbl_t) == 88, LinkLabCfgTblSize);
+CompileTimeAssert(sizeof(LINK_LAB_CfgTbl_t) == 104, LinkLabCfgTblSize);
 
 LINK_LAB_CfgTbl_t LINK_LAB_CfgTbl = {
     100000ULL,  /* frame_slot_us (10 Hz) */
@@ -59,12 +70,23 @@ LINK_LAB_CfgTbl_t LINK_LAB_CfgTbl = {
         {0U, 0U, 0U},
         {0U, 0U, 0U},
     },
-    1234U,               /* rx_port */
-    2234U,               /* tx_port */
-    {127U, 0U, 0U, 1U},  /* ground_ipv4 */
-    1U,                  /* mode (1 = NativeRealtime) */
-    0U,                  /* default_vc (0 = Realtime) */
-    {0U, 0U, 0U, 0U, 0U, 0U},
+    1234U,                             /* rx_port */
+    2234U,                             /* tx_port */
+    {127U, 0U, 0U, 1U},                /* ground_ipv4 */
+    1U,                                /* mode (1 = NativeRealtime) */
+    0U,                                /* default_vc (0 = Realtime) */
+    0U,                                /* variant (0 = TmTc) */
+    0U,                                /* reserved2 */
+    223U,                              /* aos_frame_length */
+    223U,                              /* uslp_down_frame_length */
+    512U,                              /* uslp_up_max_frame_length */
+    501U,                              /* uslp_up_max_packet_length */
+    1U,                                /* aos_fhec */
+    1U,                                /* aos_vc_ocf */
+    1U,                                /* aos_fecf */
+    1U,                                /* uslp_down_fecf */
+    1U,                                /* uslp_up_fecf */
+    {0U, 0U, 0U, 0U, 0U, 0U, 0U},      /* reserved3 */
 };
 
 CFE_TBL_FILEDEF(LINK_LAB_CfgTbl, LINK_LAB.LinkCfg, link_lab LinkConfig table, link_lab_cfg.tbl)

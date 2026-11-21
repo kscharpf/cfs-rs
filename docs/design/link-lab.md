@@ -331,12 +331,13 @@ Level `Cop1`. Most of the work is already in WP-4.
 - **Panic-freedom and heap checks:** `apps/*/CMakeLists.txt` links each app staticlib with `-Wl,--undefined=<ENTRY>` and `-Wl,--gc-sections` (replacing `--whole-archive`), and `scripts/check-app-symbols.sh` verifies on both `node-stock` and `node-rs` that `link_lab.so`, `step_lab.so`, and `scn_lab.so` export only their entry point and contain zero heap symbols (`malloc`, `calloc`, `realloc`, `free`, `__rust_alloc*`, `alloc::`) and zero panic/unwind symbols (`core::panicking`, `rust_begin_unwind`, `__rust_start_panic`, `panic_fmt`).
 - **Integrator documentation:** [`apps/link_lab/README.md`](../../apps/link_lab/README.md) documents crate boundaries, build/verification targets, mission integration (`node_defs/targets.cmake`, `node_defs/node_msgids.h`, 64 KiB stack & measured stack frames, pipe depth 32 / `fs.mqueue.msg_max`), and the §4.4 Software Bus interface.
 - **Aldis API feedback & WP-4–WP-7 observations:**
-  - [`kscharpf/aldis#588`](https://github.com/kscharpf/aldis/issues/588) (A-1): out-of-process node protocol over TCP and external `core-cpu1` launcher — implemented and consumed at pinned rev `4852ee68`.
-  - [`kscharpf/aldis#589`](https://github.com/kscharpf/aldis/issues/589) (A-2): release tag containing `refapp/` at A3 and golden traces — pending tag; workspace pins rev `4852ee68`.
-  - [`kscharpf/aldis#590`](https://github.com/kscharpf/aldis/issues/590) (A-3): `FlightNode` packet-level phase (`handle_delivered`) made public — implemented and consumed by `scn_lab` at rev `4852ee68`.
+  - [`kscharpf/aldis#588`](https://github.com/kscharpf/aldis/issues/588) (A-1): out-of-process node protocol over TCP and external `core-cpu1` launcher — implemented and consumed.
+  - [`kscharpf/aldis#589`](https://github.com/kscharpf/aldis/issues/589) (A-2): release tag containing `refapp/` and golden traces — resolved; workspace pins tag `v0.8.0-a4` (`c7889201`).
+  - [`kscharpf/aldis#590`](https://github.com/kscharpf/aldis/issues/590) (A-3): `FlightNode` packet-level phase (`handle_delivered`) made public — implemented and consumed by `cmd_lab` / `hk_lab` / `pl_lab`.
   - [`kscharpf/aldis#591`](https://github.com/kscharpf/aldis/issues/591) (A-4): `SpacePacketHeader` decode made public — open; non-blocking because packets arrive whole and `SpacePacket::decode_exact` suffices.
-  - `aldis-link` requires the `epp` feature alongside `spp` (`Cargo.toml` enables `epp` in addition to the L11 feature list).
-- **Post-v1 options:** Tracked in [`kscharpf/cfs-rs#27`](https://github.com/kscharpf/cfs-rs/issues/27) (three of five now implemented; see §8).
+  - [`kscharpf/aldis#718`](https://github.com/kscharpf/aldis/issues/718): `Farm1Input::from_uslp` — `link-lab-core` constructs `Farm1Frame` manually from checked USLP frames until provided upstream.
+  - `aldis-link` requires the `epp` feature alongside `spp` (`Cargo.toml` enables `epp`, `aos`, and `uslp` in addition to the L11 feature list).
+- **Post-v1 options:** Tracked in [`kscharpf/cfs-rs#27`](https://github.com/kscharpf/cfs-rs/issues/27) (four of five now implemented; see §8).
 
 ## 8. After the first version
 
@@ -345,8 +346,8 @@ Post-v1 options tracked in [`https://github.com/kscharpf/cfs-rs/issues/27`](http
 | Option | Status | Value |
 |---|---|---|
 | Native mode: cFE's own telemetry and commands over TM and TC frames, in real time, to a ground system (Aldis already has a Yamcs interop directory) | **Implemented** (PR #40) | The feature a cFS user would actually want; a demonstration, since no trace covers it |
-| Routing and managed parameters from a cFE table | **Implemented** (PR #37) | Exercises TBL; makes the app configurable without a rebuild |
-| AOS and USLP levels | Deferred (`#27`) | The scenario's `a4-*` cases |
+| Routing and managed parameters from a cFE table | **Implemented** (PR #37, extended for A4 variants) | Exercises TBL; makes the app configurable without a rebuild |
+| AOS and USLP levels | **Implemented** (`v0.8.0-a4`) | The scenario's `a4-aos-nominal` and `a4-uslp-nominal` cases, plus `NativeRealtime` variant selection |
 | `scn_lab` split into command, housekeeping, and payload apps | **Implemented** (PR #45) | More Software Bus integration |
 | Move `apps/link_lab` to its own repository | Deferred (`#27`) | Once the `cfe` crate's API is stable |
 

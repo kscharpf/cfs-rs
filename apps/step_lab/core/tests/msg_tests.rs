@@ -8,9 +8,10 @@
 )]
 
 use step_lab_core::msg::{
-    CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, LinkLevel, MAX_EVENT_ARGS, MAX_SB_MSG_LEN,
-    MAX_UNIT_LEN, RecordKind, RecordMsg, ScnPayloadMode, ScnStatus, ScnStatusMsg, StartMsg,
-    TlmPacketMsg, UnitMsg, WakeCmdMsg, WakeHkMsg, WakePlMsg, WakeRxMsg, WakeTurn, WakeTxMsg,
+    CmdPacketDoneMsg, CmdPacketMsg, DoneMsg, LinkLevel, LinkVariant, MAX_EVENT_ARGS,
+    MAX_SB_MSG_LEN, MAX_UNIT_LEN, RecordKind, RecordMsg, ScnPayloadMode, ScnStatus, ScnStatusMsg,
+    StartMsg, TlmPacketMsg, UnitMsg, WakeCmdMsg, WakeHkMsg, WakePlMsg, WakeRxMsg, WakeTurn,
+    WakeTxMsg, parse_case_id,
 };
 use step_lab_core::proto::{EventArgs, NodeOutput};
 
@@ -18,6 +19,7 @@ use step_lab_core::proto::{EventArgs, NodeOutput};
 fn test_start_msg_round_trip() {
     let msg = StartMsg::new(LinkLevel::Packets);
     assert_eq!(msg.link_level(), Some(LinkLevel::Packets));
+    assert_eq!(msg.link_variant(), Some(LinkVariant::TmTc));
     // SAFETY: Struct is POD and safe to inspect as bytes.
     let bytes = unsafe {
         core::slice::from_raw_parts(
@@ -27,32 +29,87 @@ fn test_start_msg_round_trip() {
     };
     let decoded = StartMsg::from_bytes(bytes).unwrap();
     assert_eq!(decoded.link_level(), Some(LinkLevel::Packets));
+    assert_eq!(decoded.link_variant(), Some(LinkVariant::TmTc));
 
-    let msg_frames = StartMsg::new(LinkLevel::Frames);
-    assert_eq!(msg_frames.link_level(), Some(LinkLevel::Frames));
+    for (level, variant) in [
+        (LinkLevel::Frames, LinkVariant::TmTc),
+        (LinkLevel::Cop1, LinkVariant::TmTc),
+        (LinkLevel::Cop1, LinkVariant::Aos),
+        (LinkLevel::Cop1, LinkVariant::Uslp),
+    ] {
+        let m = StartMsg::new_with_variant(level, variant);
+        assert_eq!(m.link_level(), Some(level));
+        assert_eq!(m.link_variant(), Some(variant));
+        let mut buf = [0_u8; 16];
+        assert_eq!(m.encode_into(&mut buf), Some(16));
+        assert_eq!(buf[8], level.to_raw());
+        assert_eq!(buf[9], variant.to_raw());
+        let rt = StartMsg::from_bytes(&buf).unwrap();
+        assert_eq!(rt.link_level(), Some(level));
+        assert_eq!(rt.link_variant(), Some(variant));
+    }
 
-    let msg_cop1 = StartMsg::new(LinkLevel::Cop1);
-    assert_eq!(msg_cop1.link_level(), Some(LinkLevel::Cop1));
+    // Invalid variant byte is rejected
+    let mut bad_variant = [0_u8; 16];
+    bad_variant[8] = LinkLevel::Cop1.to_raw();
+    bad_variant[9] = 3;
+    assert!(StartMsg::from_bytes(&bad_variant).is_none());
+    assert_eq!(LinkVariant::from_raw(3), None);
+
+    // Illegal APP-187 (level, variant) combinations are rejected on decode and accessor.
+    for (level, variant) in [
+        (LinkLevel::Packets, LinkVariant::Aos),
+        (LinkLevel::Packets, LinkVariant::Uslp),
+        (LinkLevel::Frames, LinkVariant::Uslp),
+    ] {
+        let mut raw = [0_u8; 16];
+        raw[8] = level.to_raw();
+        raw[9] = variant.to_raw();
+        assert!(StartMsg::from_bytes(&raw).is_none());
+        let constructed = StartMsg::new_with_variant(level, variant);
+        assert_eq!(constructed.link_variant(), None);
+    }
 
     assert_eq!(
-        LinkLevel::from_case_id("a0-empty"),
-        Some(LinkLevel::Packets)
+        parse_case_id("a0-empty"),
+        Some((LinkLevel::Packets, LinkVariant::TmTc))
     );
     assert_eq!(
-        LinkLevel::from_case_id("a1-nominal"),
-        Some(LinkLevel::Packets)
+        parse_case_id("a1-nominal"),
+        Some((LinkLevel::Packets, LinkVariant::TmTc))
     );
     assert_eq!(
-        LinkLevel::from_case_id("a2-nominal"),
-        Some(LinkLevel::Frames)
+        parse_case_id("a2-nominal"),
+        Some((LinkLevel::Frames, LinkVariant::TmTc))
     );
-    assert_eq!(LinkLevel::from_case_id("a3-nominal"), Some(LinkLevel::Cop1));
-    assert_eq!(LinkLevel::from_case_id(""), None);
-    assert_eq!(LinkLevel::from_case_id("a"), None);
-    assert_eq!(LinkLevel::from_case_id("a4-nominal"), None);
-    assert_eq!(LinkLevel::from_case_id("a10-extra"), None);
-    assert_eq!(LinkLevel::from_case_id("b1-nominal"), None);
-    assert_eq!(LinkLevel::from_case_id("unknown"), None);
+    assert_eq!(
+        parse_case_id("a3-nominal"),
+        Some((LinkLevel::Cop1, LinkVariant::TmTc))
+    );
+    assert_eq!(
+        parse_case_id("a4-aos-nominal"),
+        Some((LinkLevel::Cop1, LinkVariant::Aos))
+    );
+    assert_eq!(
+        parse_case_id("a4-uslp-nominal"),
+        Some((LinkLevel::Cop1, LinkVariant::Uslp))
+    );
+    assert_eq!(
+        LinkLevel::from_case_id("a4-aos-nominal"),
+        Some(LinkLevel::Cop1)
+    );
+    assert_eq!(
+        LinkLevel::from_case_id("a4-uslp-nominal"),
+        Some(LinkLevel::Cop1)
+    );
+    assert_eq!(parse_case_id(""), None);
+    assert_eq!(parse_case_id("a"), None);
+    assert_eq!(parse_case_id("a4-nominal"), None);
+    assert_eq!(parse_case_id("a4-aosx"), None);
+    assert_eq!(parse_case_id("a4-uslpx"), None);
+    assert_eq!(parse_case_id("a10-extra"), None);
+    assert_eq!(parse_case_id("b1-nominal"), None);
+    assert_eq!(parse_case_id("unknown"), None);
 }
 
 #[test]
@@ -391,6 +448,10 @@ fn test_encode_into_matches_repr_c_layout() {
     }
 
     check(&StartMsg::new(LinkLevel::Cop1), StartMsg::encode_into);
+    check(
+        &StartMsg::new_with_variant(LinkLevel::Cop1, LinkVariant::Uslp),
+        StartMsg::encode_into,
+    );
     check(
         &WakeRxMsg::new(123_456, &[1, 2, 3, 4]).unwrap(),
         WakeRxMsg::encode_into,
