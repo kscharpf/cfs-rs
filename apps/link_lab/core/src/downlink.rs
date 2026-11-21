@@ -97,10 +97,8 @@ fn make_mux(config: &LinkConfig) -> Result<TmMux> {
         )))
     };
     let vcs = [
-        vc(VcId::<3>::from_const::<{ tm::VCID_REALTIME }>())
-            .with_priority(mux_priority(tm::PRIORITY_REALTIME)),
-        vc(VcId::<3>::from_const::<{ tm::VCID_PAYLOAD }>())
-            .with_priority(mux_priority(tm::PRIORITY_PAYLOAD)),
+        vc(DataVc::Realtime.tm_vcid()).with_priority(mux_priority(tm::PRIORITY_REALTIME)),
+        vc(DataVc::Payload.tm_vcid()).with_priority(mux_priority(tm::PRIORITY_PAYLOAD)),
         vc(VcId::<3>::from_const::<{ tm::VCID_IDLE }>()),
     ];
     let mux_config = ChannelMuxConfig::<Tm, 3>::new(channel, MuxPolicy::FixedPriority, &vcs)?;
@@ -117,13 +115,9 @@ struct VcChannel {
 
 impl VcChannel {
     fn new(vc: DataVc, deadline_us: u64) -> Result<Self> {
-        let vc_id = match vc {
-            DataVc::Realtime => VcId::<3>::from_const::<{ tm::VCID_REALTIME }>(),
-            DataVc::Payload => VcId::<3>::from_const::<{ tm::VCID_PAYLOAD }>(),
-        };
         Ok(Self {
             vc,
-            generator: make_generator(vc_id, deadline_us)?,
+            generator: make_generator(vc.tm_vcid(), deadline_us)?,
             held: false,
         })
     }
@@ -223,7 +217,7 @@ impl DownlinkState {
                         .ok_or(Error::new(ErrorKind::InternalError))?;
                     none(self.mux.step(
                         MuxInput::Offer(Offer {
-                            vc: ch.vc.vcid(),
+                            vc: ch.vc.tm_vcid(),
                             field: octets,
                             meta: TmOffer {
                                 pointer: Some(data.pointer),
@@ -252,7 +246,7 @@ impl DownlinkState {
 
         if sent.class == FrameClass::Data {
             for ch in &mut self.vcs {
-                if ch.vc.vcid() == sent.vc {
+                if ch.vc.tm_vcid() == sent.vc {
                     ch.held = false;
                 }
             }
