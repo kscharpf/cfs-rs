@@ -117,13 +117,9 @@ struct VcChannel {
 
 impl VcChannel {
     fn new(vc: DataVc, deadline_us: u64) -> Result<Self> {
-        let vc_id = match vc {
-            DataVc::Realtime => VcId::<3>::from_const::<{ tm::VCID_REALTIME }>(),
-            DataVc::Payload => VcId::<3>::from_const::<{ tm::VCID_PAYLOAD }>(),
-        };
         Ok(Self {
             vc,
-            generator: make_generator(vc_id, deadline_us)?,
+            generator: make_generator(vc.tm_vcid(), deadline_us)?,
             held: false,
         })
     }
@@ -223,7 +219,7 @@ impl DownlinkState {
                         .ok_or(Error::new(ErrorKind::InternalError))?;
                     none(self.mux.step(
                         MuxInput::Offer(Offer {
-                            vc: ch.vc.vcid(),
+                            vc: ch.vc.tm_vcid(),
                             field: octets,
                             meta: TmOffer {
                                 pointer: Some(data.pointer),
@@ -252,7 +248,7 @@ impl DownlinkState {
 
         if sent.class == FrameClass::Data {
             for ch in &mut self.vcs {
-                if ch.vc.vcid() == sent.vc {
+                if ch.vc.tm_vcid() == sent.vc {
                     ch.held = false;
                 }
             }

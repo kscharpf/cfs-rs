@@ -26,7 +26,7 @@ use aldis::tc::{
     SegmentHeader, SegmentHeaderUse, SequenceFlags, TcMapId, TcSpacecraftId, TcVcId, VcConfig,
     VcTable, encode,
 };
-use aldis::tm::{TmFrame, TmPhysicalChannelConfig};
+use aldis::tm::{McFrameCount, TmFrame, TmPhysicalChannelConfig, VcFrameCount};
 use link_lab_core::{
     APP_DOWNLINK_REFUSED, APP_FARM1_STATE, APP_FARM1_UNLOCK, APP_FRAME_DISCARDED,
     APP_FRAME_REJECTED, APP_PACKET_REJECTED, APP_SEQUENCE_VIOLATION, APP_UNKNOWN_MAP, ApidRoute,
@@ -242,8 +242,8 @@ fn test_frames_level_downlink_nominal_and_idle() {
     let decoded = TmFrame::decode(&down_sink.units[0], &pc).expect("decode tm frame");
     assert_eq!(decoded.header().scid.get(), SPACECRAFT_ID);
     assert_eq!(decoded.header().vcid.get(), tm::VCID_REALTIME);
-    assert_eq!(decoded.header().mc_frame_count, 0);
-    assert_eq!(decoded.header().vc_frame_count, 0);
+    assert_eq!(decoded.header().mc_frame_count, McFrameCount::new(0));
+    assert_eq!(decoded.header().vc_frame_count, VcFrameCount::new(0));
     assert!(decoded.ocf().is_some());
 
     // Next slot without pending packets produces an idle frame (VC 7, OID)

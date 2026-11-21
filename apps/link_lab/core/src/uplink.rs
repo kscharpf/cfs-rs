@@ -387,7 +387,7 @@ impl UplinkState {
                         ReassemblyEvent::SduTooLong => APP_SDU_TOO_LONG,
                         ReassemblyEvent::GapDiscard => continue,
                     };
-                    sink.event(code, &[u64::from(*map)]);
+                    sink.event(code, &[u64::from(map.get())]);
                 }
                 ReassemblerOutput::Packets { run, count, .. } => {
                     deliver_run(run.slice(reassembly_area), *count, sink);

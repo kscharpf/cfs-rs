@@ -83,14 +83,16 @@ echo "=== Checking app symbol visibility (stock) ==="
 echo "=== Checking app symbol visibility (rs) ==="
 "$root/scripts/check-app-symbols.sh" "$root/build/node-rs/usr/local/cpu1/cf"
 
-# 5. Fetch Aldis repository at pinned revision
-aldis_rev="4852ee687ab64b22041dfb556c33ef0dc8666e83"
-aldis_dir="$root/build/aldis-$aldis_rev"
+# 5. Fetch Aldis repository at pinned release tag
+aldis_ref="v0.8.0-a4"
+aldis_dir="$root/build/aldis-$aldis_ref"
 if [ ! -d "$aldis_dir/.git" ]; then
-    echo "=== Fetching Aldis at $aldis_rev ==="
+    echo "=== Fetching Aldis at $aldis_ref ==="
     git clone https://github.com/kscharpf/aldis.git "$aldis_dir"
+else
+    (cd "$aldis_dir" && git fetch --tags origin)
 fi
-(cd "$aldis_dir" && git checkout "$aldis_rev")
+(cd "$aldis_dir" && git checkout "$aldis_ref")
 
 # 6. Run test cases via refapp-harness against core-cpu1 (twice per build)
 cases="

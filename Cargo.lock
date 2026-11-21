@@ -4,9 +4,10 @@ version = 4
 
 [[package]]
 name = "aldis"
-version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
+version = "0.8.0"
+source = "git+https://github.com/kscharpf/aldis.git?tag=v0.8.0-a4#c7889201b78efce378e2d77965588255a78ec57a"
 dependencies = [
+ "aldis-aos",
  "aldis-cop1",
  "aldis-core",
  "aldis-epp",
@@ -15,46 +16,58 @@ dependencies = [
  "aldis-tc",
  "aldis-time",
  "aldis-tm",
+ "aldis-uslp",
+]
+
+[[package]]
+name = "aldis-aos"
+version = "0.8.0"
+source = "git+https://github.com/kscharpf/aldis.git?tag=v0.8.0-a4#c7889201b78efce378e2d77965588255a78ec57a"
+dependencies = [
+ "aldis-core",
 ]
 
 [[package]]
 name = "aldis-cop1"
-version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
+version = "0.8.0"
+source = "git+https://github.com/kscharpf/aldis.git?tag=v0.8.0-a4#c7889201b78efce378e2d77965588255a78ec57a"
 dependencies = [
  "aldis-core",
  "aldis-tc",
+ "aldis-uslp",
 ]
 
 [[package]]
 name = "aldis-core"
-version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
+version = "0.8.0"
+source = "git+https://github.com/kscharpf/aldis.git?tag=v0.8.0-a4#c7889201b78efce378e2d77965588255a78ec57a"
 
 [[package]]
 name = "aldis-epp"
-version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
+version = "0.8.0"
+source = "git+https://github.com/kscharpf/aldis.git?tag=v0.8.0-a4#c7889201b78efce378e2d77965588255a78ec57a"
 dependencies = [
  "aldis-core",
 ]
 
 [[package]]
 name = "aldis-link"
-version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
+version = "0.8.0"
+source = "git+https://github.com/kscharpf/aldis.git?tag=v0.8.0-a4#c7889201b78efce378e2d77965588255a78ec57a"
 dependencies = [
+ "aldis-aos",
  "aldis-core",
  "aldis-epp",
  "aldis-spp",
  "aldis-tc",
  "aldis-tm",
+ "aldis-uslp",
 ]
 
 [[package]]
 name = "aldis-spp"
-version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
+version = "0.8.0"
+source = "git+https://github.com/kscharpf/aldis.git?tag=v0.8.0-a4#c7889201b78efce378e2d77965588255a78ec57a"
 dependencies = [
  "aldis-core",
  "aldis-time",
@@ -62,24 +75,32 @@ dependencies = [
 
 [[package]]
 name = "aldis-tc"
-version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
+version = "0.8.0"
+source = "git+https://github.com/kscharpf/aldis.git?tag=v0.8.0-a4#c7889201b78efce378e2d77965588255a78ec57a"
 dependencies = [
  "aldis-core",
 ]
 
 [[package]]
 name = "aldis-time"
-version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
+version = "0.8.0"
+source = "git+https://github.com/kscharpf/aldis.git?tag=v0.8.0-a4#c7889201b78efce378e2d77965588255a78ec57a"
 dependencies = [
  "aldis-core",
 ]
 
 [[package]]
 name = "aldis-tm"
-version = "0.6.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
+version = "0.8.0"
+source = "git+https://github.com/kscharpf/aldis.git?tag=v0.8.0-a4#c7889201b78efce378e2d77965588255a78ec57a"
+dependencies = [
+ "aldis-core",
+]
+
+[[package]]
+name = "aldis-uslp"
+version = "0.8.0"
+source = "git+https://github.com/kscharpf/aldis.git?tag=v0.8.0-a4#c7889201b78efce378e2d77965588255a78ec57a"
 dependencies = [
  "aldis-core",
 ]
@@ -207,7 +228,7 @@ dependencies = [
 [[package]]
 name = "refapp-flight"
 version = "0.1.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
+source = "git+https://github.com/kscharpf/aldis.git?tag=v0.8.0-a4#c7889201b78efce378e2d77965588255a78ec57a"
 dependencies = [
  "aldis",
  "refapp-scenario",
@@ -216,7 +237,7 @@ dependencies = [
 [[package]]
 name = "refapp-scenario"
 version = "0.1.0"
-source = "git+https://github.com/kscharpf/aldis.git?rev=4852ee687ab64b22041dfb556c33ef0dc8666e83#4852ee687ab64b22041dfb556c33ef0dc8666e83"
+source = "git+https://github.com/kscharpf/aldis.git?tag=v0.8.0-a4#c7889201b78efce378e2d77965588255a78ec57a"
 dependencies = [
  "aldis",
 ]

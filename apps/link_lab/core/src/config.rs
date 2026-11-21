@@ -5,6 +5,7 @@ use core::num::NonZeroU16;
 
 use aldis::cop1::farm1::Farm1Window;
 use aldis::core::ErrorKind;
+use aldis::core::ids::VcId;
 use refapp_scenario::generated::{SPACECRAFT_ID, apid, cop1, link, tc, tm};
 
 use crate::downlink::TM_FRAME_LEN;
@@ -26,9 +27,15 @@ impl DataVc {
     /// Returns the CCSDS virtual channel identifier (VCID).
     #[must_use]
     pub const fn vcid(self) -> u8 {
+        self.tm_vcid().get()
+    }
+
+    /// Returns the typed TM virtual channel identifier.
+    #[must_use]
+    pub const fn tm_vcid(self) -> VcId<3> {
         match self {
-            Self::Realtime => tm::VCID_REALTIME,
-            Self::Payload => tm::VCID_PAYLOAD,
+            Self::Realtime => VcId::<3>::from_const::<{ tm::VCID_REALTIME }>(),
+            Self::Payload => VcId::<3>::from_const::<{ tm::VCID_PAYLOAD }>(),
         }
     }
 

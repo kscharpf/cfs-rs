@@ -208,7 +208,7 @@ fn realtime_tm_tc_roundtrip() {
                 .step(
                     ExtractorInput::DataField(FieldIn {
                         field: frame.data_field(),
-                        header_pointer: Some(frame.header().first_header_pointer.get()),
+                        header_pointer: Some(frame.header().first_header_pointer),
                         gap: false,
                     }),
                     &mut area,
