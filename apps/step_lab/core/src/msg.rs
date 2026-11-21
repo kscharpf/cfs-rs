@@ -9,11 +9,11 @@ pub const MAX_UNIT_LEN: usize = 1024;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkLevel {
-    /// Packets level (`a0-*`, `a1-*`).
+    /// Packets level.
     Packets = 0,
-    /// Frames level (`a2-*`).
+    /// Frames level.
     Frames = 1,
-    /// COP-1 level (`a3-*`, `a4-*`).
+    /// COP-1 level.
     Cop1 = 2,
 }
 
@@ -21,11 +21,11 @@ pub enum LinkLevel {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkVariant {
-    /// TM downlink and TC uplink (`a0-*`–`a3-*`).
+    /// TM downlink and TC uplink.
     TmTc = 0,
-    /// AOS downlink and TC uplink (`a4-aos-*`).
+    /// AOS downlink and TC uplink.
     Aos = 1,
-    /// USLP downlink and USLP uplink (`a4-uslp-*`).
+    /// USLP downlink and USLP uplink.
     Uslp = 2,
 }
 

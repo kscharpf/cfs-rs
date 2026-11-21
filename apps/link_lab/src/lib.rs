@@ -520,7 +520,7 @@ fn handle_start(
     send_done(None);
 }
 
-/// Runs the lockstep `step_lab` dispatch loop (`a0`–`a4`).
+/// Runs the lockstep `step_lab` dispatch loop.
 #[inline(never)]
 fn run_lockstep(pipe: &mut Pipe, table: &mut Table, config: &mut LinkConfig) -> ExitStatus {
     let mut link: Option<Link> = None;

@@ -96,7 +96,7 @@ pub struct RealtimeConfig {
 /// Operating mode of `link_lab`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkMode {
-    /// Lockstep simulation driven by `step_lab` (`a0`–`a4`).
+    /// Lockstep simulation driven by `step_lab`.
     Lockstep,
     /// Native real-time mode over UDP frames.
     NativeRealtime(RealtimeConfig),

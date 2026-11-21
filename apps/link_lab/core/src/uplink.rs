@@ -141,9 +141,9 @@ impl DeliveryBuffer {
 /// Frame-level uplink operating mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UplinkMode {
-    /// Frame level (`a2-*`): Type-BD frames only; COP-1 state events suppressed.
+    /// Frame level: Type-BD frames only; COP-1 state events suppressed.
     Frames,
-    /// COP-1 level (`a3-*`, `a4-*`): Type-AD/Type-BC frames with FARM-1 state and unlock events.
+    /// COP-1 level: Type-AD/Type-BC frames with FARM-1 state and unlock events.
     Cop1,
 }
 
