@@ -171,8 +171,7 @@ impl DownProtocol for Tm {
     }
 
     fn make_mux(config: &LinkConfig) -> Result<DownMux<Self>> {
-        let scid = SpacecraftId::<10>::new(config.spacecraft_id)
-            .ok_or(Error::new(ErrorKind::InvalidConfig))?;
+        let scid = config.spacecraft_id;
         let physical =
             TmPhysicalChannelConfig::new(usize::from(config.tm_frame_length), config.tm_fecf)?;
         let mut channel =
@@ -248,8 +247,7 @@ impl DownProtocol for Aos {
     }
 
     fn make_mux(config: &LinkConfig) -> Result<DownMux<Self>> {
-        let scid = SpacecraftId::<10>::new(config.spacecraft_id)
-            .ok_or(Error::new(ErrorKind::InvalidConfig))?;
+        let scid = config.spacecraft_id;
         let physical = AosPhysicalChannelConfig::new(
             usize::from(config.aos_frame_length),
             config.aos_fhec,
@@ -342,7 +340,7 @@ impl DownProtocol for Uslp {
     }
 
     fn make_mux(config: &LinkConfig) -> Result<DownMux<Self>> {
-        let scid = SpacecraftId::<16>::new(config.spacecraft_id)
+        let scid = SpacecraftId::<16>::new(config.spacecraft_id.get())
             .ok_or(Error::new(ErrorKind::InvalidConfig))?;
         let physical = UslpPhysicalChannelConfig::new(
             TransferFrameType::Fixed,

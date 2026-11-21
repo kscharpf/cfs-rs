@@ -148,12 +148,11 @@ pub enum UplinkMode {
 }
 
 pub(crate) fn build_tc_vc_table(
-    spacecraft_id: u16,
+    scid: TcSpacecraftId,
     tc_max_frame_length: u16,
     tc_fecf: bool,
 ) -> Result<(PhysicalChannelConfig, TcVcId, VcTable<1, 2>)> {
     let bad = Error::new(ErrorKind::InvalidConfig);
-    let scid = TcSpacecraftId::new(spacecraft_id).ok_or(bad)?;
     let vc = TcVcId::from_const::<{ tc::VCID }>();
     let frame_len = usize::from(tc_max_frame_length);
     if frame_len > TC_FRAME_AREA_LEN {
@@ -178,7 +177,7 @@ pub(crate) fn build_tc_vc_table(
 }
 
 pub(crate) fn build_uslp_vc_table(
-    spacecraft_id: u16,
+    spacecraft_id: TcSpacecraftId,
     uslp_up_max_frame_length: u16,
     uslp_up_fecf: bool,
 ) -> Result<(
@@ -188,7 +187,7 @@ pub(crate) fn build_uslp_vc_table(
     UslpVcTable<1, 1>,
 )> {
     let bad = Error::new(ErrorKind::InvalidConfig);
-    let scid = UslpSpacecraftId::new(spacecraft_id).ok_or(bad)?;
+    let scid = UslpSpacecraftId::new(spacecraft_id.get()).ok_or(bad)?;
     let vc = UslpVcId::from_const::<{ uslp_up::VCID }>();
     let map = UslpMapId::from_const::<{ uslp_up::MAP_ID }>();
     let frame_len = usize::from(uslp_up_max_frame_length);
@@ -218,7 +217,7 @@ const USLP_UP_BASE_OVERHEAD: usize = 7 + 1 + 1;
 const USLP_FECF_LEN: usize = 2;
 
 pub(crate) fn validate_uslp_uplink_config(
-    spacecraft_id: u16,
+    spacecraft_id: TcSpacecraftId,
     uslp_up_max_frame_length: u16,
     uslp_up_max_packet_length: u16,
     uslp_up_fecf: bool,

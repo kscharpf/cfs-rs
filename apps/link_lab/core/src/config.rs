@@ -5,7 +5,7 @@ use core::num::NonZeroU16;
 
 use aldis::cop1::farm1::Farm1Window;
 use aldis::core::ErrorKind;
-use aldis::core::ids::VcId;
+use aldis::core::ids::{SpacecraftId, VcId};
 use refapp_scenario::Variant;
 use refapp_scenario::generated::{
     SPACECRAFT_ID, aos, apid, cop1, link, tc, tm, uslp_down, uslp_up,
@@ -138,7 +138,7 @@ const fn variant_from_raw(raw: u8) -> Result<Variant, ErrorKind> {
 )]
 pub struct LinkConfig {
     /// Spacecraft ID for TM, TC, AOS, and USLP frames (§3.4, APP-026).
-    pub spacecraft_id: u16,
+    pub spacecraft_id: SpacecraftId<10>,
     /// Downlink frame slot period in microseconds (§6.1, APP-071).
     pub frame_slot_us: u64,
     /// TM transfer frame length in octets (§4.1, APP-030).
@@ -223,7 +223,7 @@ impl LinkConfig {
     #[must_use]
     pub const fn from_scenario() -> Self {
         Self {
-            spacecraft_id: SPACECRAFT_ID,
+            spacecraft_id: SpacecraftId::<10>::from_const::<SPACECRAFT_ID>(),
             frame_slot_us: link::FRAME_SLOT_US,
             tm_frame_length: tm::FRAME_LENGTH,
             tm_fecf: tm::FECF,
@@ -321,7 +321,8 @@ impl LinkConfig {
         let frame_slot_us = read_u64(bytes, 0)?;
         let vc_realtime_deadline_us = read_u64(bytes, 8)?;
         let vc_payload_deadline_us = read_u64(bytes, 16)?;
-        let spacecraft_id = read_u16(bytes, 24)?;
+        let spacecraft_id =
+            SpacecraftId::<10>::new(read_u16(bytes, 24)?).ok_or(ErrorKind::InvalidConfig)?;
         let tm_frame_length = read_u16(bytes, 26)?;
         let tc_max_frame_length = read_u16(bytes, 28)?;
         let tm_fecf = read_bool(bytes, 30)?;
@@ -331,8 +332,7 @@ impl LinkConfig {
         let farm_initial_vr = read_u8(bytes, 34)?;
         let route_count = usize::from(read_u8(bytes, 35)?);
 
-        if spacecraft_id > 0x03FF
-            || usize::from(tm_frame_length) != TM_FRAME_LEN
+        if usize::from(tm_frame_length) != TM_FRAME_LEN
             || !tm_fecf
             || cop1_status_field > 0x07
             || route_count > MAX_APID_ROUTES
@@ -477,7 +477,7 @@ impl LinkConfig {
         write_slice(&mut out, 0, &self.frame_slot_us.to_ne_bytes());
         write_slice(&mut out, 8, &self.vc_realtime_deadline_us.to_ne_bytes());
         write_slice(&mut out, 16, &self.vc_payload_deadline_us.to_ne_bytes());
-        write_slice(&mut out, 24, &self.spacecraft_id.to_ne_bytes());
+        write_slice(&mut out, 24, &self.spacecraft_id.get().to_ne_bytes());
         write_slice(&mut out, 26, &self.tm_frame_length.to_ne_bytes());
         write_slice(&mut out, 28, &self.tc_max_frame_length.to_ne_bytes());
         write_slice(&mut out, 30, &[u8::from(self.tm_fecf)]);

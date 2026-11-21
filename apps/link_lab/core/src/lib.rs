@@ -11,6 +11,7 @@ pub mod downlink;
 pub mod event;
 pub mod uplink;
 
+pub use aldis::core::ids::SpacecraftId;
 use aldis::core::{Error, ErrorKind, Result};
 use aldis::spp::{PacketType, SpacePacket};
 pub use config::{ApidRoute, DataVc, LinkConfig, LinkMode, MAX_APID_ROUTES, RealtimeConfig};
