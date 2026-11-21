@@ -11,19 +11,22 @@ pub mod downlink;
 pub mod event;
 pub mod uplink;
 
-use aldis::core::{ErrorKind, Result};
+use aldis::core::{Error, ErrorKind, Result};
 use aldis::spp::{PacketType, SpacePacket};
 pub use config::{ApidRoute, DataVc, LinkConfig, LinkMode, MAX_APID_ROUTES, RealtimeConfig};
-pub use downlink::{DownlinkState, TM_DATA_FIELD_LEN, TM_FRAME_LEN, TM_QUEUE_LEN};
+pub use downlink::{
+    AOS_MPDU_LEN, DownlinkState, TM_DATA_FIELD_LEN, TM_FRAME_LEN, TM_QUEUE_LEN, USLP_TFDF_LEN,
+};
 pub use event::{
     APP_DOWNLINK_REFUSED, APP_FARM1_STATE, APP_FARM1_UNLOCK, APP_FRAME_DISCARDED,
-    APP_FRAME_REJECTED, APP_PACKET_REJECTED, APP_SDU_TOO_LONG, APP_SEQUENCE_VIOLATION,
-    APP_UNKNOWN_MAP, LAYER_FARM1, LAYER_RECEIVER,
+    APP_FRAME_REJECTED, APP_GAP_DISCARD, APP_PACKET_REJECTED, APP_SDU_TOO_LONG,
+    APP_SEQUENCE_VIOLATION, APP_UNKNOWN_MAP, LAYER_FARM1, LAYER_RECEIVER,
 };
-pub use refapp_scenario::Instant;
+pub use refapp_scenario::{Instant, Variant};
 pub use uplink::{
-    TC_ASSEMBLY_LEN, TC_FRAME_AREA_LEN, TC_MAX_FRAME_LEN, TC_MAX_PACKET_LEN,
-    TC_REASSEMBLY_AREA_LEN, UplinkBuffers, UplinkMode, UplinkState,
+    MAX_REASSEMBLY_AREA_LEN, MAX_UPLINK_FRAME_LEN, TC_ASSEMBLY_LEN, TC_FDU_BUF_LEN,
+    TC_FRAME_AREA_LEN, TC_MAX_FRAME_LEN, TC_MAX_PACKET_LEN, TC_REASSEMBLY_AREA_LEN,
+    USLP_MAX_FRAME_LEN, USLP_MAX_PACKET_LEN, UplinkBuffers, UplinkMode, UplinkState,
 };
 
 /// Minimum byte length of a cFE command packet (`sizeof(CFE_MSG_CommandHeader_t)`).
@@ -57,9 +60,9 @@ pub fn is_valid_command_packet(packet: &[u8]) -> bool {
 pub enum Level {
     /// Packet-level link: one Space Packet per link unit.
     Packets,
-    /// Frame-level link: TM downlink and TC uplink frames with Type-BD.
+    /// Frame-level link: TM/AOS downlink and TC uplink frames with Type-BD.
     Frames,
-    /// COP-1 link: TM downlink and TC uplink frames with COP-1 FARM-1.
+    /// COP-1 link: TM/AOS/USLP downlink and TC/USLP uplink frames with COP-1 FARM-1.
     Cop1,
 }
 
@@ -76,7 +79,7 @@ pub trait UplinkSink {
 
 /// Sink for downlink events and emitted link units.
 pub trait DownlinkSink {
-    /// Emits one downlink unit (Space Packet at `Packets` level, TM frame at `Frames`/`Cop1`).
+    /// Emits one downlink unit (Space Packet at `Packets` level, frame at `Frames`/`Cop1`).
     fn unit(&mut self, unit: &[u8]);
 
     /// Reports a link application event.
@@ -89,38 +92,58 @@ pub trait DownlinkSink {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Link {
     level: Level,
+    variant: Variant,
     config: LinkConfig,
     downlink: DownlinkState,
     uplink: UplinkState,
     slot_field_buf: [u8; TM_DATA_FIELD_LEN],
     slot_frame_buf: [u8; TM_FRAME_LEN],
-    up_frame_area: [u8; TC_FRAME_AREA_LEN],
-    up_fdu_buf: [u8; TC_FRAME_AREA_LEN],
-    up_reassembly_area: [u8; TC_REASSEMBLY_AREA_LEN],
+    up_frame_area: [u8; MAX_UPLINK_FRAME_LEN],
+    up_fdu_buf: [u8; TC_FDU_BUF_LEN],
+    up_reassembly_area: [u8; MAX_REASSEMBLY_AREA_LEN],
 }
 
-const _: () = assert!(core::mem::size_of::<Link>() <= 8192);
+const _: () = assert!(core::mem::size_of::<Link>() <= 9728);
 
 impl Link {
-    /// Creates a new data link engine at the specified `level` using `config`.
+    /// Creates a new TM/TC data link engine at the specified `level` using `config`.
     ///
     /// # Errors
     /// Returns `ErrorKind::InvalidConfig` if managed parameters fail engine validation.
     pub fn new(level: Level, config: &LinkConfig) -> Result<Self> {
+        Self::new_with_variant(level, Variant::TmTc, config)
+    }
+
+    /// Creates a new data link engine at the specified `level` and `variant` using `config`.
+    ///
+    /// # Errors
+    /// Returns `ErrorKind::InvalidConfig` if `(level, variant)` is invalid per APP-187
+    /// (`Packets` with `Aos`/`Uslp`, or `Frames` with `Uslp`) or if managed parameters fail
+    /// engine validation.
+    pub fn new_with_variant(level: Level, variant: Variant, config: &LinkConfig) -> Result<Self> {
+        match (level, variant) {
+            (Level::Packets, Variant::Aos | Variant::Uslp) | (Level::Frames, Variant::Uslp) => {
+                return Err(Error::new(ErrorKind::InvalidConfig));
+            }
+            (Level::Packets | Level::Frames, Variant::TmTc)
+            | (Level::Frames, Variant::Aos)
+            | (Level::Cop1, Variant::TmTc | Variant::Aos | Variant::Uslp) => {}
+        }
         let uplink_mode = match level {
             Level::Packets | Level::Frames => UplinkMode::Frames,
             Level::Cop1 => UplinkMode::Cop1,
         };
         Ok(Self {
             level,
+            variant,
             config: *config,
-            downlink: DownlinkState::new(config)?,
-            uplink: UplinkState::new(config, uplink_mode)?,
+            downlink: DownlinkState::new_with_variant(variant, config)?,
+            uplink: UplinkState::new_with_variant(variant, config, uplink_mode)?,
             slot_field_buf: [0_u8; TM_DATA_FIELD_LEN],
             slot_frame_buf: [0_u8; TM_FRAME_LEN],
-            up_frame_area: [0_u8; TC_FRAME_AREA_LEN],
-            up_fdu_buf: [0_u8; TC_FRAME_AREA_LEN],
-            up_reassembly_area: [0_u8; TC_REASSEMBLY_AREA_LEN],
+            up_frame_area: [0_u8; MAX_UPLINK_FRAME_LEN],
+            up_fdu_buf: [0_u8; TC_FDU_BUF_LEN],
+            up_reassembly_area: [0_u8; MAX_REASSEMBLY_AREA_LEN],
         })
     }
 
@@ -128,6 +151,12 @@ impl Link {
     #[must_use]
     pub const fn level(&self) -> Level {
         self.level
+    }
+
+    /// The link protocol variant.
+    #[must_use]
+    pub const fn variant(&self) -> Variant {
+        self.variant
     }
 
     /// The managed parameters configuration.
@@ -139,7 +168,7 @@ impl Link {
     /// Processes one delivered uplink unit.
     ///
     /// At `Packets` level, unit is decoded as a Space Packet and passed to `sink.command_packet`.
-    /// At `Frames`/`Cop1` level, unit passes through TC reception, FARM-1, and MAP reassembly,
+    /// At `Frames`/`Cop1` level, unit passes through frame reception, FARM-1, and MAP reassembly,
     /// delivering extracted command packets to `sink.command_packet` and events to `sink.event`.
     pub fn accept_unit(&mut self, now: Instant, unit: &[u8], sink: &mut dyn UplinkSink) {
         match self.level {
@@ -196,7 +225,7 @@ impl Link {
 
     /// Transmit slot processing at `now`.
     ///
-    /// Emits exactly one TM frame unit via `sink.unit` at frame level when `tx_slot` is true.
+    /// Emits exactly one frame unit via `sink.unit` at frame level when `tx_slot` is true.
     /// At `Packets` level, slot has no effect.
     pub fn slot(&mut self, now: Instant, tx_slot: bool, sink: &mut dyn DownlinkSink) {
         if !tx_slot {

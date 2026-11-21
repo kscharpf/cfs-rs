@@ -9,7 +9,8 @@ use cfe::osal::{self, TcpStream};
 use cfe::sb::{MsgId, Pipe, Qos, check_pipe_depth};
 use node_glue::{PeerWaitGuard, RecvAction, send_sb_msg, send_wake_turn};
 use step_lab_core::msg::{
-    DoneMsg, LinkLevel, RecordMsg, StartMsg, UnitMsg, WakeRxMsg, WakeTurn, WakeTxMsg,
+    DoneMsg, LinkLevel, LinkVariant, RecordMsg, StartMsg, UnitMsg, WakeRxMsg, WakeTurn, WakeTxMsg,
+    parse_case_id,
 };
 use step_lab_core::proto::{
     self, CodecError, EventArgs, Message, NodeOutput, Outputs, PROTOCOL_VERSION, Role, UnitsIter,
@@ -402,7 +403,7 @@ fn perform_handshake(
     rx_buf: &mut [u8; FRAME_BUF_LEN],
     tx_buf: &mut [u8; FRAME_BUF_LEN],
     run_status: &mut RunStatus,
-) -> Result<LinkLevel, ()> {
+) -> Result<(LinkLevel, LinkVariant), ()> {
     let Ok(hello_msg) = read_msg_frame(stream, rx_buf, run_status) else {
         if *run_status == RunStatus::AppRun {
             let _ = evs::send_event(5, EventType::Critical, "STEP_LAB: Failed to read HELLO");
@@ -434,7 +435,7 @@ fn perform_handshake(
         return Err(());
     }
 
-    let Some(level) = LinkLevel::from_case_id(case_id) else {
+    let Some((level, variant)) = parse_case_id(case_id) else {
         let _ = evs::send_event(
             24,
             EventType::Critical,
@@ -455,7 +456,7 @@ fn perform_handshake(
         return Err(());
     }
 
-    Ok(level)
+    Ok((level, variant))
 }
 
 /// Sends a `WakeTimeMsg` turn (`WAKE_CMD`, `WAKE_HK`, or `WAKE_PL`) and collects outputs until `DONE`.
@@ -552,13 +553,14 @@ fn run_sequencer(
     mut stream: TcpStream,
     mut pipe: Pipe,
     level: LinkLevel,
+    variant: LinkVariant,
     mut run_status: RunStatus,
 ) -> ExitStatus {
     let mut rx_buf = [0u8; FRAME_BUF_LEN];
     let mut tx_buf = [0u8; FRAME_BUF_LEN];
 
-    // Send START to all apps with configured LinkLevel
-    let mut start_msg = StartMsg::new(level);
+    // Send START to all apps with configured LinkLevel and LinkVariant
+    let mut start_msg = StartMsg::new_with_variant(level, variant);
     if send_sb_msg(
         &mut start_msg,
         15,
@@ -717,7 +719,8 @@ fn app_main() {
 
     // 6. HELLO / HELLO_ACK handshake.
     let mut run_status = RunStatus::AppRun;
-    let Ok(level) = perform_handshake(&mut stream, &mut rx_buf, &mut tx_buf, &mut run_status)
+    let Ok((level, variant)) =
+        perform_handshake(&mut stream, &mut rx_buf, &mut tx_buf, &mut run_status)
     else {
         let _ = stream.close();
         let _ = pipe.delete();
@@ -726,7 +729,7 @@ fn app_main() {
     };
 
     // 7. Sequencing loop.
-    let exit_status = run_sequencer(stream, pipe, level, run_status);
+    let exit_status = run_sequencer(stream, pipe, level, variant, run_status);
 
     es::exit_app(exit_status);
 }

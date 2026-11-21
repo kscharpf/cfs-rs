@@ -6,10 +6,13 @@ use core::num::NonZeroU16;
 use aldis::cop1::farm1::Farm1Window;
 use aldis::core::ErrorKind;
 use aldis::core::ids::VcId;
-use refapp_scenario::generated::{SPACECRAFT_ID, apid, cop1, link, tc, tm};
+use refapp_scenario::Variant;
+use refapp_scenario::generated::{
+    SPACECRAFT_ID, aos, apid, cop1, link, tc, tm, uslp_down, uslp_up,
+};
 
 use crate::downlink::TM_FRAME_LEN;
-use crate::uplink::build_tc_vc_table;
+use crate::uplink::{build_tc_vc_table, validate_uslp_uplink_config};
 
 /// Maximum number of APID-to-VC routing entries in [`LinkConfig`].
 pub const MAX_APID_ROUTES: usize = 8;
@@ -39,6 +42,24 @@ impl DataVc {
         }
     }
 
+    /// Returns the typed AOS virtual channel identifier.
+    #[must_use]
+    pub const fn aos_vcid(self) -> VcId<6> {
+        match self {
+            Self::Realtime => VcId::<6>::from_const::<{ aos::VCID_REALTIME }>(),
+            Self::Payload => VcId::<6>::from_const::<{ aos::VCID_PAYLOAD }>(),
+        }
+    }
+
+    /// Returns the typed USLP downlink virtual channel identifier.
+    #[must_use]
+    pub const fn uslp_vcid(self) -> VcId<6> {
+        match self {
+            Self::Realtime => VcId::<6>::from_const::<{ uslp_down::VCID_REALTIME }>(),
+            Self::Payload => VcId::<6>::from_const::<{ uslp_down::VCID_PAYLOAD }>(),
+        }
+    }
+
     /// Converts a raw CCSDS virtual channel identifier to [`DataVc`].
     #[must_use]
     pub const fn from_vcid(vcid: u8) -> Option<Self> {
@@ -64,20 +85,20 @@ pub struct ApidRoute {
 pub struct RealtimeConfig {
     /// Fallback VC for unmapped APIDs.
     pub default_vc: Option<DataVc>,
-    /// UDP receive port for incoming TC frames (non-zero).
+    /// UDP receive port for incoming uplink frames (non-zero).
     pub rx_port: NonZeroU16,
-    /// UDP destination port for outgoing TM frames (non-zero).
+    /// UDP destination port for outgoing downlink frames (non-zero).
     pub tx_port: NonZeroU16,
-    /// Ground IPv4 address for outgoing TM frames.
+    /// Ground IPv4 address for outgoing downlink frames.
     pub ground_ipv4: Ipv4Addr,
 }
 
 /// Operating mode of `link_lab`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkMode {
-    /// Lockstep simulation driven by `step_lab` (`a0`–`a3`).
+    /// Lockstep simulation driven by `step_lab` (`a0`–`a4`).
     Lockstep,
-    /// Native real-time mode over UDP TM/TC frames.
+    /// Native real-time mode over UDP frames.
     NativeRealtime(RealtimeConfig),
 }
 
@@ -92,10 +113,31 @@ impl LinkMode {
     }
 }
 
+const fn variant_to_raw(variant: Variant) -> u8 {
+    match variant {
+        Variant::TmTc => 0,
+        Variant::Aos => 1,
+        Variant::Uslp => 2,
+    }
+}
+
+const fn variant_from_raw(raw: u8) -> Result<Variant, ErrorKind> {
+    match raw {
+        0 => Ok(Variant::TmTc),
+        1 => Ok(Variant::Aos),
+        2 => Ok(Variant::Uslp),
+        _ => Err(ErrorKind::InvalidConfig),
+    }
+}
+
 /// Managed parameters of the link layer (reference-application §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "LinkConfig mirrors the CCSDS managed parameters of TM, TC, AOS, and USLP tables directly"
+)]
 pub struct LinkConfig {
-    /// Spacecraft ID for TM and TC frames (§3.4, APP-026).
+    /// Spacecraft ID for TM, TC, AOS, and USLP frames (§3.4, APP-026).
     pub spacecraft_id: u16,
     /// Downlink frame slot period in microseconds (§6.1, APP-071).
     pub frame_slot_us: u64,
@@ -121,6 +163,26 @@ pub struct LinkConfig {
     pub apid_routes: [Option<ApidRoute>; MAX_APID_ROUTES],
     /// Link operating mode (`Lockstep` vs `NativeRealtime`).
     pub mode: LinkMode,
+    /// Configured link protocol variant (`TmTc`, `Aos`, `Uslp`).
+    pub variant: Variant,
+    /// AOS transfer frame length in octets (§4.3.1, APP-169).
+    pub aos_frame_length: u16,
+    /// Whether FHEC is present on AOS frames (§4.3.1, APP-169).
+    pub aos_fhec: bool,
+    /// Whether `VC_OCF` is present on AOS virtual channels (§4.3.1, APP-173).
+    pub aos_vc_ocf: bool,
+    /// Whether FECF is present on AOS frames (§4.3.1, APP-169).
+    pub aos_fecf: bool,
+    /// USLP downlink transfer frame length in octets (§4.3.2, APP-175).
+    pub uslp_down_frame_length: u16,
+    /// Whether FECF is present on USLP downlink frames (§4.3.2, APP-175).
+    pub uslp_down_fecf: bool,
+    /// Maximum USLP uplink transfer frame length in octets (§4.3.3, APP-182).
+    pub uslp_up_max_frame_length: u16,
+    /// Maximum USLP uplink packet length on MAP 0 in octets (§4.3.3, APP-182).
+    pub uslp_up_max_packet_length: u16,
+    /// Whether FECF is present on USLP uplink frames (§4.3.3, APP-181).
+    pub uslp_up_fecf: bool,
 }
 
 fn read_u8(bytes: &[u8], offset: usize) -> Result<u8, ErrorKind> {
@@ -155,7 +217,7 @@ impl LinkConfig {
     /// Size in bytes of the cFE `LINK_LAB_CfgTbl_t` binary table image.
     pub const TABLE_SIZE: usize = 40_usize
         .saturating_add(MAX_APID_ROUTES.saturating_mul(4))
-        .saturating_add(16);
+        .saturating_add(32);
 
     /// Builds configuration from `refapp-scenario` generated constants.
     #[must_use]
@@ -195,12 +257,22 @@ impl LinkConfig {
                 None,
             ],
             mode: LinkMode::Lockstep,
+            variant: Variant::TmTc,
+            aos_frame_length: aos::FRAME_LENGTH,
+            aos_fhec: aos::FHEC,
+            aos_vc_ocf: aos::VC_OCF,
+            aos_fecf: aos::FECF,
+            uslp_down_frame_length: uslp_down::FRAME_LENGTH,
+            uslp_down_fecf: uslp_down::FECF,
+            uslp_up_max_frame_length: uslp_up::MAX_FRAME_LENGTH,
+            uslp_up_max_packet_length: uslp_up::MAX_PACKET_LENGTH,
+            uslp_up_fecf: uslp_up::FECF,
         }
     }
 
     /// Decodes and validates a [`LinkConfig`] from a cFE `LINK_LAB_CfgTbl_t` byte slice.
     ///
-    /// Layout (88 bytes, target-native endianness matching C struct `LINK_LAB_CfgTbl_t`):
+    /// Layout (104 bytes, target-native endianness matching C struct `LINK_LAB_CfgTbl_t`):
     /// - `0..8`: `frame_slot_us` (`u64`)
     /// - `8..16`: `vc_realtime_deadline_us` (`u64`)
     /// - `16..24`: `vc_payload_deadline_us` (`u64`)
@@ -220,12 +292,27 @@ impl LinkConfig {
     /// - `76..80`: `ground_ipv4` (`[u8; 4]`)
     /// - `80`: `mode` (`u8`, `0` = `Lockstep`, `1` = `NativeRealtime`)
     /// - `81`: `default_vc` (`u8`, `0` = `Realtime`, `1` = `Payload`, `0xFF` = `None`)
-    /// - `82..88`: `reserved2` (`[u8; 6]`, must be zero)
+    /// - `82`: `variant` (`u8`, `0` = `TmTc`, `1` = `Aos`, `2` = `Uslp`)
+    /// - `83`: `reserved2` (`u8`, must be zero)
+    /// - `84..86`: `aos_frame_length` (`u16`, must equal [`TM_FRAME_LEN`])
+    /// - `86..88`: `uslp_down_frame_length` (`u16`, must equal [`TM_FRAME_LEN`])
+    /// - `88..90`: `uslp_up_max_frame_length` (`u16`, `<= MAX_UPLINK_FRAME_LEN` and valid for USLP physical channel)
+    /// - `90..92`: `uslp_up_max_packet_length` (`u16`, `1..=USLP_MAX_PACKET_LEN`)
+    /// - `92`: `aos_fhec` (`u8`, must be `1`)
+    /// - `93`: `aos_vc_ocf` (`u8`, must be `1`)
+    /// - `94`: `aos_fecf` (`u8`, must be `1`)
+    /// - `95`: `uslp_down_fecf` (`u8`, must be `1`)
+    /// - `96`: `uslp_up_fecf` (`u8`, `0` or `1`)
+    /// - `97..104`: `reserved3` (`[u8; 7]`, must be zero)
     ///
     /// # Errors
     ///
     /// Returns [`ErrorKind::InvalidConfig`] if `bytes.len() != Self::TABLE_SIZE` or any
     /// field fails range, boolean, alignment/reserved, APID, VCID, or uniqueness checks.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "flat linear table decode and validation of LINK_LAB_CfgTbl_t"
+    )]
     pub fn from_table_bytes(bytes: &[u8]) -> Result<Self, ErrorKind> {
         if bytes.len() != Self::TABLE_SIZE {
             return Err(ErrorKind::InvalidConfig);
@@ -300,9 +387,40 @@ impl LinkConfig {
             0xFF => None,
             vcid => Some(DataVc::from_vcid(vcid).ok_or(ErrorKind::InvalidConfig)?),
         };
-        if bytes.get(82..88) != Some(&[0_u8; 6][..]) {
+        let variant = variant_from_raw(read_u8(bytes, 82)?)?;
+        if read_u8(bytes, 83)? != 0 {
             return Err(ErrorKind::InvalidConfig);
         }
+
+        let aos_frame_length = read_u16(bytes, 84)?;
+        let uslp_down_frame_length = read_u16(bytes, 86)?;
+        let uslp_up_max_frame_length = read_u16(bytes, 88)?;
+        let uslp_up_max_packet_length = read_u16(bytes, 90)?;
+        let aos_fhec = read_bool(bytes, 92)?;
+        let aos_vc_ocf = read_bool(bytes, 93)?;
+        let aos_fecf = read_bool(bytes, 94)?;
+        let uslp_down_fecf = read_bool(bytes, 95)?;
+        let uslp_up_fecf = read_bool(bytes, 96)?;
+        if bytes.get(97..104) != Some(&[0_u8; 7][..]) {
+            return Err(ErrorKind::InvalidConfig);
+        }
+
+        if usize::from(aos_frame_length) != TM_FRAME_LEN
+            || !aos_fhec
+            || !aos_vc_ocf
+            || !aos_fecf
+            || usize::from(uslp_down_frame_length) != TM_FRAME_LEN
+            || !uslp_down_fecf
+        {
+            return Err(ErrorKind::InvalidConfig);
+        }
+        validate_uslp_uplink_config(
+            spacecraft_id,
+            uslp_up_max_frame_length,
+            uslp_up_max_packet_length,
+            uslp_up_fecf,
+        )
+        .map_err(|e| e.kind())?;
 
         let mode = match mode_raw {
             0 => LinkMode::Lockstep,
@@ -333,10 +451,20 @@ impl LinkConfig {
             farm_initial_vr,
             apid_routes,
             mode,
+            variant,
+            aos_frame_length,
+            aos_fhec,
+            aos_vc_ocf,
+            aos_fecf,
+            uslp_down_frame_length,
+            uslp_down_fecf,
+            uslp_up_max_frame_length,
+            uslp_up_max_packet_length,
+            uslp_up_fecf,
         })
     }
 
-    /// Encodes this [`LinkConfig`] into the 88-byte `LINK_LAB_CfgTbl_t` binary format.
+    /// Encodes this [`LinkConfig`] into the 104-byte `LINK_LAB_CfgTbl_t` binary format.
     #[must_use]
     pub fn to_table_bytes(&self) -> [u8; Self::TABLE_SIZE] {
         let mut out = [0_u8; Self::TABLE_SIZE];
@@ -381,6 +509,22 @@ impl LinkConfig {
                 );
             }
         }
+        write_slice(&mut out, 82, &[variant_to_raw(self.variant), 0]);
+        write_slice(&mut out, 84, &self.aos_frame_length.to_ne_bytes());
+        write_slice(&mut out, 86, &self.uslp_down_frame_length.to_ne_bytes());
+        write_slice(&mut out, 88, &self.uslp_up_max_frame_length.to_ne_bytes());
+        write_slice(&mut out, 90, &self.uslp_up_max_packet_length.to_ne_bytes());
+        write_slice(
+            &mut out,
+            92,
+            &[
+                u8::from(self.aos_fhec),
+                u8::from(self.aos_vc_ocf),
+                u8::from(self.aos_fecf),
+                u8::from(self.uslp_down_fecf),
+                u8::from(self.uslp_up_fecf),
+            ],
+        );
         out
     }
 
@@ -398,7 +542,7 @@ impl LinkConfig {
     }
 }
 
-const _: () = assert!(LinkConfig::TABLE_SIZE == 88);
+const _: () = assert!(LinkConfig::TABLE_SIZE == 104);
 
 impl Default for LinkConfig {
     fn default() -> Self {

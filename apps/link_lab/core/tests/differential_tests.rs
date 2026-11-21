@@ -1,4 +1,4 @@
-//! Differential tests driving `Link` with golden traces `a1-*`, `a2-*`, and `a3-*`.
+//! Differential tests driving `Link` with golden traces `a1-*`, `a2-*`, `a3-*`, and `a4-*`.
 
 #![expect(
     clippy::expect_used,
@@ -16,8 +16,9 @@ use std::path::Path;
 
 use link_lab_core::{
     APP_DOWNLINK_REFUSED, APP_FARM1_STATE, APP_FARM1_UNLOCK, APP_FRAME_DISCARDED,
-    APP_FRAME_REJECTED, APP_PACKET_REJECTED, APP_SDU_TOO_LONG, APP_SEQUENCE_VIOLATION,
-    APP_UNKNOWN_MAP, DownlinkSink, Level, Link, LinkConfig, UplinkSink,
+    APP_FRAME_REJECTED, APP_GAP_DISCARD, APP_PACKET_REJECTED, APP_SDU_TOO_LONG,
+    APP_SEQUENCE_VIOLATION, APP_UNKNOWN_MAP, DownlinkSink, Level, Link, LinkConfig, UplinkSink,
+    Variant,
 };
 use refapp_scenario::Instant;
 use serde_json::Value;
@@ -92,12 +93,16 @@ fn run_trace(case_name: &str) {
     let header: Value = serde_json::from_str(&header_line).expect("header parse");
 
     let case_id = header["case"].as_str().expect("case id in header");
-    let level = if case_id.starts_with("a1-") {
-        Level::Packets
+    let (level, variant) = if case_id.starts_with("a1-") {
+        (Level::Packets, Variant::TmTc)
     } else if case_id.starts_with("a2-") {
-        Level::Frames
+        (Level::Frames, Variant::TmTc)
     } else if case_id.starts_with("a3-") {
-        Level::Cop1
+        (Level::Cop1, Variant::TmTc)
+    } else if case_id.starts_with("a4-aos-") {
+        (Level::Cop1, Variant::Aos)
+    } else if case_id.starts_with("a4-uslp-") {
+        (Level::Cop1, Variant::Uslp)
     } else {
         panic!("unexpected case: {case_id}");
     };
@@ -218,6 +223,7 @@ fn run_trace(case_name: &str) {
                     | APP_UNKNOWN_MAP
                     | APP_SDU_TOO_LONG
                     | APP_DOWNLINK_REFUSED
+                    | APP_GAP_DISCARD
                     | APP_FARM1_STATE
                     | APP_FARM1_UNLOCK => {
                         expected_link_events.push((t_us, code, args));
@@ -251,7 +257,8 @@ fn run_trace(case_name: &str) {
     }
 
     let config = LinkConfig::from_scenario();
-    let mut link = Link::new(level, &config).expect("Link::new should succeed");
+    let mut link = Link::new_with_variant(level, variant, &config)
+        .expect("Link::new_with_variant should succeed");
 
     let mut uplink_sink = TestUplinkSink::default();
     let mut downlink_sink = TestDownlinkSink::default();
@@ -450,4 +457,14 @@ fn diff_a3_uplink_lockout() {
 #[test]
 fn diff_a3_uplink_loss() {
     run_trace("a3-uplink-loss");
+}
+
+#[test]
+fn diff_a4_aos_nominal() {
+    run_trace("a4-aos-nominal");
+}
+
+#[test]
+fn diff_a4_uslp_nominal() {
+    run_trace("a4-uslp-nominal");
 }
