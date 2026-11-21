@@ -211,6 +211,12 @@ pub(crate) fn build_uslp_vc_table(
     Ok((physical, vc, map, table))
 }
 
+/// USLP uplink per-frame overhead in octets: 7 B primary header + 1 B sequence VCF count + 1 B TFDF header.
+const USLP_UP_BASE_OVERHEAD: usize = 7 + 1 + 1;
+
+/// USLP FECF length in octets when enabled.
+const USLP_FECF_LEN: usize = 2;
+
 pub(crate) fn validate_uslp_uplink_config(
     spacecraft_id: u16,
     uslp_up_max_frame_length: u16,
@@ -219,8 +225,16 @@ pub(crate) fn validate_uslp_uplink_config(
 ) -> Result<()> {
     let (_, vc, map, _) =
         build_uslp_vc_table(spacecraft_id, uslp_up_max_frame_length, uslp_up_fecf)?;
+    let overhead = if uslp_up_fecf {
+        USLP_UP_BASE_OVERHEAD.saturating_add(USLP_FECF_LEN)
+    } else {
+        USLP_UP_BASE_OVERHEAD
+    };
     let max_pkt = usize::from(uslp_up_max_packet_length);
-    if max_pkt == 0 || max_pkt > USLP_MAX_PACKET_LEN {
+    if max_pkt == 0
+        || max_pkt > USLP_MAX_PACKET_LEN
+        || max_pkt.saturating_add(overhead) > usize::from(uslp_up_max_frame_length)
+    {
         return Err(Error::new(ErrorKind::InvalidConfig));
     }
     let _ =
@@ -464,15 +478,18 @@ struct UslpUplink {
 impl UslpUplink {
     fn new(config: &LinkConfig) -> Result<Self> {
         let bad = Error::new(ErrorKind::InvalidConfig);
+        validate_uslp_uplink_config(
+            config.spacecraft_id,
+            config.uslp_up_max_frame_length,
+            config.uslp_up_max_packet_length,
+            config.uslp_up_fecf,
+        )?;
         let (physical, vc, map, table) = build_uslp_vc_table(
             config.spacecraft_id,
             config.uslp_up_max_frame_length,
             config.uslp_up_fecf,
         )?;
         let max_pkt = usize::from(config.uslp_up_max_packet_length);
-        if max_pkt == 0 || max_pkt > USLP_MAX_PACKET_LEN {
-            return Err(bad);
-        }
         let vc_params = UslpVc::new(MapSet::new(&[map]), true, true);
         let receiver = FrameReceiver::new(FrameReceiverConfig::new(
             UslpChannel::new(physical, DeliveryService::None)?,

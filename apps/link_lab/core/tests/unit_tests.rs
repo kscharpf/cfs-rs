@@ -1,7 +1,7 @@
 //! Unit tests for `link-lab-core`.
 //!
 //! Tests include:
-//! - Bound check on `Link` struct size (<= 8192 bytes)
+//! - Bound check on `Link` struct size (<= 9728 bytes)
 //! - Hand-built packets at `Level::Packets`
 //! - Hand-built frames at `Level::Frames` (Type-BD)
 //! - Hand-built frames and COP-1 sequence / lockout / unlock at `Level::Cop1` (Type-AD)
@@ -897,6 +897,7 @@ fn test_invalid_level_variant_combinations() {
         let link = Link::new_with_variant(level, variant, &config).expect("valid combo");
         assert_eq!(link.level(), level);
         assert_eq!(link.variant(), variant);
+        assert_eq!(link.config().variant, variant);
     }
 }
 
@@ -1094,6 +1095,26 @@ fn test_uslp_uplink_farm1_ad_bd_lockout_and_unlock() {
             .iter()
             .any(|(code, _)| *code == APP_FARM1_UNLOCK)
     );
+
+    // 4. Type-BC ControlCommand::SetVr(42) updates FARM-1 V(R) reported in CLCW MC OCF.
+    let bc_set_vr = build_uslp_up_frame(
+        &table,
+        UslpFrameKind::ProtocolControl,
+        0,
+        TfdzRule::NoSegmentation,
+        Upid::Cop1ControlCommands,
+        &[0x82, 0x00, 42],
+    );
+    link.accept_unit(t0, &bc_set_vr, &mut up_sink);
+    link.slot(
+        Instant::from_micros(config.frame_slot_us),
+        true,
+        &mut down_sink,
+    );
+    assert_eq!(
+        down_sink.units.last().expect("downlink frame")[TM_FRAME_LEN - 3],
+        42
+    );
 }
 
 #[test]
@@ -1140,7 +1161,25 @@ fn test_uslp_uplink_fecf_and_bc_rejections() {
         ))
     );
 
-    // 3. Type-BC rejection: valid UPID and rule, but unrecognized control command bytes.
+    // 3. Type-BC rejection: valid UPID (Cop1ControlCommands), but non-NoSegmentation TFDZ rule.
+    let bc_wrong_rule = build_uslp_up_frame(
+        &table,
+        UslpFrameKind::ProtocolControl,
+        0,
+        TfdzRule::StartingSegment,
+        Upid::Cop1ControlCommands,
+        &[0x00],
+    );
+    link.accept_unit(t0, &bc_wrong_rule, &mut up_sink);
+    assert_eq!(
+        up_sink.events.last(),
+        Some(&(
+            APP_FRAME_REJECTED,
+            vec![u64::from(ErrorKind::ReservedValue.code())]
+        ))
+    );
+
+    // 4. Type-BC rejection: valid UPID and rule, but unrecognized control command bytes.
     let bc_bad_cmd = build_uslp_up_frame(
         &table,
         UslpFrameKind::ProtocolControl,
@@ -1170,5 +1209,21 @@ fn test_link_config_extended_table_variants_round_trip() {
         let decoded = LinkConfig::from_table_bytes(&bytes).expect("valid variant table");
         assert_eq!(decoded, cfg);
         assert_eq!(decoded.variant, variant);
+    }
+
+    // uslp_up_max_packet_length exceeding uslp_up_max_frame_length - overhead (11 B with FECF, 9 B without)
+    let valid = LinkConfig::from_scenario().to_table_bytes();
+    for (frame_len, pkt_len, fecf, expect_ok) in [
+        (128_u16, 200_u16, true, false),
+        (128_u16, 118_u16, true, false),  // 118 + 11 = 129 > 128
+        (128_u16, 117_u16, true, true),   // 117 + 11 = 128
+        (128_u16, 120_u16, false, false), // 120 + 9 = 129 > 128
+        (128_u16, 119_u16, false, true),  // 119 + 9 = 128
+    ] {
+        let mut buf = valid;
+        buf[88..90].copy_from_slice(&frame_len.to_ne_bytes());
+        buf[90..92].copy_from_slice(&pkt_len.to_ne_bytes());
+        buf[96] = u8::from(fecf);
+        assert_eq!(LinkConfig::from_table_bytes(&buf).is_ok(), expect_ok);
     }
 }

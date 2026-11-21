@@ -133,12 +133,14 @@ impl Link {
             Level::Packets | Level::Frames => UplinkMode::Frames,
             Level::Cop1 => UplinkMode::Cop1,
         };
+        let mut stored_config = *config;
+        stored_config.variant = variant;
         Ok(Self {
             level,
             variant,
-            config: *config,
-            downlink: DownlinkState::new_with_variant(variant, config)?,
-            uplink: UplinkState::new_with_variant(variant, config, uplink_mode)?,
+            config: stored_config,
+            downlink: DownlinkState::new_with_variant(variant, &stored_config)?,
+            uplink: UplinkState::new_with_variant(variant, &stored_config, uplink_mode)?,
             slot_field_buf: [0_u8; TM_DATA_FIELD_LEN],
             slot_frame_buf: [0_u8; TM_FRAME_LEN],
             up_frame_area: [0_u8; MAX_UPLINK_FRAME_LEN],

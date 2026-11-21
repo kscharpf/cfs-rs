@@ -1,4 +1,4 @@
-//! `link_lab`: cFS application carrying Space Packets over CCSDS TM and TC frames.
+//! `link_lab`: cFS application carrying Space Packets over CCSDS TM, AOS, and USLP frames with TC and USLP uplinks.
 
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
@@ -520,7 +520,7 @@ fn handle_start(
     send_done(None);
 }
 
-/// Runs the lockstep `step_lab` dispatch loop (`a0`–`a3`).
+/// Runs the lockstep `step_lab` dispatch loop (`a0`–`a4`).
 #[inline(never)]
 fn run_lockstep(pipe: &mut Pipe, table: &mut Table, config: &mut LinkConfig) -> ExitStatus {
     let mut link: Option<Link> = None;
@@ -745,7 +745,7 @@ fn sample_monotonic_now(last_now: &mut Instant, time_err_logged: &mut bool) -> I
     *last_now
 }
 
-/// Runs the native real-time UDP TM/TC dispatch loop.
+/// Runs the native real-time UDP frame dispatch loop.
 #[inline(never)]
 fn run_native_realtime(pipe: &mut Pipe, config: &LinkConfig, rt: RealtimeConfig) -> ExitStatus {
     let Ok(udp) = UdpSocket::bind("0.0.0.0", rt.rx_port.get()) else {

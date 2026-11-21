@@ -56,6 +56,20 @@ fn test_start_msg_round_trip() {
     assert!(StartMsg::from_bytes(&bad_variant).is_none());
     assert_eq!(LinkVariant::from_raw(3), None);
 
+    // Illegal APP-187 (level, variant) combinations are rejected on decode and accessor.
+    for (level, variant) in [
+        (LinkLevel::Packets, LinkVariant::Aos),
+        (LinkLevel::Packets, LinkVariant::Uslp),
+        (LinkLevel::Frames, LinkVariant::Uslp),
+    ] {
+        let mut raw = [0_u8; 16];
+        raw[8] = level.to_raw();
+        raw[9] = variant.to_raw();
+        assert!(StartMsg::from_bytes(&raw).is_none());
+        let constructed = StartMsg::new_with_variant(level, variant);
+        assert_eq!(constructed.link_variant(), None);
+    }
+
     assert_eq!(
         parse_case_id("a0-empty"),
         Some((LinkLevel::Packets, LinkVariant::TmTc))

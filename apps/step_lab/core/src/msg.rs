@@ -52,6 +52,16 @@ impl LinkVariant {
     }
 }
 
+/// Returns `true` if `(level, variant)` is a valid APP-187 link combination.
+#[must_use]
+pub const fn is_valid_level_variant(level: LinkLevel, variant: LinkVariant) -> bool {
+    !matches!(
+        (level, variant),
+        (LinkLevel::Packets, LinkVariant::Aos | LinkVariant::Uslp)
+            | (LinkLevel::Frames, LinkVariant::Uslp)
+    )
+}
+
 /// Parses a scenario ASCII case ID into its `(LinkLevel, LinkVariant)`, or `None` if unknown.
 #[must_use]
 pub const fn parse_case_id(case_id: &str) -> Option<(LinkLevel, LinkVariant)> {
@@ -237,10 +247,18 @@ impl StartMsg {
         }
     }
 
-    /// Returns the link variant, or `None` if invalid.
+    /// Returns the link variant, or `None` if invalid or incompatible with `self.level`.
     #[must_use]
     pub const fn link_variant(&self) -> Option<LinkVariant> {
-        LinkVariant::from_raw(self.variant)
+        let (Some(level), Some(variant)) = (self.link_level(), LinkVariant::from_raw(self.variant))
+        else {
+            return None;
+        };
+        if is_valid_level_variant(level, variant) {
+            Some(variant)
+        } else {
+            None
+        }
     }
 
     /// Safely decodes a `StartMsg` from raw message bytes.
@@ -257,6 +275,9 @@ impl StartMsg {
             _ => return None,
         };
         let variant = LinkVariant::from_raw(*bytes.get(9)?)?;
+        if !is_valid_level_variant(level, variant) {
+            return None;
+        }
         let mut msg = Self::new_with_variant(level, variant);
         if let Some(src) = bytes.get(..8) {
             copy_cmd_header(&mut msg.header, src);

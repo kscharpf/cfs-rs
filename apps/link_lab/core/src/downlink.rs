@@ -50,6 +50,10 @@ pub const AOS_MPDU_LEN: usize = 209;
 /// Octets of the USLP TFDF: frame (223) less header (7), VCF Count (1), OCF (4), and FECF (2).
 pub const USLP_TFDF_LEN: usize = 209;
 
+/// Minimum valid Space Packet length (6 B primary header + 1 B data), used for the AOS idle VC
+/// generator which never queues data packets (`QUEUE = 1`).
+const IDLE_GEN_MAX_PACKET_LEN: usize = 7;
+
 /// Capacity in octets of a generator's packet queue behind the data field.
 pub const TM_QUEUE_LEN: usize = 512;
 
@@ -476,11 +480,16 @@ impl<P: DownProtocol> FrameDownlink<P> {
     #[inline(never)]
     fn new(config: &LinkConfig) -> Result<Self> {
         P::validate_config(config)?;
+        let max_pkt = usize::from(P::MAX_PACKET_LEN);
         let idle = match P::IDLE_VC {
-            Some(vc) => Some(VcChannel::<P, 1>::new(vc, None, IdlePolicy::IdleField, 7)?),
+            Some(vc) => Some(VcChannel::<P, 1>::new(
+                vc,
+                None,
+                IdlePolicy::IdleField,
+                IDLE_GEN_MAX_PACKET_LEN,
+            )?),
             None => None,
         };
-        let max_pkt = usize::from(P::MAX_PACKET_LEN);
         Ok(Self {
             vcs: [
                 VcChannel::new(
